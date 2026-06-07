@@ -157,7 +157,7 @@ export default function EvidenceCenter() {
                 </div>
                 <div>
                   <div className="text-white/35 uppercase tracking-widest mb-1">Risk</div>
-                  <div className="text-white/80 capitalize">{item.riskLevel}</div>
+                  <div className="text-white/80 uppercase">{forensicReport?.riskLevel ?? item.riskLevel}</div>
                 </div>
                 <div>
                   <div className="text-white/35 uppercase tracking-widest mb-1">OCR</div>
@@ -200,14 +200,26 @@ export default function EvidenceCenter() {
                     {forensicReport ? `${forensicReport.finalConfidence}%` : "Pending"}
                   </div>
                 </div>
+                <div>
+                  <div className="text-white/35 uppercase tracking-widest mb-1">Center</div>
+                  <div className="text-white/80">
+                    {forensicReport?.centerCode ?? attribution?.centerCode ?? "Pending"}
+                  </div>
+                </div>
               </div>
             </motion.div>
             );
           })}
 
           {!loading && data.evidence.length === 0 && (
-            <div className="col-span-full p-10 border border-dashed border-white/10 text-center text-sm text-white/45">
-              No evidence uploaded yet.
+            <div className="col-span-full min-h-[320px] border border-dashed border-white/10 bg-white/[0.02] flex flex-col items-center justify-center text-center px-8">
+              <FileStack className="w-10 h-10 text-white/25 mb-5" />
+              <div className="text-2xl font-heading uppercase tracking-widest text-white">
+                No Evidence Received
+              </div>
+              <p className="text-sm text-white/45 mt-3 max-w-md">
+                Waiting for examination intelligence. Manual uploads and monitored Telegram leaks will appear here.
+              </p>
             </div>
           )}
         </div>

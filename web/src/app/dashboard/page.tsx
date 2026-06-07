@@ -200,9 +200,16 @@ export default function Dashboard() {
             })}
 
             {(!evidenceData || evidenceData.activity.length === 0) && (
-              <div className="h-full flex flex-col items-center justify-center text-center text-white/40 gap-3 px-6">
-                <FileUp className="w-7 h-7 text-white/30" />
-                <p className="text-sm">Evidence uploads will appear here.</p>
+              <div className="h-full flex flex-col items-center justify-center text-center text-white/40 gap-4 px-6">
+                <FileUp className="w-8 h-8 text-white/25" />
+                <div>
+                  <div className="text-xl font-heading uppercase tracking-widest text-white">
+                    No Active Investigations
+                  </div>
+                  <p className="text-sm text-white/45 mt-3 max-w-xs">
+                    All monitored channels are clear. Evidence intake and alerts will stream here automatically.
+                  </p>
+                </div>
               </div>
             )}
           </div>

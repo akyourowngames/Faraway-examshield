@@ -1,6 +1,8 @@
 import { randomUUID } from "crypto";
-import { mkdir, readdir, readFile, writeFile } from "fs/promises";
+import { exec } from "child_process";
+import { mkdir, readdir, readFile, rm, unlink, writeFile } from "fs/promises";
 import path from "path";
+import { promisify } from "util";
 import type {
   AlertRecord,
   AnalysisJob,
@@ -15,6 +17,8 @@ import type {
 } from "./evidence-types";
 import { matchPaperFromOcr } from "./paper-matcher";
 import { extractWatermarkFromText } from "./watermark-extractor";
+
+const execAsync = promisify(exec);
 
 const UPLOAD_ROOT = path.resolve(process.cwd(), "..", "apps", "api", "uploads", "evidence");
 const FILES_DIR = path.join(UPLOAD_ROOT, "files");
@@ -64,6 +68,37 @@ export async function ensureEvidenceStorage() {
   await mkdir(REPORTS_DIR, { recursive: true });
   await mkdir(TELEGRAM_EVENTS_DIR, { recursive: true });
   await mkdir(ALERTS_DIR, { recursive: true });
+}
+
+export async function resetDemoEnvironment() {
+  await ensureEvidenceStorage();
+
+  await Promise.all([
+    clearRuntimeDirectory(FILES_DIR),
+    clearRuntimeDirectory(RECORDS_DIR),
+    clearRuntimeDirectory(JOBS_DIR),
+    clearRuntimeDirectory(ATTRIBUTIONS_DIR),
+    clearRuntimeDirectory(WATERMARKS_DIR),
+    clearRuntimeDirectory(REPORTS_DIR),
+    clearRuntimeDirectory(TELEGRAM_EVENTS_DIR),
+    clearRuntimeDirectory(ALERTS_DIR),
+    unlink(ACTIVITY_FILE).catch(() => undefined),
+  ]);
+
+  await seedCoreRegistry();
+
+  return {
+    message: "Demo Environment Reset",
+    cleared: [
+      "evidence",
+      "alerts",
+      "reports",
+      "timeline",
+      "telegram-events",
+      "analysis-jobs",
+    ],
+    restored: ["core-registry-seed"],
+  };
 }
 
 export function validateEvidenceFile(file: File) {
@@ -750,6 +785,23 @@ async function readStoredRecords(): Promise<StoredEvidenceRecord[]> {
   );
 
   return records;
+}
+
+async function clearRuntimeDirectory(directory: string) {
+  await ensureEvidenceStorage();
+  const entries = await readdir(directory, { withFileTypes: true });
+
+  await Promise.all(
+    entries
+      .filter((entry) => entry.name !== ".gitkeep")
+      .map((entry) => rm(path.join(directory, entry.name), { recursive: true, force: true })),
+  );
+}
+
+async function seedCoreRegistry() {
+  const coreCwd = path.resolve(process.cwd(), "..", "apps", "core");
+  const npmExecutable = process.platform === "win32" ? "npm.cmd" : "npm";
+  await execAsync(`${npmExecutable} run seed`, { cwd: coreCwd });
 }
 
 async function updateEvidenceRecord(

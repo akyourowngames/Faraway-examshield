@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import {
+  AlertTriangle,
   CheckCircle2,
   Clock3,
   FileImage,
@@ -38,8 +39,17 @@ import { cn } from "@/lib/utils";
 
 const acceptedTypes = ["image/jpeg", "image/png", "application/pdf"];
 const tabs = ["Visual Analysis", "OCR Results", "Attribution", "Timeline"] as const;
+const workflowStages = [
+  { id: "receiving-evidence", label: "Receiving Evidence" },
+  { id: "running-ocr", label: "Running OCR" },
+  { id: "extracting-watermark", label: "Extracting Watermark" },
+  { id: "attributing-source", label: "Attributing Source" },
+  { id: "generating-report", label: "Generating Report" },
+  { id: "complete", label: "Complete" },
+] as const;
 
 type InvestigationTab = (typeof tabs)[number];
+type WorkflowStage = (typeof workflowStages)[number]["id"] | null;
 
 export default function InvestigationWorkspace() {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -47,6 +57,7 @@ export default function InvestigationWorkspace() {
   const [uploading, setUploading] = useState(false);
   const [analyzingId, setAnalyzingId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<InvestigationTab>("Visual Analysis");
+  const [workflowStage, setWorkflowStage] = useState<WorkflowStage>(null);
   const [selectedEvidenceId, setSelectedEvidenceId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [received, setReceived] = useState<EvidenceRecord | null>(null);
@@ -133,6 +144,7 @@ export default function InvestigationWorkspace() {
     }
 
     setUploading(true);
+    setWorkflowStage("receiving-evidence");
     const formData = new FormData();
     formData.append("file", file);
 
@@ -153,8 +165,10 @@ export default function InvestigationWorkspace() {
         setActiveTab("Visual Analysis");
       }
       await loadEvidence();
+      setWorkflowStage("complete");
     } catch (uploadError) {
       setError(uploadError instanceof Error ? uploadError.message : "Evidence upload failed.");
+      setWorkflowStage(null);
     } finally {
       setUploading(false);
     }
@@ -163,7 +177,13 @@ export default function InvestigationWorkspace() {
   async function runAnalysis(evidenceId: string) {
     setError(null);
     setAnalyzingId(evidenceId);
+    setWorkflowStage("running-ocr");
     setActiveTab("OCR Results");
+    const stageTimers = [
+      window.setTimeout(() => setWorkflowStage("extracting-watermark"), 1200),
+      window.setTimeout(() => setWorkflowStage("attributing-source"), 2400),
+      window.setTimeout(() => setWorkflowStage("generating-report"), 3600),
+    ];
 
     try {
       const queuedResponse = await fetch("/analysis/jobs", {
@@ -189,11 +209,20 @@ export default function InvestigationWorkspace() {
       }
 
       await loadEvidence();
+      if (processPayload.message === "Analysis Failed") {
+        setActiveTab("OCR Results");
+        setWorkflowStage(null);
+        return;
+      }
+
+      setWorkflowStage("complete");
       setActiveTab("Attribution");
     } catch (analysisError) {
       setError(analysisError instanceof Error ? analysisError.message : "Analysis failed.");
+      setWorkflowStage(null);
       await loadEvidence();
     } finally {
+      stageTimers.forEach((timer) => window.clearTimeout(timer));
       setAnalyzingId(null);
     }
   }
@@ -217,6 +246,24 @@ export default function InvestigationWorkspace() {
           </p>
         </div>
       </div>
+
+      <ExecutiveSummaryPanel
+        evidence={selectedEvidence}
+        attribution={selectedAttribution}
+        watermark={selectedWatermark}
+        forensicReport={selectedForensicReport}
+        analyzing={analyzingId === selectedEvidence?.evidenceId}
+      />
+
+      <WorkflowRail stage={workflowStage} evidence={selectedEvidence} />
+
+      <InvestigationIntelligenceGrid
+        evidence={selectedEvidence}
+        attribution={selectedAttribution}
+        watermark={selectedWatermark}
+        forensicReport={selectedForensicReport}
+        analyzing={analyzingId === selectedEvidence?.evidenceId}
+      />
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
         <div className="xl:col-span-2 glass-panel min-h-[620px] flex flex-col">
@@ -251,6 +298,7 @@ export default function InvestigationWorkspace() {
               <OcrResultsPanel
                 evidence={selectedEvidence}
                 analyzing={analyzingId === selectedEvidence?.evidenceId}
+                onRunAnalysis={runAnalysis}
               />
             )}
 
@@ -320,6 +368,196 @@ export default function InvestigationWorkspace() {
           />
         </div>
       </div>
+    </div>
+  );
+}
+
+function ExecutiveSummaryPanel({
+  evidence,
+  attribution,
+  watermark,
+  forensicReport,
+  analyzing,
+}: {
+  evidence: EvidenceRecord | null;
+  attribution: AttributionRecord | null;
+  watermark: WatermarkExtractionRecord | null;
+  forensicReport: ForensicReport | null;
+  analyzing: boolean;
+}) {
+  const leakConfirmed = forensicReport?.status === "investigation-complete" && forensicReport.finalConfidence > 80;
+  const confidence = forensicReport?.finalConfidence ?? attribution?.finalConfidence ?? null;
+  const risk = forensicReport?.riskLevel ?? attribution?.status ?? "unknown";
+
+  if (!evidence) {
+    return (
+      <section className="border border-dashed border-white/10 bg-white/[0.02] p-7">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-5">
+          <div>
+            <div className="text-xs uppercase tracking-[0.22em] text-white/40">Executive Summary</div>
+            <h2 className="text-3xl font-heading uppercase tracking-widest text-white mt-3">
+              No Active Investigation
+            </h2>
+            <p className="text-sm text-white/45 mt-3">
+              All monitored channels are clear. Upload evidence or wait for Telegram intelligence.
+            </p>
+          </div>
+          <div className="px-4 py-2 border border-white/10 text-xs uppercase tracking-widest text-white/50">
+            Threat Level Stable
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="border border-white/10 bg-black p-6">
+      <div className="grid grid-cols-1 xl:grid-cols-5 gap-5 items-stretch">
+        <div className="xl:col-span-2">
+          <div className="text-xs uppercase tracking-[0.22em] text-white/40">Executive Summary</div>
+          <div className="flex items-center gap-3 mt-3">
+            {leakConfirmed ? (
+              <AlertTriangle className="w-7 h-7 text-white" />
+            ) : analyzing ? (
+              <Loader2 className="w-7 h-7 text-white animate-spin" />
+            ) : (
+              <ShieldCheck className="w-7 h-7 text-white/60" />
+            )}
+            <h2 className="text-4xl font-heading uppercase tracking-widest text-white">
+              {leakConfirmed ? "Leak Confirmed" : analyzing ? "Analysis Running" : "Awaiting Confirmation"}
+            </h2>
+          </div>
+          <p className="text-sm text-white/45 mt-3 break-all">
+            {evidence.evidenceId} / {evidence.filename}
+          </p>
+        </div>
+
+        <SummaryBlock label="Paper" value={forensicReport?.paperIdentified ?? attribution?.matchedPaperId ?? "Pending"} />
+        <SummaryBlock label="Source" value={forensicReport?.centerCode ?? attribution?.centerCode ?? "Pending"} />
+        <SummaryBlock label="Confidence" value={confidence === null ? "Pending" : `${confidence}%`} />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 mt-5 pt-5 border-t border-white/10">
+        <InfoBlock label="Risk" value={formatRiskLabel(risk)} />
+        <InfoBlock label="Watermark" value={watermark?.watermarkId ?? forensicReport?.watermarkId ?? "Pending"} />
+        <InfoBlock label="Channel" value={formatEvidenceSource(evidence.source)} />
+        <InfoBlock
+          label="Authority Action"
+          value={leakConfirmed ? "Lock paper, isolate source, notify command." : "Continue monitoring."}
+        />
+      </div>
+    </section>
+  );
+}
+
+function WorkflowRail({
+  stage,
+  evidence,
+}: {
+  stage: WorkflowStage;
+  evidence: EvidenceRecord | null;
+}) {
+  const effectiveStage = stage ?? (evidence?.ocrStatus === "completed" ? "complete" : null);
+  const activeIndex = effectiveStage
+    ? workflowStages.findIndex((item) => item.id === effectiveStage)
+    : -1;
+
+  return (
+    <div className="border border-white/10 bg-white/[0.02] p-4">
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-2">
+        {workflowStages.map((item, index) => {
+          const isDone = activeIndex >= index;
+          const isActive = activeIndex === index;
+
+          return (
+            <div
+              key={item.id}
+              className={cn(
+                "min-h-14 border px-3 py-3 flex items-center justify-between gap-2",
+                isDone ? "border-white bg-white text-black" : "border-white/10 text-white/35",
+              )}
+            >
+              <span className="text-[10px] uppercase tracking-widest font-bold leading-4">
+                {item.label}
+              </span>
+              {isActive && item.id !== "complete" ? (
+                <Loader2 className="w-4 h-4 shrink-0 animate-spin" />
+              ) : isDone ? (
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+              ) : (
+                <div className="w-2 h-2 border border-current" />
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function InvestigationIntelligenceGrid({
+  evidence,
+  attribution,
+  watermark,
+  forensicReport,
+  analyzing,
+}: {
+  evidence: EvidenceRecord | null;
+  attribution: AttributionRecord | null;
+  watermark: WatermarkExtractionRecord | null;
+  forensicReport: ForensicReport | null;
+  analyzing: boolean;
+}) {
+  const finalConfidence = forensicReport?.finalConfidence ?? attribution?.finalConfidence ?? null;
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+      <IntelligenceCard
+        title="Evidence"
+        value={evidence?.evidenceId ?? "Clear"}
+        detail={evidence ? formatEvidenceSource(evidence.source) : "No evidence received"}
+      />
+      <IntelligenceCard
+        title="OCR"
+        value={analyzing ? "Running" : evidence ? formatOcrStatus(evidence.ocrStatus) : "Idle"}
+        detail={evidence?.ocrConfidence === null || !evidence ? "Waiting" : `${evidence.ocrConfidence}% confidence`}
+      />
+      <IntelligenceCard
+        title="Watermark"
+        value={watermark?.watermarkId ?? "Pending"}
+        detail={formatWatermarkStatus(watermark)}
+      />
+      <IntelligenceCard
+        title="Attribution"
+        value={attribution?.matchedPaperId ?? "Pending"}
+        detail={attribution?.centerCode ?? "Source unresolved"}
+      />
+      <IntelligenceCard
+        title="Forensic Report"
+        value={finalConfidence === null ? "Pending" : `${finalConfidence}%`}
+        detail={forensicReport?.riskLevel ? formatRiskLabel(forensicReport.riskLevel) : "Awaiting result"}
+      />
+    </div>
+  );
+}
+
+function SummaryBlock({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="border border-white/10 bg-white/[0.02] p-4 min-h-24 flex flex-col justify-between">
+      <div className="text-white/35 uppercase tracking-widest text-[10px]">{label}</div>
+      <div className="text-2xl font-heading uppercase tracking-widest text-white break-all">
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function IntelligenceCard({ title, value, detail }: { title: string; value: string; detail: string }) {
+  return (
+    <div className="border border-white/10 bg-white/[0.02] p-4 min-h-28">
+      <div className="text-white/35 uppercase tracking-widest text-[10px] mb-3">{title}</div>
+      <div className="text-lg font-heading uppercase tracking-widest text-white break-all">{value}</div>
+      <div className="text-xs text-white/45 mt-2 truncate">{detail}</div>
     </div>
   );
 }
@@ -405,7 +643,7 @@ function VisualAnalysisPanel({
   onRunAnalysis: (evidenceId: string) => void;
 }) {
   if (!evidence) {
-    return <EmptyPanel icon={FileUp} text="Upload evidence to start the investigation queue." />;
+    return <EmptyPanel icon={FileUp} text="No active investigation. Waiting for evidence intake." />;
   }
 
   const isCompleted = evidence.ocrStatus === "completed";
@@ -488,12 +726,14 @@ function VisualAnalysisPanel({
 function OcrResultsPanel({
   evidence,
   analyzing,
+  onRunAnalysis,
 }: {
   evidence: EvidenceRecord | null;
   analyzing: boolean;
+  onRunAnalysis: (evidenceId: string) => void;
 }) {
   if (!evidence) {
-    return <EmptyPanel icon={ScrollText} text="OCR results will appear after analysis." />;
+    return <EmptyPanel icon={ScrollText} text="No OCR results. All monitored channels are clear." />;
   }
 
   const text = evidence.ocrText?.trim();
@@ -532,8 +772,21 @@ function OcrResultsPanel({
             <div className="text-sm uppercase tracking-widest">Analyzing...</div>
           </div>
         ) : evidence.ocrStatus === "failed" ? (
-          <div className="h-full flex items-center justify-center text-center text-sm text-white/55">
-            OCR analysis failed. Check the timeline for details.
+          <div className="h-full flex flex-col items-center justify-center text-center gap-5 text-white">
+            <AlertTriangle className="w-9 h-9 text-white" />
+            <div>
+              <div className="text-2xl font-heading uppercase tracking-widest">Analysis Failed</div>
+              <p className="text-sm text-white/45 mt-3 max-w-md">
+                The evidence file could not be processed. Retry analysis or inspect the timeline for the failure detail.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => onRunAnalysis(evidence.evidenceId)}
+              className="px-5 py-3 bg-white text-black text-xs font-bold uppercase tracking-widest"
+            >
+              Retry Analysis
+            </button>
           </div>
         ) : evidence.ocrStatus === "completed" && !text ? (
           <div className="h-full flex items-center justify-center text-center text-xl font-heading uppercase tracking-widest text-white">
@@ -559,7 +812,7 @@ function TimelinePanel({
   evidence: EvidenceRecord | null;
 }) {
   if (!evidence) {
-    return <EmptyPanel icon={Clock3} text="Timeline events will appear after evidence is uploaded." />;
+    return <EmptyPanel icon={Clock3} text="No timeline activity. All monitored channels are clear." />;
   }
 
   return (
@@ -604,7 +857,7 @@ function AttributionPanel({
   analyzing: boolean;
 }) {
   if (!evidence) {
-    return <EmptyPanel icon={Fingerprint} text="Attribution reports will appear after OCR analysis." />;
+    return <EmptyPanel icon={Fingerprint} text="No attribution report. Waiting for examination intelligence." />;
   }
 
   if (analyzing || evidence.ocrStatus === "processing" || evidence.ocrStatus === "queued") {
@@ -821,8 +1074,14 @@ function InvestigationQueue({
         })}
 
         {evidence.length === 0 && (
-          <div className="border border-dashed border-white/10 p-8 text-center text-sm text-white/40">
-            Uploaded evidence will appear here.
+          <div className="border border-dashed border-white/10 bg-white/[0.02] p-8 text-center">
+            <FileUp className="w-8 h-8 text-white/25 mx-auto mb-4" />
+            <div className="text-sm uppercase tracking-widest text-white/70">
+              No Active Investigations
+            </div>
+            <p className="text-xs text-white/40 mt-2">
+              Upload evidence or wait for Telegram intake.
+            </p>
           </div>
         )}
       </div>

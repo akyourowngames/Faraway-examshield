@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useState } from "react";
 import { 
   ShieldAlert, 
   Activity, 
@@ -11,7 +12,8 @@ import {
   Files,
   Settings,
   LogOut,
-  ChevronRight
+  ChevronRight,
+  RefreshCcw
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -26,6 +28,20 @@ const NAV_ITEMS = [
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const [resetting, setResetting] = useState(false);
+
+  async function resetEnvironment() {
+    setResetting(true);
+    try {
+      const response = await fetch("/demo/reset", { method: "POST" });
+      if (!response.ok) {
+        throw new Error("Demo reset failed.");
+      }
+      window.location.reload();
+    } finally {
+      setResetting(false);
+    }
+  }
 
   return (
     <div className="flex h-screen bg-black overflow-hidden font-sans">
@@ -92,6 +108,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </div>
           
           <div className="flex items-center gap-4">
+            <button
+              type="button"
+              onClick={resetEnvironment}
+              disabled={resetting}
+              className="flex items-center gap-2 px-4 py-1.5 border border-white/20 bg-white/[0.03] text-white text-[10px] uppercase tracking-[0.2em] font-bold hover:border-white/50 disabled:opacity-40"
+            >
+              <RefreshCcw className={cn("w-3.5 h-3.5", resetting && "animate-spin")} />
+              {resetting ? "Resetting" : "Reset Environment"}
+            </button>
             <div className="flex items-center gap-2 px-4 py-1.5 rounded-none bg-white border border-white text-black text-[10px] uppercase tracking-[0.2em] font-bold">
               <div className="w-1.5 h-1.5 rounded-full bg-black animate-pulse" />
               SYSTEM SECURE

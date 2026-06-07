@@ -95,8 +95,14 @@ export default function AlertCenter() {
           ))}
 
           {!loading && data.alerts.length === 0 && (
-            <div className="border border-dashed border-white/10 p-10 text-center text-sm text-white/45">
-              No critical leak alerts generated yet.
+            <div className="min-h-[360px] border border-dashed border-white/10 bg-white/[0.02] flex flex-col items-center justify-center text-center px-8">
+              <ShieldBan className="w-10 h-10 text-white/25 mb-5" />
+              <div className="text-2xl font-heading uppercase tracking-widest text-white">
+                No Active Alerts
+              </div>
+              <p className="text-sm text-white/45 mt-3 max-w-md">
+                National threat level stable. Critical leak detections will appear here automatically.
+              </p>
             </div>
           )}
         </div>
@@ -131,7 +137,14 @@ export default function AlertCenter() {
               </div>
             ))}
             {!loading && data.telegramEvents.length === 0 && (
-              <div className="text-sm text-white/40">No Telegram events received.</div>
+              <div className="border border-dashed border-white/10 p-6 text-center">
+                <div className="text-sm uppercase tracking-widest text-white/60">
+                  No Channel Activity
+                </div>
+                <p className="text-xs text-white/35 mt-2">
+                  All monitored channels are clear.
+                </p>
+              </div>
             )}
           </div>
         </div>
