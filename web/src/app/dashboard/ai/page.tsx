@@ -339,6 +339,29 @@ function ChatBubble({ message }: { message: ChatMessage }) {
     );
   }
 
+  const hasTool = Boolean(message.toolResult);
+
+  if (!hasTool) {
+    return (
+      <div className="max-w-3xl border border-white/10 bg-white/[0.02] p-4">
+        <div className="mb-3 flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-white/35">
+          <Bot className="h-3.5 w-3.5" />
+          EXAMSHIELD AI
+          {message.streaming && (
+            <span className="ml-auto flex items-center gap-2 text-white/45">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Streaming
+            </span>
+          )}
+        </div>
+        <pre className="whitespace-pre-wrap font-mono text-sm leading-7 text-white/85">
+          {message.content}
+          {message.streaming && <span className="ml-1 inline-block h-4 w-1 animate-pulse bg-white align-middle" />}
+        </pre>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-5xl border border-white/10 bg-black">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 p-4">
@@ -370,7 +393,7 @@ function ChatBubble({ message }: { message: ChatMessage }) {
           </div>
         )}
 
-        {message.toolResult && <ToolResultPanel result={message.toolResult} />}
+        <ToolResultPanel result={message.toolResult!} />
 
         <div className="border border-white/10 bg-white/[0.02] p-4">
           <div className="mb-3 flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-white/35">
