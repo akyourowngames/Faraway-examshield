@@ -5,7 +5,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from .events import sse_bytes, stream_text
+from .events import sse_bytes
 from .llm import NvidiaClient
 from .planner import ToolPlanner
 from .responses import conversation_messages, grounded_messages
@@ -97,13 +97,12 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             write_event({"type": "stage", "message": f"Tool planner unavailable: {type(exc).__name__}. Continuing with natural chat."})
             command = None
         if not command:
-            text = self.client.chat_text(
+            emitted = self.client.stream_chat(
                 model=self.settings.model,
                 messages=conversation_messages(prompt, history),
+                on_token=lambda token: write_event({"type": "token", "token": token}),
             )
-            if text:
-                stream_text(write_event, text)
-            else:
+            if not emitted:
                 write_event({"type": "error", "message": "Model stream returned no text."})
             return
 
@@ -116,17 +115,12 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         )
         write_event({"type": "tool", "tool": execution.result["tool"], "result": execution.result})
 
-        try:
-            text = self.client.chat_text(
-                model=self.settings.model,
-                messages=grounded_messages(prompt, history, execution.model_context),
-            )
-        except Exception as exc:
-            write_event({"type": "error", "message": f"NIM response failed: {exc}"})
-            text = ""
-        if text:
-            stream_text(write_event, text)
-        else:
+        emitted = self.client.stream_chat(
+            model=self.settings.model,
+            messages=grounded_messages(prompt, history, execution.model_context),
+            on_token=lambda token: write_event({"type": "token", "token": token}),
+        )
+        if not emitted:
             write_event({"type": "error", "message": "Model stream returned no grounded answer."})
 
     def _read_json(self) -> dict[str, Any]:
