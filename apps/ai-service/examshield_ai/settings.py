@@ -37,12 +37,12 @@ def load_settings() -> Settings:
         or os.environ.get("NVIDIA_MODEL")
         or os.environ.get("NVIDIA_NIM_MODEL")
         or os.environ.get("NIM_MODEL")
-        or "meta/llama-4-maverick-17b-128e-instruct"
+        or "qwen/qwen3-next-80b-a3b-instruct"
     ).strip()
     fallback_models = _split_csv(
         os.environ.get("NVIDIA_NIM_FALLBACK_MODELS")
         or os.environ.get("NVIDIA_FALLBACK_MODELS")
-        or "mistralai/ministral-14b-instruct-2512,qwen/qwen3-next-80b-a3b-instruct,deepseek-ai/deepseek-v4-flash"
+        or "meta/llama-4-maverick-17b-128e-instruct,mistralai/ministral-14b-instruct-2512,deepseek-ai/deepseek-v4-flash"
     )
 
     return Settings(
