@@ -8,27 +8,35 @@ if (!token) {
   process.exit(1);
 }
 
-let offset = 0;
+let offset = Number(process.env.TELEGRAM_START_OFFSET ?? 0);
 
 console.log("EXAMSHIELD Telegram Agent listening");
 console.log(`Forwarding events to ${webUrl}/telegram/events`);
+if (allowedChatId) {
+  console.log(`Filtering Telegram events to chat ${allowedChatId}`);
+}
+
+await telegram("deleteWebhook", { drop_pending_updates: false });
+console.log("Telegram webhook cleared; long polling is active.");
 
 while (true) {
   try {
     const updates = await telegram("getUpdates", {
       offset,
       timeout: 25,
-      allowed_updates: ["message", "channel_post"],
+      allowed_updates: ["message", "edited_message", "channel_post", "edited_channel_post"],
     });
 
     for (const update of updates) {
       offset = Math.max(offset, update.update_id + 1);
-      const message = update.message ?? update.channel_post;
+      const message = getTelegramMessage(update);
       if (!message) {
         continue;
       }
 
-      if (allowedChatId && String(message.chat?.id) !== allowedChatId) {
+      const chatId = String(message.chat?.id ?? "");
+      if (allowedChatId && chatId !== allowedChatId) {
+        console.log(`Skipping Telegram chat ${chatId}; TELEGRAM_CHAT_ID is ${allowedChatId}`);
         continue;
       }
 
@@ -40,6 +48,10 @@ while (true) {
   }
 
   await sleep(pollMs);
+}
+
+function getTelegramMessage(update) {
+  return update.message ?? update.edited_message ?? update.channel_post ?? update.edited_channel_post ?? null;
 }
 
 async function forwardMessage(message) {

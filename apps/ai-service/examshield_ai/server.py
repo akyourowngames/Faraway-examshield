@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 
 from .events import sse_bytes
@@ -12,6 +14,12 @@ from .responses import conversation_messages, grounded_messages
 from .settings import Settings, load_settings
 from .store import EvidenceStore
 from .tools import ExamshieldToolRegistry
+
+OCR_WORKER_DIR = Path(__file__).resolve().parents[2] / "ai-ocr"
+if str(OCR_WORKER_DIR) not in sys.path:
+    sys.path.append(str(OCR_WORKER_DIR))
+
+from worker import SUPPORTED_TYPES, analyze_image  # noqa: E402
 
 
 class ExamshieldAiHandler(BaseHTTPRequestHandler):
@@ -33,6 +41,10 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                     "model": self.settings.model,
                     "nimConfigured": self.client.configured,
                     "tools": self.registry.names(),
+                    "ocr": {
+                        "endpoint": "/ocr/analyze",
+                        "supportedTypes": sorted(SUPPORTED_TYPES.keys()),
+                    },
                     "uploadRoot": str(self.settings.upload_root),
                     "registryPath": str(self.settings.registry_path),
                 }
@@ -44,6 +56,10 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         self._send_json({"error": "Not found"}, status=404)
 
     def do_POST(self) -> None:
+        if self.path in {"/ocr/analyze", "/analyze"}:
+            self._run_ocr()
+            return
+
         if self.path != "/chat":
             self._send_json({"error": "Not found"}, status=404)
             return
@@ -74,6 +90,31 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         finally:
             write_event({"type": "done", "latencyMs": round((time.perf_counter() - started) * 1000)})
             self.close_connection = True
+
+    def _run_ocr(self) -> None:
+        content_type = (self.headers.get("Content-Type") or "").split(";")[0].lower()
+        suffix = SUPPORTED_TYPES.get(content_type)
+        if not suffix:
+            self._send_json(
+                {
+                    "status": "failed",
+                    "error": "Only image/jpeg and image/png are supported by the unified OCR endpoint.",
+                },
+                status=200,
+            )
+            return
+
+        try:
+            content_length = int(self.headers.get("Content-Length") or "0")
+        except ValueError:
+            content_length = 0
+
+        if content_length <= 0:
+            self._send_json({"status": "failed", "error": "Image payload is required."}, status=400)
+            return
+
+        image_bytes = self.rfile.read(content_length)
+        self._send_json(analyze_image(image_bytes, suffix))
 
     def _run_chat(self, payload: dict[str, Any], prompt: str, write_event) -> None:
         history = payload.get("messages") if isinstance(payload.get("messages"), list) else []

@@ -1,6 +1,6 @@
 # EXAMSHIELD OCR Worker
 
-Tiny Python OCR service for Sprint 2.
+Legacy standalone Python OCR service. The preferred runtime is now the unified AI service in `apps/ai-service`, which exposes the same OCR analyzer at `POST /ocr/analyze` so chat tools and OCR share one Python microservice.
 
 ## Run
 
@@ -31,16 +31,6 @@ Response:
 
 The worker only performs OCR.
 
-## Quality Gate
+## OCR Candidate Scoring
 
-The worker runs a small set of Tesseract page segmentation modes, scores the OCR candidates,
-and discards low-signal output. Natural photos, blank images, and noisy OCR fragments return:
-
-```json
-{
-  "status": "completed",
-  "confidence": 0,
-  "text": "",
-  "message": "No Exam Content Detected"
-}
-```
+The worker runs a small set of Tesseract page segmentation modes and selects the strongest text candidate using generic OCR quality signals. It no longer filters output by exam keywords or question-pattern rules; if Tesseract extracts text, the response returns that text for the attribution pipeline to evaluate.
