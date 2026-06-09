@@ -1,8 +1,8 @@
 # EXAMSHIELD AI Service
 
-Standalone Python microservice for the dashboard AI page.
+Standalone Python microservice for the dashboard AI page and OCR analysis.
 
-It streams SSE from `POST /chat`, executes EXAMSHIELD tools locally against the evidence store and core registry, and uses NVIDIA NIM only for planning and natural language generation.
+It streams SSE from `POST /chat`, executes EXAMSHIELD tools locally against the evidence store and core registry, exposes unified OCR at `POST /ocr/analyze`, and uses NVIDIA NIM only for planning and natural language generation.
 
 ## Run
 
@@ -19,6 +19,7 @@ Default URL: `http://127.0.0.1:8790`
 - `GET /health`
 - `GET /tools`
 - `POST /chat`
+- `POST /ocr/analyze` (raw `image/jpeg` or `image/png` bytes)
 
 The web dashboard reads `NEXT_PUBLIC_EXAMSHIELD_AI_SERVICE_URL`; if it is not set, it uses `http://127.0.0.1:8790`.
 
@@ -36,3 +37,7 @@ $env:NVIDIA_NIM_BASE_URL="https://integrate.api.nvidia.com/v1"
 ```
 
 No memory layer is used here.
+
+## OCR
+
+The web app now defaults OCR traffic to the unified AI service at `http://127.0.0.1:8790/ocr/analyze`. You can still override it with `OCR_WORKER_URL` or `EXAMSHIELD_OCR_URL` if you intentionally want to run the legacy standalone OCR worker.

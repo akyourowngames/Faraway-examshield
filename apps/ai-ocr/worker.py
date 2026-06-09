@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import tempfile
 import time
@@ -19,24 +18,6 @@ SUPPORTED_TYPES = {
     "image/png": ".png",
 }
 OCR_PSMS = ("6", "4", "11")
-MIN_ACCEPTED_QUALITY_SCORE = 58
-EXAM_TERMS = {
-    "question",
-    "questions",
-    "answer",
-    "answers",
-    "solve",
-    "define",
-    "explain",
-    "describe",
-    "marks",
-    "mark",
-    "section",
-    "choose",
-    "write",
-    "paper",
-    "exam",
-}
 
 
 class OcrHandler(BaseHTTPRequestHandler):
@@ -100,16 +81,6 @@ def analyze_image(image_bytes: bytes, suffix: str) -> dict[str, Any]:
         raw_text = str(best["text"])
         confidence = int(best["confidence"])
         quality_score = int(best["qualityScore"])
-
-        if not is_acceptable_ocr(best):
-            return {
-                "status": "completed",
-                "confidence": 0,
-                "text": "",
-                "processingTimeMs": elapsed_ms(started),
-                "message": "No Exam Content Detected",
-                "qualityScore": quality_score,
-            }
 
         return {
             "status": "completed",
@@ -215,9 +186,6 @@ def score_ocr_quality(text: str, confidence: int, words: list[str]) -> dict[str,
         for word in normalized_words
         if len(word) >= 3 and has_vowel(word) and not is_keyboard_noise(word)
     ]
-    exam_hits = sum(1 for word in normalized_words if word in EXAM_TERMS)
-    numbered_lines = len(re.findall(r"(?im)^\s*(question\s*)?\d+\s*[\).:-]", text))
-    q_labels = len(re.findall(r"(?i)\bq\s*\.?\s*\d+\b|\bquestion\s+\d+\b", text))
     lines = [line for line in text.splitlines() if line.strip()]
 
     printable_chars = [char for char in text if not char.isspace()]
@@ -235,7 +203,6 @@ def score_ocr_quality(text: str, confidence: int, words: list[str]) -> dict[str,
 
     word_count = len([word for word in normalized_words if word])
     meaningful_ratio = len(meaningful_words) / word_count if word_count else 0
-    exam_signal = min(100, exam_hits * 22 + numbered_lines * 18 + q_labels * 18)
     language_score = min(100, meaningful_ratio * 100)
     structure_score = min(100, len(lines) * 12 + word_count * 4)
     cleanliness_score = max(0, min(100, clean_ratio * 100 - punctuation_ratio * 45))
@@ -251,11 +218,10 @@ def score_ocr_quality(text: str, confidence: int, words: list[str]) -> dict[str,
         penalties += 18
 
     quality_score = round(
-        confidence * 0.38
-        + language_score * 0.24
-        + structure_score * 0.16
+        confidence * 0.44
+        + language_score * 0.26
+        + structure_score * 0.18
         + cleanliness_score * 0.12
-        + exam_signal * 0.10
         - penalties
     )
     quality_score = max(0, min(100, quality_score))
@@ -265,7 +231,6 @@ def score_ocr_quality(text: str, confidence: int, words: list[str]) -> dict[str,
         "quality": {
             "wordCount": word_count,
             "meaningfulWordCount": len(meaningful_words),
-            "examSignal": exam_signal,
             "cleanRatio": round(clean_ratio, 2),
             "punctuationRatio": round(punctuation_ratio, 2),
             "shortLineRatio": round(short_line_ratio, 2),
@@ -273,30 +238,8 @@ def score_ocr_quality(text: str, confidence: int, words: list[str]) -> dict[str,
     }
 
 
-def is_acceptable_ocr(candidate: dict[str, Any]) -> bool:
-    text = str(candidate["text"]).strip()
-    if not text:
-        return False
-
-    quality = candidate.get("quality", {})
-    confidence = int(candidate["confidence"])
-    quality_score = int(candidate["qualityScore"])
-    exam_signal = int(quality.get("examSignal", 0))
-    word_count = int(quality.get("wordCount", 0))
-    meaningful_word_count = int(quality.get("meaningfulWordCount", 0))
-
-    if quality_score >= MIN_ACCEPTED_QUALITY_SCORE and confidence >= 45:
-        return True
-    if exam_signal >= 35 and confidence >= 35 and meaningful_word_count >= 4:
-        return True
-    if confidence >= 72 and meaningful_word_count >= 8 and word_count >= 8:
-        return True
-
-    return False
-
-
 def normalize_token(value: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", value.lower())
+    return "".join(char for char in value.lower() if char.isalnum())
 
 
 def has_vowel(value: str) -> bool:
@@ -309,7 +252,8 @@ def is_keyboard_noise(value: str) -> bool:
     unique = len(set(value))
     if unique <= 2 and len(value) >= 4:
         return True
-    return bool(re.fullmatch(r"[bcdfghjklmnpqrstvwxyz]{4,}", value))
+    consonants = set("bcdfghjklmnpqrstvwxyz")
+    return len(value) >= 4 and all(char in consonants for char in value.lower())
 
 
 def normalize_text(value: str) -> str:

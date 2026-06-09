@@ -1,6 +1,9 @@
 import { readFile } from "fs/promises";
 
-const OCR_WORKER_URL = process.env.OCR_WORKER_URL ?? "http://127.0.0.1:8765/analyze";
+const OCR_WORKER_URL =
+  process.env.OCR_WORKER_URL ??
+  process.env.EXAMSHIELD_OCR_URL ??
+  `${process.env.EXAMSHIELD_AI_SERVICE_URL ?? "http://127.0.0.1:8790"}/ocr/analyze`;
 
 type OcrWorkerResponse =
   | {
@@ -19,6 +22,10 @@ type OcrWorkerResponse =
     };
 
 export async function runOcrWorker(asset: { filePath: string; fileType: string }) {
+  if (asset.fileType === "application/pdf") {
+    throw new Error("OCR currently accepts image evidence. Convert PDFs to JPG or PNG before analysis.");
+  }
+
   const bytes = await readFile(asset.filePath);
   const response = await fetch(OCR_WORKER_URL, {
     method: "POST",
@@ -42,5 +49,6 @@ export async function runOcrWorker(asset: { filePath: string; fileType: string }
     text: payload.text,
     confidence: payload.confidence,
     processingTimeMs: payload.processingTimeMs,
+    message: payload.message,
   };
 }
