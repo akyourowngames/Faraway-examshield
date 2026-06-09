@@ -1,26 +1,23 @@
 from __future__ import annotations
 
 import json
-import sys
 import time
+from cgi import FieldStorage
+from io import BytesIO
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from .events import sse_bytes
 from .llm import NvidiaClient
+from .ocr import SUPPORTED_TYPES, analyze_image
 from .planner import ToolPlanner
 from .responses import conversation_messages, grounded_messages
 from .settings import Settings, load_settings
-from .store import EvidenceStore
+from .store import EvidenceStore, UploadedFile, normalize_telegram_timestamp
+from .telegram import TelegramWebhook
 from .tools import ExamshieldToolRegistry
-
-OCR_WORKER_DIR = Path(__file__).resolve().parents[2] / "ai-ocr"
-if str(OCR_WORKER_DIR) not in sys.path:
-    sys.path.append(str(OCR_WORKER_DIR))
-
-from worker import SUPPORTED_TYPES, analyze_image  # noqa: E402
-
 
 class ExamshieldAiHandler(BaseHTTPRequestHandler):
     server_version = "ExamshieldAi/0.1"
@@ -28,12 +25,15 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
     store: EvidenceStore
     registry: ExamshieldToolRegistry
     client: NvidiaClient
+    telegram: TelegramWebhook
 
     def do_OPTIONS(self) -> None:
         self._send_empty(204)
 
     def do_GET(self) -> None:
-        if self.path == "/health":
+        path = urlparse(self.path).path
+        parts = [part for part in path.split("/") if part]
+        if path == "/health":
             self._send_json(
                 {
                     "status": "ok",
@@ -47,20 +47,54 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                     },
                     "uploadRoot": str(self.settings.upload_root),
                     "registryPath": str(self.settings.registry_path),
+                    "storage": "supabase" if self.store.supabase_enabled else "local-json",
+                    "telegramWebhookConfigured": self.telegram.configured,
                 }
             )
             return
-        if self.path == "/tools":
+        if path == "/tools":
             self._send_json({"tools": self.registry.schemas()})
+            return
+        if path == "/evidence":
+            self._send_json(self.store.list_evidence())
+            return
+        if len(parts) == 2 and parts[0] == "evidence":
+            bundle = self.store.get_bundle(parts[1])
+            self._send_json(bundle if bundle else {"error": "Evidence not found."}, status=200 if bundle else 404)
+            return
+        if path == "/alerts":
+            self._send_json({"alerts": self.store.list_evidence()["alerts"]})
             return
         self._send_json({"error": "Not found"}, status=404)
 
     def do_POST(self) -> None:
-        if self.path in {"/ocr/analyze", "/analyze"}:
+        path = urlparse(self.path).path
+        parts = [part for part in path.split("/") if part]
+
+        if path in {"/ocr/analyze", "/analyze"}:
             self._run_ocr()
             return
 
-        if self.path != "/chat":
+        if path == "/evidence/upload":
+            self._upload_evidence()
+            return
+        if path == "/analysis/jobs":
+            self._create_analysis_job()
+            return
+        if len(parts) == 4 and parts[0] == "analysis" and parts[1] == "jobs" and parts[3] == "process":
+            self._process_analysis_job(parts[2])
+            return
+        if path == "/telegram/events":
+            self._ingest_telegram_event()
+            return
+        if path == "/telegram/webhook":
+            self._ingest_telegram_webhook()
+            return
+        if path == "/demo/reset":
+            self._send_json(self.store.reset_demo_environment())
+            return
+
+        if path != "/chat":
             self._send_json({"error": "Not found"}, status=404)
             return
 
@@ -115,6 +149,121 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
 
         image_bytes = self.rfile.read(content_length)
         self._send_json(analyze_image(image_bytes, suffix))
+
+    def _upload_evidence(self) -> None:
+        try:
+            uploaded = self._read_multipart_file("file")
+            created = self.store.create_evidence(uploaded)
+            self._send_json({"message": "Evidence Created", **created}, status=201)
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Evidence upload failed."}, status=400)
+
+    def _create_analysis_job(self) -> None:
+        payload = self._read_json()
+        evidence_id = str(payload.get("evidenceId") or "").strip()
+        if not evidence_id:
+            self._send_json({"error": "evidenceId is required."}, status=400)
+            return
+        try:
+            queued = self.store.create_analysis_job(evidence_id)
+            self._send_json(
+                {
+                    "message": "Analysis Queued",
+                    "evidence": self.store.get_evidence_by_id(evidence_id),
+                    "job": queued["job"],
+                    "activity": [queued["activity"]],
+                }
+            )
+        except LookupError as exc:
+            self._send_json({"error": str(exc)}, status=404)
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Analysis failed."}, status=400)
+
+    def _process_analysis_job(self, job_id: str) -> None:
+        try:
+            self._send_json(self.store.run_analysis_job(job_id, analyze_image))
+        except LookupError as exc:
+            self._send_json({"error": str(exc)}, status=404)
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Analysis failed."}, status=400)
+
+    def _ingest_telegram_event(self) -> None:
+        try:
+            content_type = self.headers.get("Content-Type") or ""
+            if "multipart/form-data" in content_type:
+                fields = self._read_multipart()
+                file_field = fields.get("file")
+                uploaded = file_field if isinstance(file_field, UploadedFile) else None
+                message_id = require_text(fields, "messageId")
+                chat_id = require_text(fields, "chatId")
+                timestamp = normalize_telegram_timestamp(fields.get("timestamp"))
+                text = optional_text(fields.get("text"))
+            else:
+                payload = self._read_json()
+                message_id = str(payload.get("messageId") or "").strip()
+                chat_id = str(payload.get("chatId") or "").strip()
+                if not message_id or not chat_id:
+                    raise ValueError("messageId and chatId are required.")
+                timestamp = normalize_telegram_timestamp(payload.get("timestamp"))
+                text = optional_text(payload.get("text"))
+                uploaded = None
+
+            created = self.store.create_telegram_event(
+                message_id=message_id,
+                chat_id=chat_id,
+                timestamp=timestamp,
+                text=text,
+                file=uploaded,
+            )
+            if created["duplicate"]:
+                self._send_json(
+                    {
+                        "message": "Telegram Event Already Processed",
+                        "telegramEvent": created["telegramEvent"],
+                        "evidence": created["evidence"],
+                        "activity": created["activity"],
+                    }
+                )
+                return
+            if not created["evidence"]:
+                self._send_json(
+                    {
+                        "message": "Telegram Event Stored",
+                        "telegramEvent": created["telegramEvent"],
+                        "evidence": None,
+                        "activity": created["activity"],
+                    },
+                    status=202,
+                )
+                return
+            queued = self.store.create_analysis_job(created["evidence"]["evidenceId"])
+            analysis = self.store.run_analysis_job(queued["job"]["jobId"], analyze_image)
+            self._send_json(
+                {
+                    "message": "Telegram Evidence Processed",
+                    "telegramEvent": created["telegramEvent"],
+                    "evidence": analysis["evidence"],
+                    "job": analysis["job"],
+                    "attribution": analysis.get("attribution"),
+                    "watermark": analysis.get("watermark"),
+                    "forensicReport": analysis.get("forensicReport"),
+                    "alert": analysis.get("alert"),
+                    "activity": [*created["activity"], queued["activity"], *analysis["activity"]],
+                },
+                status=201,
+            )
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Telegram event ingestion failed."}, status=400)
+
+    def _ingest_telegram_webhook(self) -> None:
+        secret = self.headers.get("X-Telegram-Bot-Api-Secret-Token")
+        if not self.telegram.validate_secret(secret):
+            self._send_json({"error": "Invalid Telegram webhook secret."}, status=401)
+            return
+        try:
+            self._send_json(self.telegram.process_update(self._read_json(), self.store, analyze_image))
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Telegram webhook failed."}, status=400)
 
     def _run_chat(self, payload: dict[str, Any], prompt: str, write_event) -> None:
         history = payload.get("messages") if isinstance(payload.get("messages"), list) else []
@@ -186,6 +335,43 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             return {}
         return parsed if isinstance(parsed, dict) else {}
 
+    def _read_multipart_file(self, field_name: str) -> UploadedFile:
+        fields = self._read_multipart()
+        value = fields.get(field_name)
+        if not isinstance(value, UploadedFile):
+            raise ValueError("Evidence file is required.")
+        return value
+
+    def _read_multipart(self) -> dict[str, str | UploadedFile]:
+        try:
+            length = int(self.headers.get("Content-Length") or "0")
+        except ValueError:
+            length = 0
+        body = self.rfile.read(length)
+        content_type = self.headers.get("Content-Type") or ""
+        form = FieldStorage(
+            fp=BytesIO(body),
+            environ={
+                "REQUEST_METHOD": "POST",
+                "CONTENT_TYPE": content_type,
+                "CONTENT_LENGTH": str(length),
+            },
+            keep_blank_values=True,
+        )
+        values: dict[str, str | UploadedFile] = {}
+        for key in form.keys():
+            field = form[key]
+            item = field[0] if isinstance(field, list) else field
+            if item.filename:
+                values[key] = UploadedFile(
+                    filename=Path(item.filename).name,
+                    content_type=item.type or "application/octet-stream",
+                    data=item.file.read(),
+                )
+            else:
+                values[key] = str(item.value)
+        return values
+
     def _send_json(self, payload: dict[str, Any], status: int = 200) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
@@ -203,7 +389,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
 
     def _cors_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", self.settings.cors_origin)
-        self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
     def log_message(self, format: str, *args: Any) -> None:
@@ -218,12 +404,31 @@ def build_handler(settings: Settings):
     ConfiguredExamshieldAiHandler.store = EvidenceStore(settings)
     ConfiguredExamshieldAiHandler.registry = ExamshieldToolRegistry(ConfiguredExamshieldAiHandler.store)
     ConfiguredExamshieldAiHandler.client = NvidiaClient(settings)
+    ConfiguredExamshieldAiHandler.telegram = TelegramWebhook(settings)
     return ConfiguredExamshieldAiHandler
 
 
 def main() -> None:
     settings = load_settings()
     handler = build_handler(settings)
+    try:
+        handler.telegram.register()
+    except Exception as exc:
+        print(f"Telegram webhook registration failed: {exc}")
     server = ThreadingHTTPServer((settings.host, settings.port), handler)
     print(f"EXAMSHIELD AI service listening on http://{settings.host}:{settings.port}")
     server.serve_forever()
+
+
+def optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def require_text(fields: dict[str, str | UploadedFile], name: str) -> str:
+    value = fields.get(name)
+    if isinstance(value, UploadedFile) or value is None or not str(value).strip():
+        raise ValueError(f"{name} is required.")
+    return str(value).strip()

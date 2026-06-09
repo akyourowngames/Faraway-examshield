@@ -20,6 +20,15 @@ class Settings:
     planner_timeout_seconds: float
     stream_timeout_seconds: float
     cors_origin: str
+    max_upload_bytes: int
+    supabase_url: str
+    supabase_service_role_key: str
+    supabase_document_table: str
+    supabase_storage_bucket: str
+    public_url: str
+    telegram_bot_token: str
+    telegram_webhook_secret: str
+    telegram_chat_id: str
 
 
 def load_settings() -> Settings:
@@ -46,8 +55,8 @@ def load_settings() -> Settings:
     )
 
     return Settings(
-        host=os.environ.get("EXAMSHIELD_AI_HOST", "127.0.0.1"),
-        port=int(os.environ.get("EXAMSHIELD_AI_PORT", "8790")),
+        host=os.environ.get("EXAMSHIELD_AI_HOST", "0.0.0.0"),
+        port=int(os.environ.get("PORT") or os.environ.get("EXAMSHIELD_AI_PORT", "8790")),
         repo_root=repo_root,
         upload_root=upload_root,
         registry_path=registry_path,
@@ -75,6 +84,19 @@ def load_settings() -> Settings:
         planner_timeout_seconds=float(os.environ.get("EXAMSHIELD_TOOL_PLANNER_TIMEOUT_SECONDS", "5")),
         stream_timeout_seconds=float(os.environ.get("EXAMSHIELD_AI_STREAM_TIMEOUT_SECONDS", "20")),
         cors_origin=os.environ.get("EXAMSHIELD_AI_CORS_ORIGIN", "*"),
+        max_upload_bytes=int(os.environ.get("EXAMSHIELD_MAX_UPLOAD_BYTES", str(12 * 1024 * 1024))),
+        supabase_url=(os.environ.get("SUPABASE_URL") or "").rstrip("/"),
+        supabase_service_role_key=(
+            os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+            or os.environ.get("SUPABASE_SERVICE_KEY")
+            or ""
+        ).strip(),
+        supabase_document_table=os.environ.get("EXAMSHIELD_SUPABASE_DOCUMENT_TABLE", "examshield_documents"),
+        supabase_storage_bucket=os.environ.get("EXAMSHIELD_SUPABASE_STORAGE_BUCKET", "evidence-files"),
+        public_url=(os.environ.get("EXAMSHIELD_PUBLIC_URL") or "").rstrip("/"),
+        telegram_bot_token=(os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip(),
+        telegram_webhook_secret=(os.environ.get("TELEGRAM_WEBHOOK_SECRET") or "").strip(),
+        telegram_chat_id=(os.environ.get("TELEGRAM_CHAT_ID") or "").strip(),
     )
 
 

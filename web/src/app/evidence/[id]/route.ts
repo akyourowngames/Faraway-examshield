@@ -1,4 +1,4 @@
-import { getEvidenceBundle } from "@/lib/evidence-store";
+import { proxyApi } from "@/lib/api-proxy";
 
 export const runtime = "nodejs";
 
@@ -7,11 +7,5 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-  const bundle = await getEvidenceBundle(id);
-
-  if (!bundle) {
-    return Response.json({ error: "Evidence not found." }, { status: 404 });
-  }
-
-  return Response.json(bundle);
+  return proxyApi(`/evidence/${encodeURIComponent(id)}`);
 }

@@ -91,10 +91,6 @@ const suggestedActions: SuggestedAction[] = [
   { title: "Analyze Latest Upload", prompt: "Analyze latest upload.", icon: Radar },
 ];
 
-const AI_SERVICE_URL = (
-  process.env.NEXT_PUBLIC_EXAMSHIELD_AI_SERVICE_URL ?? "http://127.0.0.1:8790"
-).replace(/\/$/, "");
-
 export default function ExamshieldAiPage() {
   const [prompt, setPrompt] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -159,7 +155,7 @@ export default function ExamshieldAiPage() {
     setStreamingId(assistantId);
 
     try {
-      const response = await fetch(`${AI_SERVICE_URL}/chat`, {
+      const response = await fetch("/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -204,7 +200,7 @@ export default function ExamshieldAiPage() {
             ? {
                 ...message,
                 content:
-                  `ANALYSIS FAILED.\n\nEXAMSHIELD AI could not reach the Python service at ${AI_SERVICE_URL}.`,
+                  "ANALYSIS FAILED.\n\nEXAMSHIELD AI could not reach the unified API service.",
                 stages: [...(message.stages ?? []), error instanceof Error ? error.message : "Stream failed."],
                 streaming: false,
               }

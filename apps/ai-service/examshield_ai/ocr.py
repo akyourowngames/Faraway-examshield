@@ -1,67 +1,19 @@
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import tempfile
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
 
-HOST = os.environ.get("OCR_HOST", "127.0.0.1")
-PORT = int(os.environ.get("OCR_PORT", "8765"))
 TESSERACT_CMD = os.environ.get("TESSERACT_CMD", "tesseract")
 SUPPORTED_TYPES = {
     "image/jpeg": ".jpg",
     "image/png": ".png",
 }
 OCR_PSMS = ("6", "4", "11")
-
-
-class OcrHandler(BaseHTTPRequestHandler):
-    server_version = "ExamshieldOcr/0.1"
-
-    def do_POST(self) -> None:
-        if self.path != "/analyze":
-            self._send_json({"status": "failed", "error": "Not found"}, status=404)
-            return
-
-        content_type = (self.headers.get("Content-Type") or "").split(";")[0].lower()
-        if content_type not in SUPPORTED_TYPES:
-            self._send_json(
-                {
-                    "status": "failed",
-                    "error": "Only image/jpeg and image/png are supported by the OCR worker.",
-                },
-                status=200,
-            )
-            return
-
-        try:
-            content_length = int(self.headers.get("Content-Length") or "0")
-        except ValueError:
-            content_length = 0
-
-        if content_length <= 0:
-            self._send_json({"status": "failed", "error": "Image payload is required."}, status=400)
-            return
-
-        image_bytes = self.rfile.read(content_length)
-        result = analyze_image(image_bytes, SUPPORTED_TYPES[content_type])
-        self._send_json(result)
-
-    def log_message(self, format: str, *args: Any) -> None:
-        print("%s - %s" % (self.address_string(), format % args))
-
-    def _send_json(self, payload: dict[str, Any], status: int = 200) -> None:
-        body = json.dumps(payload).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
 
 
 def analyze_image(image_bytes: bytes, suffix: str) -> dict[str, Any]:
@@ -80,7 +32,6 @@ def analyze_image(image_bytes: bytes, suffix: str) -> dict[str, Any]:
         best = max(passed, key=lambda candidate: candidate["qualityScore"])
         raw_text = str(best["text"])
         confidence = int(best["confidence"])
-        quality_score = int(best["qualityScore"])
 
         return {
             "status": "completed",
@@ -88,12 +39,12 @@ def analyze_image(image_bytes: bytes, suffix: str) -> dict[str, Any]:
             "text": raw_text,
             "processingTimeMs": elapsed_ms(started),
             "message": "Text extracted" if raw_text else "No Exam Content Detected",
-            "qualityScore": quality_score,
+            "qualityScore": int(best["qualityScore"]),
         }
     except FileNotFoundError:
         return failed_result("Tesseract executable was not found.", started)
     except subprocess.TimeoutExpired:
-        return failed_result("OCR worker timed out.", started)
+        return failed_result("OCR timed out.", started)
     finally:
         try:
             temp_path.unlink(missing_ok=True)
@@ -187,20 +138,13 @@ def score_ocr_quality(text: str, confidence: int, words: list[str]) -> dict[str,
         if len(word) >= 3 and has_vowel(word) and not is_keyboard_noise(word)
     ]
     lines = [line for line in text.splitlines() if line.strip()]
-
     printable_chars = [char for char in text if not char.isspace()]
     clean_chars = [char for char in printable_chars if char.isalnum() or char in ".,:;!?()[]+-/%'\""]
     clean_ratio = len(clean_chars) / len(printable_chars) if printable_chars else 0
-
     alpha_count = sum(1 for char in text if char.isalpha())
     punctuation_count = sum(1 for char in printable_chars if not char.isalnum())
     punctuation_ratio = punctuation_count / len(printable_chars) if printable_chars else 0
-    short_line_ratio = (
-        sum(1 for line in lines if len(line.strip()) <= 4) / len(lines)
-        if lines
-        else 1
-    )
-
+    short_line_ratio = sum(1 for line in lines if len(line.strip()) <= 4) / len(lines) if lines else 1
     word_count = len([word for word in normalized_words if word])
     meaningful_ratio = len(meaningful_words) / word_count if word_count else 0
     language_score = min(100, meaningful_ratio * 100)
@@ -224,10 +168,8 @@ def score_ocr_quality(text: str, confidence: int, words: list[str]) -> dict[str,
         + cleanliness_score * 0.12
         - penalties
     )
-    quality_score = max(0, min(100, quality_score))
-
     return {
-        "qualityScore": quality_score,
+        "qualityScore": max(0, min(100, quality_score)),
         "quality": {
             "wordCount": word_count,
             "meaningfulWordCount": len(meaningful_words),
@@ -273,13 +215,3 @@ def failed_result(error: str, started: float) -> dict[str, Any]:
 
 def elapsed_ms(started: float) -> int:
     return round((time.perf_counter() - started) * 1000)
-
-
-def main() -> None:
-    server = ThreadingHTTPServer((HOST, PORT), OcrHandler)
-    print(f"EXAMSHIELD OCR worker listening on http://{HOST}:{PORT}")
-    server.serve_forever()
-
-
-if __name__ == "__main__":
-    main()

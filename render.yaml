@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: examshield-api
+    runtime: docker
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: EXAMSHIELD_AI_HOST
+        value: 0.0.0.0
+      - key: EXAMSHIELD_AI_CORS_ORIGIN
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: NVIDIA_API_KEY
+        sync: false
+      - key: EXAMSHIELD_PUBLIC_URL
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_WEBHOOK_SECRET
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false

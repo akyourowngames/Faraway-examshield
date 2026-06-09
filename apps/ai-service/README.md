@@ -1,43 +1,44 @@
-# EXAMSHIELD AI Service
+# EXAMSHIELD Unified API
 
-Standalone Python microservice for the dashboard AI page and OCR analysis.
+The single Python backend for EXAMSHIELD.
 
-It streams SSE from `POST /chat`, executes EXAMSHIELD tools locally against the evidence store and core registry, exposes unified OCR at `POST /ocr/analyze`, and uses NVIDIA NIM only for planning and natural language generation.
+It owns:
+
+- Evidence upload, list, and detail endpoints
+- OCR using Tesseract
+- Analysis jobs, attribution, reports, and alerts
+- NVIDIA NIM chat and schema-driven tool routing
+- Supabase document and file storage
+- Optional Telegram webhook ingestion
 
 ## Run
 
 ```powershell
-cd C:\Users\anime\Desktop\Far-away\Faraway-examshield\apps\ai-service
-$env:NVIDIA_API_KEY="your-nvidia-api-key"
-python service.py
+python apps/ai-service/service.py
 ```
 
-Default URL: `http://127.0.0.1:8790`
+Default local URL: `http://127.0.0.1:8790`
 
-## Endpoints
+## Main endpoints
 
 - `GET /health`
 - `GET /tools`
+- `GET /evidence`
+- `GET /evidence/{id}`
+- `GET /alerts`
+- `POST /evidence/upload`
+- `POST /analysis/jobs`
+- `POST /analysis/jobs/{id}/process`
+- `POST /ocr/analyze`
 - `POST /chat`
-- `POST /ocr/analyze` (raw `image/jpeg` or `image/png` bytes)
+- `POST /telegram/events`
+- `POST /telegram/webhook`
+- `POST /demo/reset`
 
-The web dashboard reads `NEXT_PUBLIC_EXAMSHIELD_AI_SERVICE_URL`; if it is not set, it uses `http://127.0.0.1:8790`.
+## Production
 
-Tool routing and user-facing replies are model-driven. The Python service exposes registered tool schemas to the model, executes the selected tool locally, and streams the final grounded answer from the model using only returned tool fields.
+Production uses Supabase when `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are set. Without them, the API falls back to local JSON and files for offline development.
 
-## Environment
+See [`docs/DEPLOYMENT.md`](../../docs/DEPLOYMENT.md).
 
-```powershell
-$env:EXAMSHIELD_AI_HOST="127.0.0.1"
-$env:EXAMSHIELD_AI_PORT="8790"
-$env:EXAMSHIELD_REPO_ROOT="C:\Users\anime\Desktop\Far-away\Faraway-examshield"
-$env:EXAMSHIELD_AI_MODEL="mistralai/ministral-14b-instruct-2512"
-$env:NVIDIA_FALLBACK_MODELS="qwen/qwen3-next-80b-a3b-instruct,deepseek-ai/deepseek-v4-flash,meta/llama-4-maverick-17b-128e-instruct"
-$env:NVIDIA_NIM_BASE_URL="https://integrate.api.nvidia.com/v1"
-```
-
-No memory layer is used here.
-
-## OCR
-
-The web app now defaults OCR traffic to the unified AI service at `http://127.0.0.1:8790/ocr/analyze`. You can still override it with `OCR_WORKER_URL` or `EXAMSHIELD_OCR_URL` if you intentionally want to run the legacy standalone OCR worker.
+AI tool selection remains model-and-schema driven. Do not add keyword, regex, or hardcoded prompt-routing shortcuts.

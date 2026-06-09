@@ -1,0 +1,17 @@
+.git
+**/node_modules
+web/.next
+web/out
+apps/api/uploads/evidence/files/*
+apps/api/uploads/evidence/records/*
+apps/api/uploads/evidence/jobs/*
+apps/api/uploads/evidence/attributions/*
+apps/api/uploads/evidence/watermarks/*
+apps/api/uploads/evidence/reports/*
+apps/api/uploads/evidence/telegram-events/*
+apps/api/uploads/evidence/alerts/*
+apps/api/uploads/evidence/activity.json
+*.log
+.env
+.env.*
+!.env.example

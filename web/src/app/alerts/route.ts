@@ -1,8 +1,7 @@
-import { listAlerts } from "@/lib/evidence-store";
+import { proxyApi } from "@/lib/api-proxy";
 
 export const runtime = "nodejs";
 
 export async function GET() {
-  const alerts = await listAlerts();
-  return Response.json({ alerts });
+  return proxyApi("/alerts");
 }

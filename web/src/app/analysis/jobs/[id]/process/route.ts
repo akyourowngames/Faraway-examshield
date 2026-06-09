@@ -1,20 +1,11 @@
-import { runAnalysisJob } from "@/lib/analysis-pipeline";
+import { proxyApi } from "@/lib/api-proxy";
 
 export const runtime = "nodejs";
 
 export async function POST(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-
-  try {
-    const payload = await runAnalysisJob(id);
-    return Response.json(payload);
-  } catch (error) {
-    return Response.json(
-      { error: error instanceof Error ? error.message : "Analysis failed." },
-      { status: 404 },
-    );
-  }
+  return proxyApi(`/analysis/jobs/${encodeURIComponent(id)}/process`, request);
 }
