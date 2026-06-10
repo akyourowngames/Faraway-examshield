@@ -1,0 +1,12 @@
+{
+  "name": "faraway-examshield-root",
+  "private": true,
+  "scripts": {
+    "build": "cd web && npm run build",
+    "dev": "cd web && npm run dev",
+    "start": "cd web && npm run start"
+  },
+  "dependencies": {
+    "next": "16.2.7"
+  }
+}
