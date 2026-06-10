@@ -4,6 +4,7 @@ import json
 import logging
 import time
 from cgi import FieldStorage
+from dataclasses import replace
 from io import BytesIO
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -67,7 +68,13 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                     "uploadRoot": str(self.settings.upload_root),
                     "registryPath": str(self.settings.registry_path),
                     "storage": "supabase" if self.store.supabase_enabled else "local-json",
-                    "telegramWebhookConfigured": self.telegram.configured,
+                    "telegram": {
+                        "webhookConfigured": self.telegram.configured,
+                        "botTokenSet": bool(self.settings.telegram_bot_token),
+                        "publicUrl": self.settings.public_url or "NOT SET",
+                        "chatId": self.settings.telegram_chat_id or "NOT SET",
+                        "adminChatId": self.settings.telegram_admin_chat_id or "NOT SET",
+                    },
                 }
             )
             return
@@ -112,6 +119,9 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             return
         if path == "/telegram/webhook":
             self._ingest_telegram_webhook()
+            return
+        if path == "/telegram/register":
+            self._register_telegram_webhook()
             return
         if path == "/telegram/groups":
             self._add_monitored_group()
@@ -289,6 +299,23 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send_json({"error": str(exc) or "Telegram webhook failed."}, status=400)
 
+    def _register_telegram_webhook(self) -> None:
+        payload = self._read_json()
+        url_override = str(payload.get("url") or "").strip()
+        try:
+            if url_override:
+                from .settings import Settings
+                self.telegram = TelegramWebhook(replace(self.settings, public_url=url_override))
+            self.telegram.register()
+            self._send_json({
+                "message": "Telegram webhook registered",
+                "configured": self.telegram.configured,
+                "publicUrl": self.telegram.settings.public_url or "NOT SET",
+                "botTokenSet": bool(self.telegram.settings.telegram_bot_token),
+            })
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Webhook registration failed."}, status=400)
+
     def _run_plan(self) -> None:
         payload = self._read_json()
         prompt = str(payload.get("prompt") or "").strip()
@@ -439,12 +466,17 @@ def build_handler(settings: Settings):
 def main() -> None:
     settings = load_settings()
     handler = build_handler(settings)
+    logger.info(f"EXAMSHIELD AI starting - telegramBotToken={'SET' if settings.telegram_bot_token else 'NOT SET'}, publicUrl={settings.public_url or 'NOT SET'}, chatId={settings.telegram_chat_id or 'NOT SET'}, adminChatId={settings.telegram_admin_chat_id or 'NOT SET'}")
     try:
         handler.telegram.register()
+        if handler.telegram.configured:
+            logger.info(f"Telegram webhook registered to {settings.public_url}/telegram/webhook")
+        else:
+            logger.warning("Telegram webhook NOT registered - set EXAMSHIELD_PUBLIC_URL in Render to enable")
     except Exception as exc:
-        print(f"Telegram webhook registration failed: {exc}")
+        logger.error(f"Telegram webhook registration failed: {exc}")
     server = ThreadingHTTPServer((settings.host, settings.port), handler)
-    print(f"EXAMSHIELD AI service listening on http://{settings.host}:{settings.port}")
+    logger.info(f"EXAMSHIELD AI service listening on http://{settings.host}:{settings.port}")
     server.serve_forever()
 
 
