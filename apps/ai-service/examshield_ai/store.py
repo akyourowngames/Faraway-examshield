@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import urllib.error
 import urllib.parse
@@ -12,6 +13,8 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from .settings import Settings
+
+logger = logging.getLogger(__name__)
 
 
 JsonObject = dict[str, Any]
@@ -302,6 +305,7 @@ class EvidenceStore:
         try:
             processing = self.mark_analysis_job_processing(job_id)
             evidence_id = str(processing["job"]["evidenceId"])
+            logger.info(f"Starting analysis job {job_id} for evidence {evidence_id}")
             timeline.append(processing["activity"])
             timeline.append(
                 self.record_activity(
@@ -322,9 +326,13 @@ class EvidenceStore:
             image_bytes = self._read_file_bytes(str(asset["storedFilename"]))
             suffixes = ALLOWED_TYPES.get(str(asset["fileType"]), set())
             suffix = sorted(suffixes)[0] if suffixes else ""
+            logger.info(f"Running OCR for evidence {evidence_id}, file type: {asset['fileType']}")
             ocr_result = ocr_runner(image_bytes, suffix)
             if ocr_result.get("status") == "failed":
-                raise RuntimeError(str(ocr_result.get("error") or "OCR failed."))
+                error_msg = str(ocr_result.get("error") or "OCR failed.")
+                logger.error(f"OCR failed for evidence {evidence_id}: {error_msg}")
+                raise RuntimeError(error_msg)
+            logger.info(f"OCR completed for evidence {evidence_id}, confidence: {ocr_result.get('confidence')}")
             completed = self.complete_analysis_job(
                 job_id,
                 {
@@ -357,6 +365,7 @@ class EvidenceStore:
             alert = self.create_critical_alert_if_needed(report, attribution["attribution"])
             if alert["activity"]:
                 timeline.append(alert["activity"])
+            logger.info(f"Analysis completed for evidence {evidence_id}, final confidence: {report.get('finalConfidence')}")
             return {
                 "message": "Analysis Complete",
                 "evidence": completed["evidence"],
@@ -369,6 +378,7 @@ class EvidenceStore:
             }
         except Exception as exc:
             message = str(exc) or "Analysis failed."
+            logger.error(f"Analysis failed for job {job_id}, evidence {evidence_id}: {message}")
             failed = self.fail_analysis_job(job_id, message)
             return {
                 "message": "Analysis Failed",

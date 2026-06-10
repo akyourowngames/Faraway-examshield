@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import mimetypes
+import threading
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -10,6 +12,8 @@ from typing import Any, Callable
 from .detect import is_suspicious, scan_text
 from .settings import Settings
 from .store import EvidenceStore, JsonObject, UploadedFile, normalize_telegram_timestamp
+
+logger = logging.getLogger(__name__)
 
 
 class TelegramWebhook:
@@ -127,36 +131,49 @@ class TelegramWebhook:
                 "activity": created["activity"],
             }
 
-        # Media evidence: run OCR analysis
+        # Media evidence: queue OCR analysis (async processing)
         queued = store.create_analysis_job(created["evidence"]["evidenceId"])
-        analysis = store.run_analysis_job(queued["job"]["jobId"], ocr_runner)
-
-        # Send alert if leak detected (wrapped in try/except so failures don't kill the request)
-        should_alert = _should_send_alert(analysis, detection)
-        alert_result = None
-        if should_alert:
+        
+        # Process OCR in background thread to avoid webhook timeout
+        job_id = queued["job"]["jobId"]
+        evidence_id = created["evidence"]["evidenceId"]
+        
+        def _process_ocr_background():
             try:
-                alert_result = self._send_alert(created, analysis, detection, text, chat_id, message)
-            except Exception:
-                alert_result = {"status": "failed"}
+                logger.info(f"Starting background OCR for evidence {evidence_id}, job {job_id}")
+                analysis = store.run_analysis_job(job_id, ocr_runner)
+                
+                # Send alert if leak detected
+                should_alert = _should_send_alert(analysis, detection)
+                if should_alert:
+                    try:
+                        self._send_alert(created, analysis, detection, text, chat_id, message)
+                    except Exception as alert_exc:
+                        logger.error(f"Failed to send alert for {evidence_id}: {alert_exc}")
+                
+                logger.info(f"Background OCR completed for evidence {evidence_id}: {analysis.get('message')}")
+            except Exception as exc:
+                logger.error(f"Background OCR failed for evidence {evidence_id}: {exc}")
+        
+        # Start background thread for OCR processing
+        ocr_thread = threading.Thread(target=_process_ocr_background, daemon=True)
+        ocr_thread.start()
+        
+        logger.info(f"Queued OCR job {job_id} for evidence {evidence_id}, processing in background")
 
         return {
-            "message": "Telegram evidence processed",
+            "message": "Telegram evidence queued for analysis",
             "processed": True,
             "duplicate": False,
-            "evidence": analysis["evidence"],
-            "job": analysis["job"],
-            "attribution": analysis.get("attribution"),
-            "watermark": analysis.get("watermark"),
-            "forensicReport": analysis.get("forensicReport"),
-            "alert": analysis.get("alert"),
+            "evidence": created["evidence"],
+            "job": queued["job"],
             "detection": {
                 "score": detection["score"],
                 "categories": detection["categories"],
                 "isSuspicious": is_suspicious(detection),
             },
-            "alertSent": should_alert,
-            "activity": [*created["activity"], queued["activity"], *analysis["activity"]],
+            "alertSent": False,
+            "activity": [*created["activity"], queued["activity"]],
         }
 
     def _download_media(self, message: JsonObject) -> UploadedFile | None:

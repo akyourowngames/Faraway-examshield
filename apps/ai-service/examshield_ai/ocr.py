@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import tempfile
@@ -7,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+logger = logging.getLogger(__name__)
 
 TESSERACT_CMD = os.environ.get("TESSERACT_CMD", "tesseract")
 SUPPORTED_TYPES = {
@@ -14,6 +16,8 @@ SUPPORTED_TYPES = {
     "image/png": ".png",
 }
 OCR_PSMS = ("6", "4", "11")
+OCR_TIMEOUT_SECONDS = int(os.environ.get("EXAMSHIELD_OCR_TIMEOUT", "15"))
+OCR_MAX_RETRIES = int(os.environ.get("EXAMSHIELD_OCR_MAX_RETRIES", "1"))
 
 
 def analyze_image(image_bytes: bytes, suffix: str) -> dict[str, Any]:
@@ -21,26 +25,56 @@ def analyze_image(image_bytes: bytes, suffix: str) -> dict[str, Any]:
     temp_path = write_temp_image(image_bytes, suffix)
 
     try:
-        candidates = [read_ocr_candidate(temp_path, psm) for psm in OCR_PSMS]
-        failed = [candidate for candidate in candidates if candidate["status"] == "failed"]
-        passed = [candidate for candidate in candidates if candidate["status"] == "completed"]
+        for attempt in range(OCR_MAX_RETRIES + 1):
+            candidates = []
+            for psm in OCR_PSMS:
+                try:
+                    candidate = read_ocr_candidate(temp_path, psm)
+                    candidates.append(candidate)
+                except subprocess.TimeoutExpired:
+                    candidates.append({
+                        "status": "failed",
+                        "psm": psm,
+                        "text": "",
+                        "confidence": 0,
+                        "qualityScore": 0,
+                        "error": f"PSM {psm} timed out after {OCR_TIMEOUT_SECONDS}s",
+                    })
+                except Exception as exc:
+                    candidates.append({
+                        "status": "failed",
+                        "psm": psm,
+                        "text": "",
+                        "confidence": 0,
+                        "qualityScore": 0,
+                        "error": f"PSM {psm} error: {str(exc)}",
+                    })
 
-        if not passed:
-            error = failed[0].get("error") if failed else "OCR failed."
-            return failed_result(str(error), started)
+            failed = [candidate for candidate in candidates if candidate["status"] == "failed"]
+            passed = [candidate for candidate in candidates if candidate["status"] == "completed"]
 
-        best = max(passed, key=lambda candidate: candidate["qualityScore"])
-        raw_text = str(best["text"])
-        confidence = int(best["confidence"])
+            if passed:
+                best = max(passed, key=lambda candidate: candidate["qualityScore"])
+                raw_text = str(best["text"])
+                confidence = int(best["confidence"])
 
-        return {
-            "status": "completed",
-            "confidence": confidence if raw_text else 0,
-            "text": raw_text,
-            "processingTimeMs": elapsed_ms(started),
-            "message": "Text extracted" if raw_text else "No Exam Content Detected",
-            "qualityScore": int(best["qualityScore"]),
-        }
+                logger.info(f"OCR attempt {attempt + 1} succeeded with PSM {best['psm']}")
+                return {
+                    "status": "completed",
+                    "confidence": confidence if raw_text else 0,
+                    "text": raw_text,
+                    "processingTimeMs": elapsed_ms(started),
+                    "message": "Text extracted" if raw_text else "No Exam Content Detected",
+                    "qualityScore": int(best["qualityScore"]),
+                }
+            
+            if attempt < OCR_MAX_RETRIES:
+                logger.warning(f"OCR attempt {attempt + 1} failed, retrying... Errors: {[f.get('error') for f in failed]}")
+
+        # All attempts failed
+        error = failed[0].get("error") if failed else "OCR failed."
+        logger.error(f"OCR failed after {OCR_MAX_RETRIES + 1} attempts: {error}")
+        return failed_result(str(error), started)
     except FileNotFoundError:
         return failed_result("Tesseract executable was not found.", started)
     except subprocess.TimeoutExpired:
@@ -66,7 +100,7 @@ def run_tesseract(image_path: Path, args: list[str]) -> subprocess.CompletedProc
         [TESSERACT_CMD, str(image_path), *args],
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=OCR_TIMEOUT_SECONDS,
     )
 
 

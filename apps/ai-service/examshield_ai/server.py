@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from cgi import FieldStorage
 from io import BytesIO
@@ -19,6 +20,12 @@ from .settings import Settings, load_settings
 from .store import EvidenceStore, UploadedFile, normalize_telegram_timestamp
 from .telegram import TelegramWebhook
 from .tools import ExamshieldToolRegistry
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 class ExamshieldAiHandler(BaseHTTPRequestHandler):
     server_version = "ExamshieldAi/0.1"
@@ -102,36 +109,11 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             self._send_json(self.store.reset_demo_environment())
             return
 
-        if path != "/chat":
-            self._send_json({"error": "Not found"}, status=404)
+        if path == "/plan":
+            self._run_plan()
             return
 
-        payload = self._read_json()
-        prompt = str(payload.get("prompt") or "").strip()
-        if not prompt:
-            self._send_json({"error": "Prompt is required."}, status=400)
-            return
-
-        self.send_response(200)
-        self._cors_headers()
-        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-cache, no-transform")
-        self.send_header("Connection", "close")
-        self.send_header("X-Accel-Buffering", "no")
-        self.end_headers()
-
-        def write_event(event: dict[str, Any]) -> None:
-            self.wfile.write(sse_bytes(event))
-            self.wfile.flush()
-
-        started = time.perf_counter()
-        try:
-            self._run_chat(payload, prompt, write_event)
-        except Exception as exc:
-            write_event({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
-        finally:
-            write_event({"type": "done", "latencyMs": round((time.perf_counter() - started) * 1000)})
-            self.close_connection = True
+        self._send_json({"error": "Not found"}, status=404)
 
     def _run_ocr(self) -> None:
         content_type = (self.headers.get("Content-Type") or "").split(";")[0].lower()
@@ -296,61 +278,37 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send_json({"error": str(exc) or "Telegram webhook failed."}, status=400)
 
-    def _run_chat(self, payload: dict[str, Any], prompt: str, write_event) -> None:
+    def _run_plan(self) -> None:
+        payload = self._read_json()
+        prompt = str(payload.get("prompt") or "").strip()
+        if not prompt:
+            self._send_json({"error": "Prompt is required."}, status=400)
+            return
+
         history = payload.get("messages") if isinstance(payload.get("messages"), list) else []
         current_evidence_id = payload.get("currentEvidenceId")
         current_evidence_id = str(current_evidence_id) if current_evidence_id else None
-        write_event(
-            {
-                "type": "meta",
-                "model": self.settings.model,
-                "provider": "nvidia-nim" if self.client.configured else "local-fallback",
-            }
-        )
 
         if not self.client.configured:
-            write_event({"type": "error", "message": "NVIDIA_API_KEY is required for natural EXAMSHIELD AI replies."})
+            self._send_json({"tool": None, "error": "NVIDIA_API_KEY is not configured."})
             return
 
         try:
             command = ToolPlanner(self.client, self.registry).plan(prompt, current_evidence_id, history)
         except Exception as exc:
-            write_event({"type": "stage", "message": f"Tool planner unavailable: {type(exc).__name__}. Continuing with natural chat."})
-            command = None
+            self._send_json({"tool": None, "error": f"Tool planner unavailable: {type(exc).__name__}."})
+            return
+
         if not command:
-            try:
-                emitted = self.client.stream_chat(
-                    model=self.settings.model,
-                    messages=conversation_messages(prompt, history),
-                    on_token=lambda token: write_event({"type": "token", "token": token}),
-                )
-            except Exception as exc:
-                write_event({"type": "error", "message": f"NIM stream failed: {exc}"})
-                emitted = False
-            if not emitted:
-                write_event({"type": "error", "message": "Model stream returned no text."})
+            self._send_json({"tool": None})
             return
 
         execution = self.registry.execute(command["tool"], command.get("arguments") or {})
-        write_event(
-            {
-                "type": "stage",
-                "message": f"Using {execution.result['tool']}() with live EXAMSHIELD data.",
-            }
-        )
-        write_event({"type": "tool", "tool": execution.result["tool"], "result": execution.result})
-
-        try:
-            emitted = self.client.stream_chat(
-                model=self.settings.model,
-                messages=grounded_messages(prompt, history, execution.model_context),
-                on_token=lambda token: write_event({"type": "token", "token": token}),
-            )
-        except Exception as exc:
-            write_event({"type": "error", "message": f"NIM stream failed: {exc}"})
-            emitted = False
-        if not emitted:
-            write_event({"type": "error", "message": "Model stream returned no grounded answer."})
+        self._send_json({
+            "tool": execution.result["tool"],
+            "result": execution.result,
+            "model_context": execution.model_context,
+        })
 
     def _read_json(self) -> dict[str, Any]:
         try:

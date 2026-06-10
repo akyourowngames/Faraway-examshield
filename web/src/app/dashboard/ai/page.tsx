@@ -91,6 +91,26 @@ const suggestedActions: SuggestedAction[] = [
   { title: "Analyze Latest Upload", prompt: "Analyze latest upload.", icon: Radar },
 ];
 
+const CONVERSATION_SYSTEM_PROMPT =
+  "You are EXAMSHIELD AI, a national examination security analyst. " +
+  "Respond naturally in plain language. Be concise and direct — like a colleague, not a chatbot. " +
+  "Do not claim live evidence, alerts, papers, or report facts unless a tool result is provided. " +
+  "You can discuss general EXAMSHIELD concepts, how the system works, or anything else the investigator asks.";
+
+const GROUNDED_SYSTEM_PROMPT =
+  "You are EXAMSHIELD AI, a national examination security analyst helping an investigator. " +
+  "A tool just returned live data about the investigation. Use ONLY that data to answer naturally. " +
+  "Speak like a knowledgeable colleague explaining findings — not a report generator. " +
+  "Be concise, direct, and conversational. If the data shows no alerts, say so plainly. " +
+  "If papers are compromised, explain what that means in context. " +
+  "Never fabricate details not in the tool data. If something is unknown, say so. " +
+  "No bullet points, no markdown, no tables — just natural flowing text.";
+
+function getBackendUrl() {
+  if (typeof window !== "undefined") return "";
+  return process.env.EXAMSHIELD_API_URL?.trim().replace(/\/$/, "") ?? "";
+}
+
 export default function ExamshieldAiPage() {
   const [prompt, setPrompt] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -155,44 +175,105 @@ export default function ExamshieldAiPage() {
     setStreamingId(assistantId);
 
     try {
-      const response = await fetch("/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: trimmed,
-          currentEvidenceId: currentInvestigation.evidenceId,
-          messages: messages.slice(-6).map((message) => ({
-            role: message.role,
-            content: message.content,
-          })),
-        }),
-      });
+      const backendUrl = getBackendUrl();
+      const historyPayload = messages.slice(-6).map((message) => ({
+        role: message.role,
+        content: message.content,
+      }));
 
-      if (!response.ok || !response.body) {
-        throw new Error("EXAMSHIELD AI stream failed.");
+      let planResult: { tool: string | null; result?: AiToolResult; model_context?: string; error?: string } | null = null;
+
+      if (backendUrl) {
+        try {
+          const planRes = await fetch(`${backendUrl}/plan`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              prompt: trimmed,
+              currentEvidenceId: currentInvestigation.evidenceId,
+              messages: historyPayload,
+            }),
+          });
+          if (planRes.ok) {
+            planResult = await planRes.json();
+          }
+        } catch {
+          // Backend unreachable — fall through to direct chat
+        }
       }
 
-      const smoother = createTokenSmoother((token) => {
-        setMessages((existing) => applyStreamEvent(existing, assistantId, { type: "token", token }));
-      });
-      let doneEvent: Extract<AiStreamEvent, { type: "done" }> | null = null;
+      if (planResult?.tool && planResult.result) {
+        setMessages((existing) => applyStreamEvent(existing, assistantId, { type: "stage", message: `Using ${planResult!.tool}() with live EXAMSHIELD data.` }));
+        setMessages((existing) => applyStreamEvent(existing, assistantId, { type: "tool", tool: planResult!.tool as AiToolName, result: planResult!.result! }));
+        setCurrentInvestigation(planResult.result.currentInvestigation);
 
-      await consumeStream(response.body, (event) => {
-        if (event.type === "token") {
-          smoother.enqueue(event.token);
-          return;
+        const groundedHistory = historyPayload.map((m) => ({
+          role: m.role === "operator" ? "user" : "assistant",
+          content: m.content,
+        }));
+
+        const groundedUserMessage =
+          `Investigator asked: ${trimmed}\n\n` +
+          `Here is the live data returned by the tool:\n${planResult.model_context ?? JSON.stringify(planResult.result)}\n\n` +
+          `Respond naturally based on this data. Answer the investigator's actual question.`;
+
+        const nvidiaRes = await fetch("/api/nvidia/stream", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            messages: [
+              { role: "system", content: GROUNDED_SYSTEM_PROMPT },
+              ...groundedHistory,
+              { role: "user", content: groundedUserMessage },
+            ],
+          }),
+        });
+
+        if (!nvidiaRes.ok || !nvidiaRes.body) {
+          throw new Error("NVIDIA stream failed.");
         }
-        if (event.type === "done") {
-          doneEvent = event;
-          return;
+
+        const smoother = createTokenSmoother((token) => {
+          setMessages((existing) => applyStreamEvent(existing, assistantId, { type: "token", token }));
+        });
+
+        await consumeNvidiaStream(nvidiaRes.body, (token) => smoother.enqueue(token));
+        await smoother.waitForDrain();
+        setMessages((existing) => applyStreamEvent(existing, assistantId, { type: "done" }));
+      } else {
+        if (planResult?.error) {
+          setMessages((existing) => applyStreamEvent(existing, assistantId, { type: "stage", message: planResult!.error! }));
         }
-        setMessages((existing) => applyStreamEvent(existing, assistantId, event));
-        if (event.type === "tool") {
-          setCurrentInvestigation(event.result.currentInvestigation);
+
+        const directHistory = historyPayload.map((m) => ({
+          role: m.role === "operator" ? "user" : "assistant",
+          content: m.content,
+        }));
+
+        const nvidiaRes = await fetch("/api/nvidia/stream", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            messages: [
+              { role: "system", content: CONVERSATION_SYSTEM_PROMPT },
+              ...directHistory,
+              { role: "user", content: trimmed },
+            ],
+          }),
+        });
+
+        if (!nvidiaRes.ok || !nvidiaRes.body) {
+          throw new Error("NVIDIA stream failed.");
         }
-      });
-      await smoother.waitForDrain();
-      setMessages((existing) => applyStreamEvent(existing, assistantId, doneEvent ?? { type: "done" }));
+
+        const smoother = createTokenSmoother((token) => {
+          setMessages((existing) => applyStreamEvent(existing, assistantId, { type: "token", token }));
+        });
+
+        await consumeNvidiaStream(nvidiaRes.body, (token) => smoother.enqueue(token));
+        await smoother.waitForDrain();
+        setMessages((existing) => applyStreamEvent(existing, assistantId, { type: "done" }));
+      }
     } catch (error) {
       setMessages((existing) =>
         existing.map((message) =>
@@ -200,7 +281,7 @@ export default function ExamshieldAiPage() {
             ? {
                 ...message,
                 content:
-                  "ANALYSIS FAILED.\n\nEXAMSHIELD AI could not reach the unified API service.",
+                  "ANALYSIS FAILED.\n\nEXAMSHIELD AI could not reach the service.",
                 stages: [...(message.stages ?? []), error instanceof Error ? error.message : "Stream failed."],
                 streaming: false,
               }
@@ -657,6 +738,35 @@ async function consumeStream(
         if (data) {
           onEvent(JSON.parse(data) as AiStreamEvent);
         }
+      }
+    }
+  }
+}
+
+async function consumeNvidiaStream(
+  body: ReadableStream<Uint8Array>,
+  onToken: (token: string) => void,
+) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const chunks = buffer.split("\n\n");
+    buffer = chunks.pop() ?? "";
+    for (const chunk of chunks) {
+      for (const line of chunk.split("\n")) {
+        if (!line.startsWith("data: ")) continue;
+        const data = line.slice(6).trim();
+        if (data === "[DONE]") return;
+        try {
+          const parsed = JSON.parse(data);
+          const content = parsed.choices?.[0]?.delta?.content;
+          if (content) onToken(content);
+        } catch {}
       }
     }
   }

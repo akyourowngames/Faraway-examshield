@@ -24,3 +24,9 @@ services:
         sync: false
       - key: TELEGRAM_CHAT_ID
         sync: false
+      - key: TELEGRAM_ADMIN_CHAT_ID
+        sync: false
+      - key: EXAMSHIELD_OCR_TIMEOUT
+        value: "15"
+      - key: EXAMSHIELD_OCR_MAX_RETRIES
+        value: "1"
