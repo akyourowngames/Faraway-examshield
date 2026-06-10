@@ -95,6 +95,9 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         if path == "/telegram/groups":
             self._send_json({"groups": self.store.list_monitored_groups()})
             return
+        if path == "/telegram/status":
+            self._get_telegram_status()
+            return
         self._send_json({"error": "Not found"}, status=404)
 
     def do_POST(self) -> None:
@@ -292,11 +295,17 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
     def _ingest_telegram_webhook(self) -> None:
         secret = self.headers.get("X-Telegram-Bot-Api-Secret-Token")
         if not self.telegram.validate_secret(secret):
+            logger.warning(f"Webhook secret mismatch: expected={'SET' if self.telegram.settings.telegram_webhook_secret else 'NONE'}, received={'SET' if secret else 'NONE'}")
             self._send_json({"error": "Invalid Telegram webhook secret."}, status=401)
             return
         try:
-            self._send_json(self.telegram.process_update(self._read_json(), self.store, analyze_image))
+            update = self._read_json()
+            logger.info(f"Webhook received: keys={list(update.keys())}")
+            result = self.telegram.process_update(update, self.store, analyze_image)
+            logger.info(f"Webhook processed: {result.get('message')}, processed={result.get('processed')}")
+            self._send_json(result)
         except Exception as exc:
+            logger.error(f"Webhook processing failed: {type(exc).__name__}: {exc}", exc_info=True)
             self._send_json({"error": str(exc) or "Telegram webhook failed."}, status=400)
 
     def _register_telegram_webhook(self) -> None:
@@ -315,6 +324,22 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             })
         except Exception as exc:
             self._send_json({"error": str(exc) or "Webhook registration failed."}, status=400)
+
+    def _get_telegram_status(self) -> None:
+        try:
+            info = self.telegram._api("getWebhookInfo", {})
+            self._send_json({
+                "configured": self.telegram.configured,
+                "publicUrl": self.settings.public_url or "NOT SET",
+                "botTokenSet": bool(self.settings.telegram_bot_token),
+                "webhookUrl": info.get("url", "NOT SET"),
+                "hasCustomCertificate": info.get("has_custom_certificate", False),
+                "pendingUpdateCount": info.get("pending_update_count", 0),
+                "lastErrorDate": info.get("last_error_date"),
+                "lastErrorMessage": info.get("last_error_message"),
+            })
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Failed to get Telegram status."}, status=400)
 
     def _run_plan(self) -> None:
         payload = self._read_json()
