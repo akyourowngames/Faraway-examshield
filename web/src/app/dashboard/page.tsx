@@ -29,10 +29,14 @@ const itemVariants = {
 
 export default function Dashboard() {
   const [evidenceData, setEvidenceData] = useState<EvidenceListResponse | null>(null);
+  const [centerCount, setCenterCount] = useState(0);
+
   const criticalAlerts = evidenceData?.alerts.filter((alert) => alert.risk === "critical").length ?? 0;
   const telegramEvents = evidenceData?.telegramEvents.length ?? 0;
+  const totalEvidence = evidenceData?.stats.totalEvidence ?? 0;
+
   const stats = [
-    { label: "Active Exams", value: "142", trend: "+12", icon: Activity },
+    { label: "Active Exams", value: String(totalEvidence), trend: totalEvidence > 0 ? "Live" : "Clear", icon: Activity },
     {
       label: "Critical Alerts",
       value: String(criticalAlerts),
@@ -40,7 +44,7 @@ export default function Dashboard() {
       icon: AlertTriangle,
     },
     { label: "Telegram Events", value: String(telegramEvents), trend: "Live", icon: ShieldAlert },
-    { label: "Active Centers", value: "1,204", trend: "+45", icon: Server },
+    { label: "Active Centers", value: String(centerCount || "—"), trend: centerCount > 0 ? "Live" : "Idle", icon: Server },
   ];
 
   useEffect(() => {
@@ -48,26 +52,24 @@ export default function Dashboard() {
 
     async function loadEvidence() {
       const response = await fetch("/evidence", { cache: "no-store" });
-      if (!response.ok) {
-        return;
-      }
+      if (!response.ok) return;
       const payload = (await response.json()) as EvidenceListResponse;
-      if (active) {
-        setEvidenceData(payload);
-      }
+      if (!active) return;
+      setEvidenceData(payload);
+
+      const uniqueCenters = new Set(
+        payload.evidence.map((e) => e.telegramChatId).filter(Boolean)
+      );
+      setCenterCount(uniqueCenters.size);
     }
 
     loadEvidence();
     const interval = window.setInterval(loadEvidence, 3000);
-
-    return () => {
-      active = false;
-      window.clearInterval(interval);
-    };
+    return () => { active = false; window.clearInterval(interval); };
   }, []);
 
   return (
-    <motion.div 
+    <motion.div
       variants={containerVariants}
       initial="hidden"
       animate="show"
