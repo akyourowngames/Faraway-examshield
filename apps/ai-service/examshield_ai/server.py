@@ -253,6 +253,26 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
 
     def _process_analysis_job(self, job_id: str) -> None:
         try:
+            job = self.store.get_analysis_job(job_id)
+            if not job:
+                self._send_json({"error": "Analysis job not found."}, status=404)
+                return
+            if job.get("status") == "completed":
+                self._send_json(self.store.analysis_job_snapshot(job_id))
+                return
+            if job.get("status") == "processing" or self.workers.is_job_active(job_id):
+                snapshot = self.store.analysis_job_snapshot(job_id)
+                snapshot["message"] = "Analysis In Progress"
+                self._send_json(snapshot, status=202)
+                return
+
+            evidence_id = str(job.get("evidenceId") or "")
+            if self.workers.is_evidence_active(evidence_id):
+                snapshot = self.store.analysis_job_snapshot(job_id)
+                snapshot["message"] = "Analysis In Progress"
+                self._send_json(snapshot, status=202)
+                return
+
             self._send_json(self.store.run_analysis_job(job_id, analyze_image))
         except LookupError as exc:
             self._send_json({"error": str(exc)}, status=404)
@@ -525,12 +545,15 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
 
     def _send_json(self, payload: dict[str, Any], status: int = 200) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self._cors_headers()
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self._cors_headers()
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            logger.warning("Client disconnected before JSON response completed")
 
     def do_DELETE(self) -> None:
         path = urlparse(self.path).path

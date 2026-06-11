@@ -33,7 +33,9 @@ services:
       - key: EXAMSHIELD_OCR_TOTAL_BUDGET_SECONDS
         value: "90"
       - key: EXAMSHIELD_PADDLE_TIMEOUT_SECONDS
-        value: "40"
+        value: "45"
+      - key: EXAMSHIELD_OCR_TIMEOUT
+        value: "35"
       - key: EXAMSHIELD_PADDLE_LANG
         value: en
       - key: EXAMSHIELD_OCR_MAX_RETRIES
@@ -41,7 +43,7 @@ services:
       - key: EXAMSHIELD_OCR_FAST
         value: "1"
       - key: EXAMSHIELD_OCR_WORKERS
-        value: "2"
+        value: "1"
       - key: EXAMSHIELD_OCR_MODE
         value: sequential
       - key: EXAMSHIELD_OCR_PSMS

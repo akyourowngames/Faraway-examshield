@@ -412,10 +412,45 @@ class EvidenceStore:
         )
         return {"job": job, "activity": activity}
 
+    def get_analysis_job(self, job_id: str) -> JsonObject | None:
+        return self._read_json_file("jobs", f"{job_id}.json")
+
+    def analysis_job_snapshot(self, job_id: str) -> JsonObject:
+        job = self.get_analysis_job(job_id)
+        if not job:
+            raise LookupError("Analysis job not found.")
+        evidence_id = str(job.get("evidenceId") or "")
+        evidence = self.get_evidence_by_id(evidence_id)
+        if not evidence:
+            raise LookupError("Evidence not found.")
+        bundle = self.get_bundle(evidence_id) or {"evidence": evidence}
+        return {
+            "message": "Analysis Complete" if job.get("status") == "completed" else "Analysis In Progress",
+            "evidence": evidence,
+            "job": job,
+            "attribution": bundle.get("attribution"),
+            "watermark": bundle.get("watermark"),
+            "forensicReport": bundle.get("forensicReport"),
+            "alert": None,
+            "activity": [],
+        }
+
     def run_analysis_job(self, job_id: str, ocr_runner: Callable[[bytes, str], JsonObject]) -> JsonObject:
         timeline: list[JsonObject] = []
         evidence_id: str | None = None
         try:
+            existing = self.get_analysis_job(job_id)
+            if not existing:
+                raise LookupError("Analysis job not found.")
+            if existing.get("status") == "completed":
+                logger.info("Analysis job %s already completed; returning snapshot", job_id)
+                return self.analysis_job_snapshot(job_id)
+            if existing.get("status") == "processing":
+                logger.info("Analysis job %s already processing; skipping duplicate run", job_id)
+                snapshot = self.analysis_job_snapshot(job_id)
+                snapshot["message"] = "Analysis In Progress"
+                return snapshot
+
             processing = self.mark_analysis_job_processing(job_id)
             evidence_id = str(processing["job"]["evidenceId"])
             logger.info(f"Starting analysis job {job_id} for evidence {evidence_id}")
@@ -504,6 +539,19 @@ class EvidenceStore:
         job = self._read_json_file("jobs", f"{job_id}.json")
         if not job:
             raise LookupError("Analysis job not found.")
+        if job.get("status") == "processing":
+            return {
+                "job": job,
+                "activity": {
+                    "type": "ocr-started",
+                    "title": "OCR Started",
+                    "evidenceId": job.get("evidenceId"),
+                    "jobId": job_id,
+                    "timestamp": job.get("startedAt") or job.get("createdAt"),
+                },
+            }
+        if job.get("status") != "queued":
+            raise RuntimeError(f"Analysis job {job_id} cannot start from status {job.get('status')}.")
         now = utc_now()
         updated = {**job, "status": "processing", "startedAt": now}
         self._write_json("jobs", f"{job_id}.json", updated)
