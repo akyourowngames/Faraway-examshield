@@ -54,7 +54,7 @@ URL_REGEX = re.compile(
 def scan_text(text: str | None) -> dict[str, Any]:
     """Scan message text for leaked content indicators."""
     if not text:
-        return {"score": 0, "matches": [], "categories": set(), "urls": []}
+        return {"score": 0, "matches": [], "categories": [], "urls": []}
 
     lower = text.lower()
     matches: list[dict[str, Any]] = []
