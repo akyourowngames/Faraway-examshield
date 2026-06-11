@@ -110,26 +110,26 @@ class TestSequentialPsm:
 
 
 class TestAnalyzeImage:
-    def test_analyze_image_uses_paddle_first(self):
-        paddle_candidate = {
+    def test_analyze_image_uses_ocrspace_first(self):
+        ocrspace_candidate = {
             "status": "completed",
-            "engine": "paddle",
-            "text": "paddle extracted text",
+            "engine": "ocrspace",
+            "text": "ocrspace extracted text",
             "confidence": 88,
             "qualityScore": 88,
         }
 
         with patch("examshield_ai.ocr.prepare_ocr_image", return_value=Path("/tmp/x.jpg")), patch(
             "examshield_ai.ocr.OCR_CHAIN",
-            ("paddle", "tesseract"),
-        ), patch("examshield_ai.paddle_ocr.run_paddle_ocr", return_value=paddle_candidate), patch(
+            ("ocrspace", "tesseract"),
+        ), patch("examshield_ai.ocrspace.run_ocrspace_ocr", return_value=ocrspace_candidate), patch(
             "examshield_ai.ocr.run_tesseract_best_candidate"
         ) as tess_mock, patch("pathlib.Path.unlink"):
             result = analyze_image(b"img", ".jpg")
 
         assert result["status"] == "completed"
-        assert result["engine"] == "paddle"
-        assert result["text"] == "paddle extracted text"
+        assert result["engine"] == "ocrspace"
+        assert result["text"] == "ocrspace extracted text"
         tess_mock.assert_not_called()
 
     def test_analyze_image_falls_back_to_tesseract(self):
@@ -143,10 +143,10 @@ class TestAnalyzeImage:
 
         with patch("examshield_ai.ocr.prepare_ocr_image", return_value=Path("/tmp/x.jpg")), patch(
             "examshield_ai.ocr.OCR_CHAIN",
-            ("paddle", "tesseract"),
+            ("ocrspace", "tesseract"),
         ), patch(
-            "examshield_ai.paddle_ocr.run_paddle_ocr",
-            return_value={"status": "failed", "error": "paddle failed"},
+            "examshield_ai.ocrspace.run_ocrspace_ocr",
+            return_value={"status": "failed", "error": "ocrspace failed"},
         ), patch(
             "examshield_ai.ocr.run_tesseract_best_candidate",
             return_value=tesseract_candidate,
@@ -170,17 +170,17 @@ class TestAnalyzeImage:
         assert result["status"] == "failed"
         assert "bad" in result["error"]
 
-    def test_analyze_image_uses_paddle_timeout_not_tesseract_timeout(self):
+    def test_analyze_image_uses_ocrspace_timeout_not_tesseract_timeout(self):
         with patch("examshield_ai.ocr.prepare_ocr_image", return_value=Path("/tmp/x.jpg")), patch(
             "examshield_ai.ocr.OCR_CHAIN",
-            ("paddle",),
+            ("ocrspace",),
         ), patch("examshield_ai.ocr.OCR_TIMEOUT_SECONDS", 25), patch(
-            "examshield_ai.paddle_ocr.PADDLE_TIMEOUT_SECONDS",
+            "examshield_ai.ocrspace.OCR_SPACE_TIMEOUT_SECONDS",
             60,
         ), patch(
-            "examshield_ai.paddle_ocr.run_paddle_ocr",
-            return_value={"status": "failed", "error": "paddle failed"},
-        ) as paddle_mock, patch("pathlib.Path.unlink"):
+            "examshield_ai.ocrspace.run_ocrspace_ocr",
+            return_value={"status": "failed", "error": "ocrspace failed"},
+        ) as ocrspace_mock, patch("pathlib.Path.unlink"):
             analyze_image(b"img", ".jpg")
 
-        assert paddle_mock.call_args.kwargs["timeout"] == 60
+        assert ocrspace_mock.call_args.kwargs["timeout"] == 60

@@ -27,7 +27,7 @@ def _env_bool(name: str, default: str = "1") -> bool:
     return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
-OCR_CHAIN = _split_csv(os.environ.get("EXAMSHIELD_OCR_CHAIN", ""), "paddle,tesseract")
+OCR_CHAIN = _split_csv(os.environ.get("EXAMSHIELD_OCR_CHAIN", ""), "ocrspace,tesseract")
 OCR_PSMS = _split_csv(os.environ.get("EXAMSHIELD_OCR_PSMS", ""), "6,4")
 OCR_TIMEOUT_SECONDS = int(os.environ.get("EXAMSHIELD_OCR_TIMEOUT", "45"))
 OCR_TOTAL_BUDGET_SECONDS = int(os.environ.get("EXAMSHIELD_OCR_TOTAL_BUDGET_SECONDS", "120"))
@@ -40,7 +40,7 @@ OCR_FAST = _env_bool("EXAMSHIELD_OCR_FAST", "1")
 
 
 def ocr_runtime_status() -> dict[str, Any]:
-    from .paddle_ocr import paddle_status
+    from .ocrspace import ocrspace_status
 
     return {
         "chain": list(OCR_CHAIN),
@@ -51,7 +51,7 @@ def ocr_runtime_status() -> dict[str, Any]:
             "timeoutSeconds": OCR_TIMEOUT_SECONDS,
             "maxDimension": OCR_MAX_DIMENSION,
         },
-        "paddle": paddle_status(),
+        "ocrspace": ocrspace_status(),
     }
 
 
@@ -72,12 +72,12 @@ def analyze_image(image_bytes: bytes, suffix: str) -> dict[str, Any]:
                     errors.append(f"OCR budget exceeded ({OCR_TOTAL_BUDGET_SECONDS}s)")
                     break
 
-                if engine == "paddle":
-                    from .paddle_ocr import PADDLE_TIMEOUT_SECONDS, run_paddle_ocr
+                if engine in {"ocrspace", "ocr-space", "ocr_space"}:
+                    from .ocrspace import OCR_SPACE_TIMEOUT_SECONDS, run_ocrspace_ocr
 
-                    candidate = run_paddle_ocr(
+                    candidate = run_ocrspace_ocr(
                         temp_path,
-                        timeout=remaining_timeout(deadline, PADDLE_TIMEOUT_SECONDS),
+                        timeout=remaining_timeout(deadline, OCR_SPACE_TIMEOUT_SECONDS),
                     )
                 elif engine == "tesseract":
                     candidate = run_tesseract_best_candidate(temp_path, deadline=deadline)

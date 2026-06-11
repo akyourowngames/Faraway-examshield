@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 import subprocess
 from unittest.mock import patch
 
@@ -72,9 +71,9 @@ class TestAnalysisFlow:
             "qualityScore": 88,
         }
 
-        with patch("examshield_ai.ocr.OCR_CHAIN", ("paddle", "tesseract")), patch(
-            "examshield_ai.paddle_ocr.run_paddle_ocr",
-            return_value={"status": "failed", "error": "paddle unavailable"},
+        with patch("examshield_ai.ocr.OCR_CHAIN", ("ocrspace", "tesseract")), patch(
+            "examshield_ai.ocrspace.run_ocrspace_ocr",
+            return_value={"status": "failed", "error": "ocrspace unavailable"},
         ), patch(
             "examshield_ai.ocr.run_tesseract_best_candidate",
             return_value=tesseract_candidate,

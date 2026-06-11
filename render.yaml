@@ -26,34 +26,22 @@ services:
         sync: false
       - key: TELEGRAM_ADMIN_CHAT_ID
         sync: false
+      - key: OCR_SPACE_API_KEY
+        sync: false
       - key: EXAMSHIELD_OCR_CHAIN
-        value: paddle,tesseract
+        value: ocrspace,tesseract
       - key: EXAMSHIELD_OCR_TIMEOUT
         value: "45"
       - key: EXAMSHIELD_OCR_TOTAL_BUDGET_SECONDS
         value: "120"
       - key: EXAMSHIELD_OCR_MAX_DIMENSION
         value: "1920"
-      - key: EXAMSHIELD_PADDLE_TIMEOUT_SECONDS
-        value: "60"
-      - key: EXAMSHIELD_PADDLE_INIT_TIMEOUT_SECONDS
-        value: "300"
-      - key: EXAMSHIELD_PADDLE_DET_MODEL
-        value: PP-OCRv5_mobile_det
-      - key: EXAMSHIELD_PADDLE_REC_MODEL
-        value: PP-OCRv5_mobile_rec
-      - key: EXAMSHIELD_PADDLE_WARMUP
-        value: "1"
-      - key: EXAMSHIELD_PADDLE_ENABLE_MKLDNN
-        value: "0"
-      - key: FLAGS_use_mkldnn
-        value: "0"
-      - key: PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT
-        value: "0"
-      - key: EXAMSHIELD_PADDLE_USE_ANGLE_CLS
-        value: "0"
-      - key: EXAMSHIELD_PADDLE_LANG
-        value: en
+      - key: OCR_SPACE_TIMEOUT_SECONDS
+        value: "45"
+      - key: OCR_SPACE_LANGUAGE
+        value: eng
+      - key: OCR_SPACE_ENGINE
+        value: "2"
       - key: EXAMSHIELD_OCR_MAX_RETRIES
         value: "0"
       - key: EXAMSHIELD_OCR_FAST
