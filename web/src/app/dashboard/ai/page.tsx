@@ -180,6 +180,9 @@ export default function ExamshieldAiPage() {
           setCurrentInvestigation(event.result.currentInvestigation);
         }
         setMessages((existing) => applyStreamEvent(existing, assistantId, event));
+        if (event.type === "done") {
+          setStreamingId(null);
+        }
       });
     } catch (error) {
       setMessages((existing) =>
@@ -620,6 +623,36 @@ function CommandPalette({
   );
 }
 
+function parseSseBuffer(
+  buffer: string,
+  onEvent: (event: AiStreamEvent) => boolean,
+) {
+  const chunks = buffer.split("\n\n");
+  const remainder = chunks.pop() ?? "";
+
+  for (const chunk of chunks) {
+    for (const line of chunk.split("\n")) {
+      if (!line.startsWith("data:")) {
+        continue;
+      }
+      const data = line.slice(5).trim();
+      if (!data) {
+        continue;
+      }
+      try {
+        const event = JSON.parse(data) as AiStreamEvent;
+        if (onEvent(event)) {
+          return { finished: true, remainder: "" };
+        }
+      } catch {
+        // skip malformed chunks
+      }
+    }
+  }
+
+  return { finished: false, remainder };
+}
+
 async function consumeStream(
   body: ReadableStream<Uint8Array>,
   onEvent: (event: AiStreamEvent) => void,
@@ -628,24 +661,34 @@ async function consumeStream(
   const decoder = new TextDecoder();
   let buffer = "";
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-    buffer += decoder.decode(value, { stream: true });
-    const chunks = buffer.split("\n\n");
-    buffer = chunks.pop() ?? "";
-    for (const chunk of chunks) {
-      for (const line of chunk.split("\n")) {
-        if (!line.startsWith("data:")) {
-          continue;
+  const dispatch = (event: AiStreamEvent) => {
+    onEvent(event);
+    return event.type === "done";
+  };
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        const tail = parseSseBuffer(buffer, dispatch);
+        if (!tail.finished && tail.remainder.trim()) {
+          parseSseBuffer(`${tail.remainder}\n\n`, dispatch);
         }
-        const data = line.slice(5).trim();
-        if (data) {
-          onEvent(JSON.parse(data) as AiStreamEvent);
-        }
+        break;
       }
+
+      buffer += decoder.decode(value, { stream: true });
+      const parsed = parseSseBuffer(buffer, dispatch);
+      buffer = parsed.remainder;
+      if (parsed.finished) {
+        break;
+      }
+    }
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // stream already closed
     }
   }
 }
