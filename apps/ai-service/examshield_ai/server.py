@@ -500,6 +500,12 @@ def main() -> None:
             logger.warning("Telegram webhook NOT registered - set EXAMSHIELD_PUBLIC_URL in Render to enable")
     except Exception as exc:
         logger.error(f"Telegram webhook registration failed: {exc}")
+    try:
+        cleaned = handler.store.cleanup_stale_jobs(max_age_seconds=300)
+        if cleaned:
+            logger.info(f"Cleaned up {cleaned} stale analysis job(s) on startup")
+    except Exception as exc:
+        logger.error(f"Stale job cleanup failed: {exc}")
     server = ThreadingHTTPServer((settings.host, settings.port), handler)
     logger.info(f"EXAMSHIELD AI service listening on http://{settings.host}:{settings.port}")
     server.serve_forever()

@@ -169,6 +169,43 @@ class EvidenceStore:
             },
         }
 
+    def get_active_job_for_evidence(self, evidence_id: str) -> JsonObject | None:
+        """Get the most recent active (queued/processing) job for an evidence."""
+        for job in self._read_json_dir("jobs"):
+            if str(job.get("evidenceId")) == str(evidence_id):
+                status = job.get("status")
+                if status in ("queued", "processing"):
+                    return job
+        return None
+
+    def cleanup_stale_jobs(self, max_age_seconds: int = 300) -> int:
+        """Clean up jobs stuck in 'processing' or 'queued' state for too long.
+        
+        Returns the number of jobs cleaned up.
+        """
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        cleaned = 0
+        for job in self._read_json_dir("jobs"):
+            status = job.get("status")
+            if status not in ("queued", "processing"):
+                continue
+            started_at = job.get("startedAt") or job.get("createdAt")
+            if not started_at:
+                continue
+            try:
+                started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+                age = (now - started).total_seconds()
+                if age > max_age_seconds:
+                    job_id = job["jobId"]
+                    evidence_id = job["evidenceId"]
+                    logger.warning(f"Cleaning up stale job {job_id} for evidence {evidence_id} (age: {age:.0f}s)")
+                    self.fail_analysis_job(job_id, "Job timed out - processing exceeded maximum allowed time")
+                    cleaned += 1
+            except Exception as exc:
+                logger.error(f"Error cleaning up job {job.get('jobId')}: {exc}")
+        return cleaned
+
     def get_evidence_by_id(self, evidence_id: str) -> JsonObject | None:
         record = self._stored_record_for_evidence(evidence_id)
         return self._to_evidence_record(record) if record else None

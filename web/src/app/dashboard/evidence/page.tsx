@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { CheckCircle2, FileStack, Hourglass, Loader2, XCircle, Upload, X } from "lucide-react";
+import { CheckCircle2, FileStack, Hourglass, Loader2, XCircle, Upload, X, RefreshCw } from "lucide-react";
 import type { EvidenceListResponse } from "@/lib/evidence-types";
 import {
   formatEvidenceDateTime,
@@ -30,41 +30,83 @@ const emptyState: EvidenceListResponse = {
   },
 };
 
+const CACHE_KEY = "examshield-evidence-cache";
+const CACHE_TTL = 30000;
+
+function getCachedData(): EvidenceListResponse | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const cached = localStorage.getItem(CACHE_KEY);
+    if (!cached) return null;
+    const { data, timestamp } = JSON.parse(cached);
+    if (Date.now() - timestamp > CACHE_TTL) return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+function setCachedData(data: EvidenceListResponse) {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify({ data, timestamp: Date.now() }));
+  } catch {
+  }
+}
+
 export default function EvidenceCenter() {
-  const [data, setData] = useState<EvidenceListResponse>(emptyState);
+  const [data, setData] = useState<EvidenceListResponse>(() => getCachedData() ?? emptyState);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [uploadQueue, setUploadQueue] = useState<string[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const activeRef = useRef(true);
+  const intervalRef = useRef<number | NodeJS.Timeout | null>(null);
 
-  useEffect(() => {
-    let active = true;
-
-    async function loadEvidence() {
-      try {
-        const response = await fetch("/evidence", { cache: "no-store" });
-        if (!response.ok) {
-          throw new Error("Unable to load evidence.");
-        }
-        const payload = (await response.json()) as EvidenceListResponse;
-        if (active) {
-          setData(payload);
-        }
-      } finally {
-        if (active) {
-          setLoading(false);
-        }
+  async function loadEvidence(force = false) {
+    if (!activeRef.current) return;
+    try {
+      if (force) setRefreshing(true);
+      const response = await fetch("/evidence", { 
+        cache: "no-store",
+        headers: { "Cache-Control": "no-cache" }
+      });
+      if (!response.ok) {
+        throw new Error("Unable to load evidence.");
+      }
+      const payload = (await response.json()) as EvidenceListResponse;
+      if (activeRef.current) {
+        setData(payload);
+        setCachedData(payload);
+      }
+    } catch (err) {
+      console.error("Failed to load evidence:", err);
+    } finally {
+      if (activeRef.current) {
+        setLoading(false);
+        setRefreshing(false);
       }
     }
+  }
 
+  useEffect(() => {
+    activeRef.current = true;
+    const cached = getCachedData();
+    if (cached) {
+      setData(cached);
+      setLoading(false);
+    }
     loadEvidence();
-    const interval = window.setInterval(loadEvidence, 3000);
+    intervalRef.current = window.setInterval(() => loadEvidence(), 5000);
 
     return () => {
-      active = false;
-      window.clearInterval(interval);
+      activeRef.current = false;
+      if (intervalRef.current) window.clearInterval(intervalRef.current);
     };
   }, []);
+
+  const handleRefresh = () => loadEvidence(true);
 
   async function handleFileUpload(files: FileList | null) {
     if (!files || files.length === 0) return;
@@ -80,13 +122,13 @@ export default function EvidenceCenter() {
       try {
         await fetch("/evidence/upload", { method: "POST", body: formData });
       } catch {
-        // silently fail individual uploads
       }
     }
 
     setUploadQueue((prev) => [...prev, ...names]);
     setUploading(false);
     setTimeout(() => setUploadQueue([]), 4000);
+    loadEvidence(true);
 
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
@@ -114,18 +156,29 @@ export default function EvidenceCenter() {
             Stored uploads awaiting forensic analysis.
           </p>
         </div>
-        <label className="hidden sm:flex items-center gap-2 px-4 py-2 bg-white text-black text-xs font-bold uppercase tracking-widest cursor-pointer hover:bg-zinc-200 transition-colors shrink-0">
-          <Upload className="w-4 h-4" />
-          Upload
-          <input
-            ref={fileInputRef}
-            type="file"
-            className="hidden"
-            multiple
-            accept="image/*,application/pdf"
-            onChange={(e) => handleFileUpload(e.target.files)}
-          />
-        </label>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="flex items-center gap-2 px-3 py-2 bg-white/5 border border-white/10 text-white text-xs font-bold uppercase tracking-widest cursor-pointer hover:bg-white/10 transition-colors shrink-0 disabled:opacity-50"
+            title="Refresh evidence"
+          >
+            <RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} />
+            Refresh
+          </button>
+          <label className="hidden sm:flex items-center gap-2 px-4 py-2 bg-white text-black text-xs font-bold uppercase tracking-widest cursor-pointer hover:bg-zinc-200 transition-colors shrink-0">
+            <Upload className="w-4 h-4" />
+            Upload
+            <input
+              ref={fileInputRef}
+              type="file"
+              className="hidden"
+              multiple
+              accept="image/*,application/pdf"
+              onChange={(e) => handleFileUpload(e.target.files)}
+            />
+          </label>
+        </div>
       </div>
 
       {/* Stats */}

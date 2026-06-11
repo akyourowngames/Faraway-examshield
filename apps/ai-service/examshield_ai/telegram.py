@@ -131,6 +131,25 @@ class TelegramWebhook:
                 "activity": created["activity"],
             }
 
+        # Check for existing active job for this evidence to prevent duplicates
+        existing_job = store.get_active_job_for_evidence(created["evidence"]["evidenceId"])
+        if existing_job:
+            logger.info(f"Evidence {created['evidence']['evidenceId']} already has active job {existing_job['jobId']}, skipping duplicate")
+            return {
+                "message": "Telegram evidence already queued for analysis",
+                "processed": True,
+                "duplicate": False,
+                "evidence": created["evidence"],
+                "job": existing_job,
+                "detection": {
+                    "score": detection["score"],
+                    "categories": detection["categories"],
+                    "isSuspicious": is_suspicious(detection),
+                },
+                "alertSent": False,
+                "activity": created["activity"],
+            }
+        
         # Media evidence: queue OCR analysis (async processing)
         queued = store.create_analysis_job(created["evidence"]["evidenceId"])
         
@@ -154,6 +173,10 @@ class TelegramWebhook:
                 logger.info(f"Background OCR completed for evidence {evidence_id}: {analysis.get('message')}")
             except Exception as exc:
                 logger.error(f"Background OCR failed for evidence {evidence_id}: {exc}")
+                try:
+                    store.fail_analysis_job(job_id, str(exc) or "Background OCR processing failed")
+                except Exception as fail_exc:
+                    logger.error(f"Failed to mark job {job_id} as failed: {fail_exc}")
         
         # Start background thread for OCR processing
         ocr_thread = threading.Thread(target=_process_ocr_background, daemon=True)
