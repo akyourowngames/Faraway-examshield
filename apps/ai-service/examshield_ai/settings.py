@@ -19,6 +19,11 @@ class Settings:
     base_url: str
     planner_timeout_seconds: float
     stream_timeout_seconds: float
+    chat_max_tokens: int
+    planner_max_tokens: int
+    list_cache_ttl_seconds: float
+    supabase_timeout_seconds: float
+    detect_threshold: float
     cors_origin: str
     max_upload_bytes: int
     supabase_url: str
@@ -44,16 +49,23 @@ def load_settings() -> Settings:
     ).resolve()
     model = (
         os.environ.get("EXAMSHIELD_AI_MODEL")
+        or os.environ.get("EXAMSHIELD_CHAT_MODEL")
         or os.environ.get("NVIDIA_MODEL")
         or os.environ.get("NVIDIA_NIM_MODEL")
         or os.environ.get("NIM_MODEL")
-        or "qwen/qwen3-next-80b-a3b-instruct"
+        or os.environ.get("EXAMSHIELD_AI_DEFAULT_MODEL")
+        or "meta/llama-4-maverick-17b-128e-instruct"
     ).strip()
     fallback_models = _split_csv(
         os.environ.get("NVIDIA_NIM_FALLBACK_MODELS")
         or os.environ.get("NVIDIA_FALLBACK_MODELS")
-        or "meta/llama-4-maverick-17b-128e-instruct,mistralai/ministral-14b-instruct-2512,deepseek-ai/deepseek-v4-flash"
+        or os.environ.get("EXAMSHIELD_AI_FALLBACK_MODELS")
+        or "mistralai/ministral-14b-instruct-2512,deepseek-ai/deepseek-v4-flash"
     )
+    planner_default = (
+        os.environ.get("EXAMSHIELD_AI_PLANNER_DEFAULT_MODEL")
+        or "mistralai/ministral-14b-instruct-2512"
+    ).strip()
 
     return Settings(
         host=os.environ.get("EXAMSHIELD_AI_HOST", "0.0.0.0"),
@@ -74,7 +86,7 @@ def load_settings() -> Settings:
             or os.environ.get("EXAMSHIELD_AI_PLANNER_MODEL")
             or os.environ.get("NVIDIA_PLANNER_MODEL")
             or os.environ.get("NIM_PLANNER_MODEL")
-            or model
+            or planner_default
         ).strip(),
         base_url=(
             os.environ.get("NVIDIA_NIM_BASE_URL")
@@ -82,8 +94,13 @@ def load_settings() -> Settings:
             or os.environ.get("NIM_BASE_URL")
             or "https://integrate.api.nvidia.com/v1"
         ).rstrip("/"),
-        planner_timeout_seconds=float(os.environ.get("EXAMSHIELD_TOOL_PLANNER_TIMEOUT_SECONDS", "5")),
-        stream_timeout_seconds=float(os.environ.get("EXAMSHIELD_AI_STREAM_TIMEOUT_SECONDS", "20")),
+        planner_timeout_seconds=float(os.environ.get("EXAMSHIELD_TOOL_PLANNER_TIMEOUT_SECONDS", "4")),
+        stream_timeout_seconds=float(os.environ.get("EXAMSHIELD_AI_STREAM_TIMEOUT_SECONDS", "45")),
+        chat_max_tokens=int(os.environ.get("EXAMSHIELD_AI_CHAT_MAX_TOKENS", "220")),
+        planner_max_tokens=int(os.environ.get("EXAMSHIELD_AI_PLANNER_MAX_TOKENS", "120")),
+        list_cache_ttl_seconds=float(os.environ.get("EXAMSHIELD_LIST_CACHE_TTL_SECONDS", "8")),
+        supabase_timeout_seconds=float(os.environ.get("EXAMSHIELD_SUPABASE_TIMEOUT_SECONDS", "20")),
+        detect_threshold=float(os.environ.get("EXAMSHIELD_DETECT_THRESHOLD", "7")),
         cors_origin=os.environ.get("EXAMSHIELD_AI_CORS_ORIGIN", "*"),
         max_upload_bytes=int(os.environ.get("EXAMSHIELD_MAX_UPLOAD_BYTES", str(12 * 1024 * 1024))),
         supabase_url=(os.environ.get("SUPABASE_URL") or "").rstrip("/"),

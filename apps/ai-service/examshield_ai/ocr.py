@@ -5,6 +5,7 @@ import os
 import subprocess
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ SUPPORTED_TYPES = {
 OCR_PSMS = ("6", "4", "11")
 OCR_TIMEOUT_SECONDS = int(os.environ.get("EXAMSHIELD_OCR_TIMEOUT", "15"))
 OCR_MAX_RETRIES = int(os.environ.get("EXAMSHIELD_OCR_MAX_RETRIES", "1"))
+OCR_PSM_WORKERS = int(os.environ.get("EXAMSHIELD_OCR_PSM_WORKERS", str(len(OCR_PSMS))))
 
 
 def analyze_image(image_bytes: bytes, suffix: str) -> dict[str, Any]:
@@ -26,30 +28,7 @@ def analyze_image(image_bytes: bytes, suffix: str) -> dict[str, Any]:
 
     try:
         for attempt in range(OCR_MAX_RETRIES + 1):
-            candidates = []
-            for psm in OCR_PSMS:
-                try:
-                    candidate = read_ocr_candidate(temp_path, psm)
-                    candidates.append(candidate)
-                except subprocess.TimeoutExpired:
-                    candidates.append({
-                        "status": "failed",
-                        "psm": psm,
-                        "text": "",
-                        "confidence": 0,
-                        "qualityScore": 0,
-                        "error": f"PSM {psm} timed out after {OCR_TIMEOUT_SECONDS}s",
-                    })
-                except Exception as exc:
-                    candidates.append({
-                        "status": "failed",
-                        "psm": psm,
-                        "text": "",
-                        "confidence": 0,
-                        "qualityScore": 0,
-                        "error": f"PSM {psm} error: {str(exc)}",
-                    })
-
+            candidates = read_ocr_candidates_parallel(temp_path)
             failed = [candidate for candidate in candidates if candidate["status"] == "failed"]
             passed = [candidate for candidate in candidates if candidate["status"] == "completed"]
 
@@ -102,6 +81,38 @@ def run_tesseract(image_path: Path, args: list[str]) -> subprocess.CompletedProc
         text=True,
         timeout=OCR_TIMEOUT_SECONDS,
     )
+
+
+def read_ocr_candidates_parallel(image_path: Path) -> list[dict[str, Any]]:
+    """Run all configured PSM modes concurrently and return every candidate."""
+    workers = max(1, min(OCR_PSM_WORKERS, len(OCR_PSMS)))
+    candidates: list[dict[str, Any]] = []
+
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ocr-psm") as executor:
+        futures = {executor.submit(read_ocr_candidate, image_path, psm): psm for psm in OCR_PSMS}
+        for future in as_completed(futures):
+            psm = futures[future]
+            try:
+                candidates.append(future.result())
+            except subprocess.TimeoutExpired:
+                candidates.append({
+                    "status": "failed",
+                    "psm": psm,
+                    "text": "",
+                    "confidence": 0,
+                    "qualityScore": 0,
+                    "error": f"PSM {psm} timed out after {OCR_TIMEOUT_SECONDS}s",
+                })
+            except Exception as exc:
+                candidates.append({
+                    "status": "failed",
+                    "psm": psm,
+                    "text": "",
+                    "confidence": 0,
+                    "qualityScore": 0,
+                    "error": f"PSM {psm} error: {str(exc)}",
+                })
+    return candidates
 
 
 def read_ocr_candidate(image_path: Path, psm: str) -> dict[str, Any]:

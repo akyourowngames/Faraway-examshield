@@ -52,7 +52,7 @@ class ToolPlanner:
                 {"role": "user", "content": prompt},
             ],
             tools=self.registry.schemas(),
-            max_tokens=160,
+            max_tokens=self.client.settings.planner_max_tokens,
             timeout=self.client.settings.planner_timeout_seconds,
         )
         calls = payload.get("choices", [{}])[0].get("message", {}).get("tool_calls", [])

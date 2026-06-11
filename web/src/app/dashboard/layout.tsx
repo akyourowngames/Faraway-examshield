@@ -43,6 +43,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [mobileOpen, setMobileOpen] = useState(false);
 
   useEffect(() => {
+    fetch("/api/keep-warm", { cache: "no-store" }).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
     const supabase = createClient();
 
     async function getUser() {

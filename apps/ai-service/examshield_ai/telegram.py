@@ -3,15 +3,17 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
-import threading
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from .detect import is_suspicious, scan_text
 from .settings import Settings
 from .store import EvidenceStore, JsonObject, UploadedFile, normalize_telegram_timestamp
+
+if TYPE_CHECKING:
+    from .pipeline import EvidencePipeline
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +51,7 @@ class TelegramWebhook:
         update: JsonObject,
         store: EvidenceStore,
         ocr_runner: Callable[[bytes, str], JsonObject],
+        pipeline: EvidencePipeline | None = None,
     ) -> JsonObject:
         message = next(
             (
@@ -111,12 +114,17 @@ class TelegramWebhook:
 
         # Text-only evidence: skip OCR, just send alert if suspicious
         if created["evidence"].get("fileType") == "text/plain":
-            alert_result = None
-            if is_suspicious(detection):
+            alert_sent = False
+            if pipeline:
+                alert_sent = pipeline.process_text_only_alert(
+                    created, detection, text, chat_id, message
+                )
+            elif is_suspicious(detection):
                 try:
                     alert_result = self._send_alert(created, {}, detection, text, chat_id, message)
+                    alert_sent = alert_result is not None and alert_result.get("status") != "failed"
                 except Exception:
-                    alert_result = {"status": "failed"}
+                    alert_sent = False
             return {
                 "message": "Suspicious text captured",
                 "processed": True,
@@ -125,16 +133,22 @@ class TelegramWebhook:
                 "detection": {
                     "score": detection["score"],
                     "categories": detection["categories"],
-                    "isSuspicious": True,
+                    "isSuspicious": is_suspicious(detection),
                 },
-                "alertSent": alert_result is not None and alert_result.get("status") != "failed",
+                "alertSent": alert_sent,
                 "activity": created["activity"],
             }
 
-        # Check for existing active job for this evidence to prevent duplicates
+        if not pipeline:
+            raise RuntimeError("EvidencePipeline is required for media Telegram updates.")
+
         existing_job = store.get_active_job_for_evidence(created["evidence"]["evidenceId"])
         if existing_job:
-            logger.info(f"Evidence {created['evidence']['evidenceId']} already has active job {existing_job['jobId']}, skipping duplicate")
+            logger.info(
+                "Evidence %s already has active job %s",
+                created["evidence"]["evidenceId"],
+                existing_job["jobId"],
+            )
             return {
                 "message": "Telegram evidence already queued for analysis",
                 "processed": True,
@@ -149,54 +163,43 @@ class TelegramWebhook:
                 "alertSent": False,
                 "activity": created["activity"],
             }
-        
-        # Media evidence: queue OCR analysis (async processing)
-        queued = store.create_analysis_job(created["evidence"]["evidenceId"])
-        
-        # Process OCR in background thread to avoid webhook timeout
-        job_id = queued["job"]["jobId"]
-        evidence_id = created["evidence"]["evidenceId"]
-        
-        def _process_ocr_background():
-            try:
-                logger.info(f"Starting background OCR for evidence {evidence_id}, job {job_id}")
-                analysis = store.run_analysis_job(job_id, ocr_runner)
-                
-                # Send alert if leak detected
-                should_alert = _should_send_alert(analysis, detection)
-                if should_alert:
-                    try:
-                        self._send_alert(created, analysis, detection, text, chat_id, message)
-                    except Exception as alert_exc:
-                        logger.error(f"Failed to send alert for {evidence_id}: {alert_exc}")
-                
-                logger.info(f"Background OCR completed for evidence {evidence_id}: {analysis.get('message')}")
-            except Exception as exc:
-                logger.error(f"Background OCR failed for evidence {evidence_id}: {exc}")
-                try:
-                    store.fail_analysis_job(job_id, str(exc) or "Background OCR processing failed")
-                except Exception as fail_exc:
-                    logger.error(f"Failed to mark job {job_id} as failed: {fail_exc}")
-        
-        # Start background thread for OCR processing
-        ocr_thread = threading.Thread(target=_process_ocr_background, daemon=True)
-        ocr_thread.start()
-        
-        logger.info(f"Queued OCR job {job_id} for evidence {evidence_id}, processing in background")
+
+        job = pipeline.queue_media_analysis(
+            created=created,
+            detection=detection,
+            text=text,
+            chat_id=chat_id,
+            message=message,
+            ocr_runner=ocr_runner,
+        )
+        if not job:
+            return {
+                "message": "Telegram evidence already processing",
+                "processed": True,
+                "duplicate": False,
+                "evidence": created["evidence"],
+                "detection": {
+                    "score": detection["score"],
+                    "categories": detection["categories"],
+                    "isSuspicious": is_suspicious(detection),
+                },
+                "alertSent": False,
+                "activity": created["activity"],
+            }
 
         return {
             "message": "Telegram evidence queued for analysis",
             "processed": True,
             "duplicate": False,
             "evidence": created["evidence"],
-            "job": queued["job"],
+            "job": job,
             "detection": {
                 "score": detection["score"],
                 "categories": detection["categories"],
                 "isSuspicious": is_suspicious(detection),
             },
             "alertSent": False,
-            "activity": [*created["activity"], queued["activity"]],
+            "activity": created["activity"],
         }
 
     def _download_media(self, message: JsonObject) -> UploadedFile | None:

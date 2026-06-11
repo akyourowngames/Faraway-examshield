@@ -48,15 +48,17 @@ class NvidiaClient:
         model: str,
         messages: list[JsonObject],
         on_token: TokenWriter,
+        max_tokens: int | None = None,
         timeout: float | None = None,
     ) -> bool:
         errors: list[str] = []
+        token_limit = max_tokens if max_tokens is not None else self.settings.chat_max_tokens
         for candidate in self._candidate_models(model):
             payload = {
                 "model": candidate,
                 "temperature": 0,
                 "top_p": 0.7,
-                "max_tokens": 180,
+                "max_tokens": token_limit,
                 "stream": True,
                 "messages": messages,
             }

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -15,6 +16,16 @@ from uuid import uuid4
 from .settings import Settings
 
 logger = logging.getLogger(__name__)
+
+LIST_EVIDENCE_COLLECTIONS = (
+    "records",
+    "jobs",
+    "attributions",
+    "watermarks",
+    "reports",
+    "telegram-events",
+    "alerts",
+)
 
 
 JsonObject = dict[str, Any]
@@ -38,6 +49,8 @@ class EvidenceStore:
         self.settings = settings
         self.root = settings.upload_root
         self.supabase_enabled = bool(settings.supabase_url and settings.supabase_service_role_key)
+        self._dir_cache: dict[str, tuple[float, list[JsonObject]]] = {}
+        self._list_evidence_cache: tuple[float, JsonObject] | None = None
 
     def ensure_storage(self) -> None:
         for name in (
@@ -110,8 +123,15 @@ class EvidenceStore:
         }
 
     def list_evidence(self) -> JsonObject:
+        ttl = self.settings.list_cache_ttl_seconds
+        if ttl > 0 and self._list_evidence_cache:
+            cached_at, payload = self._list_evidence_cache
+            if (time.monotonic() - cached_at) < ttl:
+                return payload
+
+        collections = self._read_collections_batch(LIST_EVIDENCE_COLLECTIONS)
         evidence = sorted(
-            (self._to_evidence_record(record) for record in self._read_json_dir("records")),
+            (self._to_evidence_record(record) for record in collections.get("records", [])),
             key=lambda item: _time_sort_key(item.get("uploadedAt")),
             reverse=True,
         )
@@ -121,37 +141,37 @@ class EvidenceStore:
             reverse=True,
         )
         jobs = sorted(
-            self._read_json_dir("jobs"),
+            collections.get("jobs", []),
             key=lambda item: _time_sort_key(item.get("createdAt")),
             reverse=True,
         )
         attributions = sorted(
-            self._read_json_dir("attributions"),
+            collections.get("attributions", []),
             key=lambda item: _time_sort_key(item.get("createdAt")),
             reverse=True,
         )
         watermarks = sorted(
-            self._read_json_dir("watermarks"),
+            collections.get("watermarks", []),
             key=lambda item: _time_sort_key(item.get("extractedAt")),
             reverse=True,
         )
         reports = sorted(
-            self._read_json_dir("reports"),
+            collections.get("reports", []),
             key=lambda item: _time_sort_key(item.get("timestamp")),
             reverse=True,
         )
         telegram_events = sorted(
-            self._read_json_dir("telegram-events"),
+            collections.get("telegram-events", []),
             key=lambda item: _time_sort_key(item.get("timestamp")),
             reverse=True,
         )
         alerts = sorted(
-            self._read_json_dir("alerts"),
+            collections.get("alerts", []),
             key=lambda item: _time_sort_key(item.get("createdAt")),
             reverse=True,
         )
 
-        return {
+        payload = {
             "evidence": evidence,
             "activity": activity,
             "jobs": jobs,
@@ -168,6 +188,62 @@ class EvidenceStore:
                 "failed": len([item for item in evidence if item.get("status") == "analysis-failed"]),
             },
         }
+        if ttl > 0:
+            self._list_evidence_cache = (time.monotonic(), payload)
+        return payload
+
+    def warmup_cache(self) -> None:
+        try:
+            self.list_evidence()
+        except Exception as exc:
+            logger.warning("Cache warmup failed: %s", exc)
+
+    def _invalidate_collection_cache(self, *names: str) -> None:
+        for name in names:
+            self._dir_cache.pop(name, None)
+        self._list_evidence_cache = None
+
+    def _read_collections_batch(self, names: tuple[str, ...]) -> dict[str, list[JsonObject]]:
+        ttl = self.settings.list_cache_ttl_seconds
+        grouped: dict[str, list[JsonObject]] = {name: [] for name in names}
+        missing: list[str] = []
+        now = time.monotonic()
+        for name in names:
+            if ttl > 0:
+                cached = self._dir_cache.get(name)
+                if cached and (now - cached[0]) < ttl:
+                    grouped[name] = cached[1]
+                    continue
+            missing.append(name)
+        if not missing:
+            return grouped
+
+        if self.supabase_enabled:
+            encoded = ",".join(urllib.parse.quote(name) for name in missing)
+            rows = self._supabase_json(
+                "GET",
+                (
+                    f"/rest/v1/{self.settings.supabase_document_table}"
+                    f"?collection=in.({encoded})&select=collection,payload"
+                ),
+            )
+            if isinstance(rows, list):
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    collection = str(row.get("collection") or "")
+                    payload = row.get("payload")
+                    if collection in grouped and isinstance(payload, dict):
+                        grouped[collection].append(payload)
+        else:
+            for name in missing:
+                grouped[name] = self._read_json_dir_uncached(name)
+
+        if ttl > 0:
+            stamp = time.monotonic()
+            for name in missing:
+                self._dir_cache[name] = (stamp, grouped[name])
+        return grouped
 
     def get_active_job_for_evidence(self, evidence_id: str) -> JsonObject | None:
         """Get the most recent active (queued/processing) job for an evidence."""
@@ -993,6 +1069,17 @@ class EvidenceStore:
         return event
 
     def _read_json_dir(self, name: str) -> list[JsonObject]:
+        ttl = self.settings.list_cache_ttl_seconds
+        if ttl > 0:
+            cached = self._dir_cache.get(name)
+            if cached and (time.monotonic() - cached[0]) < ttl:
+                return cached[1]
+        records = self._read_json_dir_uncached(name)
+        if ttl > 0:
+            self._dir_cache[name] = (time.monotonic(), records)
+        return records
+
+    def _read_json_dir_uncached(self, name: str) -> list[JsonObject]:
         self.ensure_storage()
         if self.supabase_enabled:
             rows = self._supabase_json(
@@ -1032,9 +1119,11 @@ class EvidenceStore:
         self.ensure_storage()
         if self.supabase_enabled:
             self._write_document(directory, filename, payload)
+            self._invalidate_collection_cache(directory)
             return payload
         path = self.root / directory / filename
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        self._invalidate_collection_cache(directory)
         return payload
 
     def _write_report(self, report: JsonObject) -> JsonObject:
@@ -1140,6 +1229,7 @@ class EvidenceStore:
             f"/rest/v1/{self.settings.supabase_document_table}?collection=eq.{encoded_collection}",
             extra_headers={"Prefer": "return=minimal"},
         )
+        self._invalidate_collection_cache(collection)
 
     def _supabase_json(
         self,
@@ -1185,7 +1275,7 @@ class EvidenceStore:
             method=method,
         )
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
+            with urllib.request.urlopen(request, timeout=self.settings.supabase_timeout_seconds) as response:
                 return response.read()
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")

@@ -1,7 +1,19 @@
 from __future__ import annotations
 
+import os
 import re
 from typing import Any
+
+
+def _detect_threshold() -> float:
+    return float(os.environ.get("EXAMSHIELD_DETECT_THRESHOLD", "7"))
+
+
+def _severity_thresholds() -> tuple[float, float, float]:
+    critical = float(os.environ.get("EXAMSHIELD_DETECT_CRITICAL_SCORE", "25"))
+    high = float(os.environ.get("EXAMSHIELD_DETECT_HIGH_SCORE", "15"))
+    medium = float(os.environ.get("EXAMSHIELD_DETECT_MEDIUM_SCORE", "7"))
+    return critical, high, medium
 
 # Keyword patterns: (pattern, weight, category, description)
 # weight: 1-10 impact on score
@@ -176,18 +188,20 @@ def _extract_domain(url: str) -> str:
     return cleaned.split("/")[0].split(":")[0]
 
 
-def is_suspicious(scan_result: dict[str, Any], threshold: float = 7.0) -> bool:
+def is_suspicious(scan_result: dict[str, Any], threshold: float | None = None) -> bool:
     """Determine if a scan result is suspicious enough to flag."""
-    return scan_result["score"] >= threshold
+    limit = _detect_threshold() if threshold is None else threshold
+    return scan_result["score"] >= limit
 
 
 def get_alert_severity(scan_result: dict[str, Any]) -> str:
     """Get severity level from scan score."""
     score = scan_result["score"]
-    if score >= 25:
+    critical, high, medium = _severity_thresholds()
+    if score >= critical:
         return "critical"
-    if score >= 15:
+    if score >= high:
         return "high"
-    if score >= 7:
+    if score >= medium:
         return "medium"
     return "low"

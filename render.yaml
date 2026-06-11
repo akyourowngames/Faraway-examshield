@@ -30,3 +30,21 @@ services:
         value: "15"
       - key: EXAMSHIELD_OCR_MAX_RETRIES
         value: "1"
+      - key: EXAMSHIELD_OCR_WORKERS
+        value: "2"
+      - key: EXAMSHIELD_OCR_PSM_WORKERS
+        value: "3"
+      - key: EXAMSHIELD_AI_PLANNER_MODEL
+        value: mistralai/ministral-14b-instruct-2512
+      - key: EXAMSHIELD_AI_MODEL
+        value: meta/llama-4-maverick-17b-128e-instruct
+      - key: EXAMSHIELD_TOOL_PLANNER_TIMEOUT_SECONDS
+        value: "4"
+      - key: EXAMSHIELD_AI_STREAM_TIMEOUT_SECONDS
+        value: "45"
+      - key: EXAMSHIELD_LIST_CACHE_TTL_SECONDS
+        value: "8"
+      - key: EXAMSHIELD_AI_CHAT_MAX_TOKENS
+        value: "220"
+      - key: EXAMSHIELD_AI_PLANNER_MAX_TOKENS
+        value: "120"

@@ -11,16 +11,19 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from .chat import ChatSession
 from .detect import is_suspicious, scan_text
 from .events import sse_bytes
 from .llm import NvidiaClient
 from .ocr import SUPPORTED_TYPES, analyze_image
+from .pipeline import EvidencePipeline
 from .planner import ToolPlanner
 from .responses import conversation_messages, grounded_messages
 from .settings import Settings, load_settings
 from .store import EvidenceStore, UploadedFile, normalize_telegram_timestamp
 from .telegram import TelegramWebhook
 from .tools import ExamshieldToolRegistry
+from .workers import AnalysisWorkerPool
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,6 +38,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
     registry: ExamshieldToolRegistry
     client: NvidiaClient
     telegram: TelegramWebhook
+    workers: AnalysisWorkerPool
+    pipeline: EvidencePipeline
 
     def do_OPTIONS(self) -> None:
         self._send_empty(204)
@@ -75,6 +80,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                         "chatId": self.settings.telegram_chat_id or "NOT SET",
                         "adminChatId": self.settings.telegram_admin_chat_id or "NOT SET",
                     },
+                    "ocrWorkers": self.workers.stats(),
                 }
             )
             return
@@ -137,6 +143,10 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             self._run_plan()
             return
 
+        if path == "/chat":
+            self._run_chat()
+            return
+
         self._send_json({"error": "Not found"}, status=404)
 
     def _run_ocr(self) -> None:
@@ -175,16 +185,60 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
     def _create_analysis_job(self) -> None:
         payload = self._read_json()
         evidence_id = str(payload.get("evidenceId") or "").strip()
+        async_mode = bool(payload.get("async"))
         if not evidence_id:
             self._send_json({"error": "evidenceId is required."}, status=400)
             return
         try:
+            evidence = self.store.get_evidence_by_id(evidence_id)
+            if not evidence:
+                raise LookupError("Evidence not found.")
+            if evidence.get("fileType") == "text/plain":
+                self._send_json({"error": "Text-only evidence does not require OCR."}, status=400)
+                return
+
+            existing_job = self.store.get_active_job_for_evidence(evidence_id)
+            if existing_job:
+                self._send_json(
+                    {
+                        "message": "Analysis Already Queued",
+                        "evidence": evidence,
+                        "job": existing_job,
+                    }
+                )
+                return
+
             queued = self.store.create_analysis_job(evidence_id)
+            job = queued["job"]
+            if async_mode:
+                submitted = self.pipeline.queue_media_analysis(
+                    created={"evidence": evidence, "activity": [queued["activity"]]},
+                    detection={"score": 0, "categories": []},
+                    text=None,
+                    chat_id=str(evidence.get("telegramChatId") or ""),
+                    message={},
+                    ocr_runner=analyze_image,
+                    job=job,
+                )
+                if not submitted:
+                    submitted = job
+                self._send_json(
+                    {
+                        "message": "Analysis Queued",
+                        "evidence": evidence,
+                        "job": submitted,
+                        "activity": [queued["activity"]],
+                        "async": True,
+                    },
+                    status=202,
+                )
+                return
+
             self._send_json(
                 {
                     "message": "Analysis Queued",
-                    "evidence": self.store.get_evidence_by_id(evidence_id),
-                    "job": queued["job"],
+                    "evidence": evidence,
+                    "job": job,
                     "activity": [queued["activity"]],
                 }
             )
@@ -222,14 +276,20 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 text = optional_text(payload.get("text"))
                 uploaded = None
 
+            detection = scan_text(text)
             created = self.store.create_telegram_event(
                 message_id=message_id,
                 chat_id=chat_id,
                 timestamp=timestamp,
                 text=text,
                 file=uploaded,
-                detection=scan_text(text),
+                detection=detection,
             )
+            detection_payload = {
+                "score": detection["score"],
+                "categories": detection["categories"],
+                "isSuspicious": is_suspicious(detection),
+            }
             if created["duplicate"]:
                 self._send_json(
                     {
@@ -247,47 +307,49 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                         "telegramEvent": created["telegramEvent"],
                         "evidence": None,
                         "activity": created["activity"],
-                        "detection": {
-                            "score": scan_text(text)["score"],
-                            "categories": scan_text(text)["categories"],
-                            "isSuspicious": is_suspicious(scan_text(text)),
-                        },
+                        "detection": detection_payload,
                     },
                     status=202,
                 )
                 return
-            # Skip OCR analysis for text-only evidence (fileType text/plain)
+
+            message = {"message_id": message_id, "chat": {"id": chat_id}, "text": text}
             if created["evidence"].get("fileType") == "text/plain":
+                alert_sent = self.pipeline.process_text_only_alert(
+                    created, detection, text, chat_id, message
+                )
                 self._send_json(
                     {
                         "message": "Suspicious Text Captured",
                         "telegramEvent": created["telegramEvent"],
                         "evidence": created["evidence"],
-                        "detection": {
-                            "score": scan_text(text)["score"],
-                            "categories": scan_text(text)["categories"],
-                            "isSuspicious": is_suspicious(scan_text(text)),
-                        },
+                        "detection": detection_payload,
+                        "alertSent": alert_sent,
                         "activity": created["activity"],
                     },
                     status=201,
                 )
                 return
-            queued = self.store.create_analysis_job(created["evidence"]["evidenceId"])
-            analysis = self.store.run_analysis_job(queued["job"]["jobId"], analyze_image)
+
+            job = self.pipeline.queue_media_analysis(
+                created=created,
+                detection=detection,
+                text=text,
+                chat_id=chat_id,
+                message=message,
+                ocr_runner=analyze_image,
+            )
             self._send_json(
                 {
-                    "message": "Telegram Evidence Processed",
+                    "message": "Telegram Evidence Queued For Analysis",
                     "telegramEvent": created["telegramEvent"],
-                    "evidence": analysis["evidence"],
-                    "job": analysis["job"],
-                    "attribution": analysis.get("attribution"),
-                    "watermark": analysis.get("watermark"),
-                    "forensicReport": analysis.get("forensicReport"),
-                    "alert": analysis.get("alert"),
-                    "activity": [*created["activity"], queued["activity"], *analysis["activity"]],
+                    "evidence": created["evidence"],
+                    "job": job,
+                    "detection": detection_payload,
+                    "async": True,
+                    "activity": created["activity"],
                 },
-                status=201,
+                status=202,
             )
         except Exception as exc:
             self._send_json({"error": str(exc) or "Telegram event ingestion failed."}, status=400)
@@ -301,7 +363,9 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         try:
             update = self._read_json()
             logger.info(f"Webhook received: keys={list(update.keys())}")
-            result = self.telegram.process_update(update, self.store, analyze_image)
+            result = self.telegram.process_update(
+                update, self.store, analyze_image, pipeline=self.pipeline
+            )
             logger.info(f"Webhook processed: {result.get('message')}, processed={result.get('processed')}")
             self._send_json(result)
         except Exception as exc:
@@ -340,6 +404,37 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             })
         except Exception as exc:
             self._send_json({"error": str(exc) or "Failed to get Telegram status."}, status=400)
+
+    def _run_chat(self) -> None:
+        payload = self._read_json()
+        prompt = str(payload.get("prompt") or "").strip()
+        if not prompt:
+            self._send_json({"error": "Prompt is required."}, status=400)
+            return
+
+        history = payload.get("messages") if isinstance(payload.get("messages"), list) else []
+        current_evidence_id = payload.get("currentEvidenceId")
+        current_evidence_id = str(current_evidence_id) if current_evidence_id else None
+
+        self.send_response(200)
+        self._cors_headers()
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-transform")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+
+        def write_event(event: dict[str, Any]) -> None:
+            self.wfile.write(sse_bytes(event))
+            self.wfile.flush()
+
+        session = ChatSession(client=self.client, registry=self.registry, write=write_event)
+        try:
+            session.run(prompt, history, current_evidence_id)
+        except Exception as exc:
+            logger.error("Chat stream failed: %s", exc, exc_info=True)
+            write_event({"type": "error", "message": str(exc) or "Chat failed."})
+            write_event({"type": "done"})
 
     def _run_plan(self) -> None:
         payload = self._read_json()
@@ -480,11 +575,18 @@ def build_handler(settings: Settings):
     class ConfiguredExamshieldAiHandler(ExamshieldAiHandler):
         pass
 
+    store = EvidenceStore(settings)
+    telegram = TelegramWebhook(settings)
+    workers = AnalysisWorkerPool()
+    pipeline = EvidencePipeline(store, telegram, workers)
+
     ConfiguredExamshieldAiHandler.settings = settings
-    ConfiguredExamshieldAiHandler.store = EvidenceStore(settings)
-    ConfiguredExamshieldAiHandler.registry = ExamshieldToolRegistry(ConfiguredExamshieldAiHandler.store)
+    ConfiguredExamshieldAiHandler.store = store
+    ConfiguredExamshieldAiHandler.registry = ExamshieldToolRegistry(store)
     ConfiguredExamshieldAiHandler.client = NvidiaClient(settings)
-    ConfiguredExamshieldAiHandler.telegram = TelegramWebhook(settings)
+    ConfiguredExamshieldAiHandler.telegram = telegram
+    ConfiguredExamshieldAiHandler.workers = workers
+    ConfiguredExamshieldAiHandler.pipeline = pipeline
     return ConfiguredExamshieldAiHandler
 
 
@@ -506,6 +608,11 @@ def main() -> None:
             logger.info(f"Cleaned up {cleaned} stale analysis job(s) on startup")
     except Exception as exc:
         logger.error(f"Stale job cleanup failed: {exc}")
+    try:
+        handler.store.warmup_cache()
+        logger.info("Evidence cache warmed on startup")
+    except Exception as exc:
+        logger.warning("Evidence cache warmup skipped: %s", exc)
     server = ThreadingHTTPServer((settings.host, settings.port), handler)
     logger.info(f"EXAMSHIELD AI service listening on http://{settings.host}:{settings.port}")
     server.serve_forever()
