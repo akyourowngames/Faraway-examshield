@@ -58,9 +58,9 @@ class TestParallelPsm:
         with patch("examshield_ai.ocr.read_ocr_candidate", side_effect=fake_candidate):
             candidates = read_ocr_candidates_parallel(image_path)
 
-        assert len(candidates) == 3
+        assert len(candidates) == 2
         psms = {candidate["psm"] for candidate in candidates}
-        assert psms == {"6", "4", "11"}
+        assert psms == {"6", "4"}
 
     def test_read_ocr_candidates_parallel_handles_failures(self, tmp_path: Path):
         image_path = tmp_path / "sample.jpg"
@@ -114,7 +114,6 @@ class TestAnalyzeImage:
         candidates = [
             {"status": "completed", "psm": "6", "text": "low", "confidence": 40, "qualityScore": 40},
             {"status": "completed", "psm": "4", "text": "best text", "confidence": 90, "qualityScore": 92},
-            {"status": "failed", "psm": "11", "text": "", "confidence": 0, "qualityScore": 0, "error": "fail"},
         ]
 
         with patch("examshield_ai.ocr.write_temp_image", return_value=Path("/tmp/x.jpg")), patch(
@@ -130,7 +129,7 @@ class TestAnalyzeImage:
     def test_analyze_image_retries_when_all_psms_fail(self):
         candidates = [
             {"status": "failed", "psm": psm, "text": "", "confidence": 0, "qualityScore": 0, "error": "bad"}
-            for psm in ("6", "4", "11")
+            for psm in ("6", "4")
         ]
 
         with patch("examshield_ai.ocr.write_temp_image", return_value=Path("/tmp/x.jpg")), patch(

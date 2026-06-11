@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import threading
 import time
 from cgi import FieldStorage
 from dataclasses import replace
@@ -69,6 +71,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                     "ocr": {
                         "endpoint": "/ocr/analyze",
                         "supportedTypes": sorted(SUPPORTED_TYPES.keys()),
+                        "workers": self.workers.stats(),
                     },
                     "uploadRoot": str(self.settings.upload_root),
                     "registryPath": str(self.settings.registry_path),
@@ -590,6 +593,23 @@ def build_handler(settings: Settings):
     return ConfiguredExamshieldAiHandler
 
 
+def _start_stale_job_sweeper(store: EvidenceStore) -> None:
+    interval_seconds = int(os.environ.get("EXAMSHIELD_STALE_JOB_SWEEP_SECONDS", "60"))
+    max_age_seconds = int(os.environ.get("EXAMSHIELD_STALE_JOB_MAX_AGE_SECONDS", "120"))
+
+    def sweep() -> None:
+        while True:
+            time.sleep(interval_seconds)
+            try:
+                cleaned = store.cleanup_stale_jobs(max_age_seconds=max_age_seconds)
+                if cleaned:
+                    logger.warning("Stale job sweeper cleaned %s stuck job(s)", cleaned)
+            except Exception as exc:
+                logger.error("Stale job sweeper failed: %s", exc)
+
+    threading.Thread(target=sweep, daemon=True, name="stale-job-sweeper").start()
+
+
 def main() -> None:
     settings = load_settings()
     handler = build_handler(settings)
@@ -613,6 +633,7 @@ def main() -> None:
         logger.info("Evidence cache warmed on startup")
     except Exception as exc:
         logger.warning("Evidence cache warmup skipped: %s", exc)
+    _start_stale_job_sweeper(handler.store)
     server = ThreadingHTTPServer((settings.host, settings.port), handler)
     logger.info(f"EXAMSHIELD AI service listening on http://{settings.host}:{settings.port}")
     server.serve_forever()

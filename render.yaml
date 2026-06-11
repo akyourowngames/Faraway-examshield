@@ -27,17 +27,27 @@ services:
       - key: TELEGRAM_ADMIN_CHAT_ID
         sync: false
       - key: EXAMSHIELD_OCR_TIMEOUT
-        value: "45"
+        value: "25"
+      - key: EXAMSHIELD_OCR_TOTAL_BUDGET_SECONDS
+        value: "75"
       - key: EXAMSHIELD_OCR_MAX_RETRIES
-        value: "2"
+        value: "0"
+      - key: EXAMSHIELD_OCR_FAST
+        value: "1"
       - key: EXAMSHIELD_OCR_WORKERS
         value: "2"
       - key: EXAMSHIELD_OCR_MODE
         value: sequential
       - key: EXAMSHIELD_OCR_PSMS
-        value: "6,4,11"
+        value: "6,4"
       - key: EXAMSHIELD_OCR_PSM_WORKERS
         value: "2"
+      - key: EXAMSHIELD_ANALYSIS_JOB_TIMEOUT_SECONDS
+        value: "120"
+      - key: EXAMSHIELD_STALE_JOB_SWEEP_SECONDS
+        value: "60"
+      - key: EXAMSHIELD_STALE_JOB_MAX_AGE_SECONDS
+        value: "120"
       - key: EXAMSHIELD_AI_PLANNER_MODEL
         value: mistralai/ministral-14b-instruct-2512
       - key: EXAMSHIELD_AI_MODEL

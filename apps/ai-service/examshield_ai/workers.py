@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -15,6 +15,7 @@ OcrRunner = Callable[[bytes, str], JsonObject]
 OnComplete = Callable[[JsonObject, Exception | None], None]
 
 DEFAULT_MAX_WORKERS = int(os.environ.get("EXAMSHIELD_OCR_WORKERS", "2"))
+ANALYSIS_JOB_TIMEOUT_SECONDS = int(os.environ.get("EXAMSHIELD_ANALYSIS_JOB_TIMEOUT_SECONDS", "120"))
 
 
 @dataclass
@@ -94,7 +95,23 @@ class AnalysisWorkerPool:
                     task.evidence_id,
                     task.job_id,
                 )
-                result = store.run_analysis_job(task.job_id, ocr_runner)
+                with ThreadPoolExecutor(max_workers=1, thread_name_prefix="analysis-job") as runner:
+                    future = runner.submit(store.run_analysis_job, task.job_id, ocr_runner)
+                    try:
+                        result = future.result(timeout=ANALYSIS_JOB_TIMEOUT_SECONDS)
+                    except FuturesTimeoutError as exc:
+                        message = f"Analysis timed out after {ANALYSIS_JOB_TIMEOUT_SECONDS}s"
+                        logger.error(
+                            "Worker OCR timed out for evidence %s job %s",
+                            task.evidence_id,
+                            task.job_id,
+                        )
+                        try:
+                            store.fail_analysis_job(task.job_id, message)
+                        except Exception as fail_exc:
+                            logger.error("Failed to mark timed-out job %s failed: %s", task.job_id, fail_exc)
+                        raise RuntimeError(message) from exc
+
                 if result.get("message") == "Analysis Failed":
                     raise RuntimeError(
                         str(result.get("job", {}).get("error") or "Analysis failed.")
