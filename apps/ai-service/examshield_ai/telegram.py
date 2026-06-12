@@ -88,6 +88,11 @@ class TelegramWebhook:
 
         # Extract text and run leak detection
         text = _extract_text(message)
+        
+        # Handle chat messages - respond to normal messages
+        if text and not is_suspicious(scan_text(text)):
+            self._handle_chat_message(chat_id, message, text)
+        
         detection = scan_text(text)
 
         # Download media if any
@@ -356,10 +361,13 @@ class TelegramWebhook:
                         {
                             "role": "system",
                             "content": (
-                                "You write Telegram alerts for EXAMSHIELD investigators. "
-                                "Use only the provided JSON facts. Return Telegram HTML only, no markdown. "
-                                "Keep it under 900 characters. Use concise operational language. "
-                                "Allowed tags: <b>, <i>, <code>. Do not invent paper, center, score, or sender details."
+                                "You are an ExamShield security analyst reporting a potential exam leak. "
+                                "Write a natural, conversational alert message like you're texting a colleague. "
+                                "Use casual but professional tone. Include the actual message that was flagged. "
+                                "Mention key details naturally. Use Telegram HTML formatting: <b>, <i>, <code>. "
+                                "Keep it under 800 characters. Be human, not robotic. "
+                                "Example style: 'Heads up team - just caught something suspicious in group -XXXXX. "
+                                "Someone posted: \"[message preview]\". Score is X/50. Looking into it.'"
                             ),
                         },
                         {
@@ -367,7 +375,7 @@ class TelegramWebhook:
                             "content": json.dumps(context, ensure_ascii=False),
                         },
                     ],
-                    max_tokens=260,
+                    max_tokens=300,
                     timeout=12,
                 )
                 cleaned = _clean_telegram_html(generated)
@@ -409,6 +417,46 @@ class TelegramWebhook:
             "text": text,
             "parse_mode": parse_mode,
         })
+
+    def _handle_chat_message(self, chat_id: str, message: JsonObject, text: str) -> JsonObject | None:
+        """Handle normal chat messages using LLM for conversational responses."""
+        llm = NvidiaClient(self.settings)
+        if not llm.configured or not text:
+            return None
+        
+        sender = _extract_sender(message)
+        
+        system_prompt = (
+            "You are ExamShield AI, an intelligent exam security assistant. "
+            "You monitor Telegram groups for potential exam leaks and suspicious activity. "
+            "You are friendly, helpful, and professional. "
+            "Respond naturally to questions about exam security, the monitoring system, or general queries. "
+            "Keep responses concise (under 200 characters). "
+            "Use Telegram HTML formatting: <b>, <i>, <code>. "
+            "If someone asks what you do, briefly explain you monitor for exam leaks. "
+            "If someone greets you, respond warmly. "
+            "Be conversational and human-like."
+        )
+        
+        user_prompt = f"Message from {sender} in chat {chat_id}: {text}"
+        
+        try:
+            response = llm.chat_text(
+                model=self.settings.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                max_tokens=200,
+                timeout=10,
+            )
+            cleaned = _clean_telegram_html(response)
+            if cleaned:
+                return self.send_message(chat_id, cleaned, parse_mode="HTML")
+        except Exception as exc:
+            logger.warning("LLM chat response failed: %s", exc)
+        
+        return None
 
     def _api_multipart(
         self,
@@ -535,35 +583,47 @@ def _fallback_alert_text(context: JsonObject) -> str:
     evidence = context.get("evidence") or {}
     detection = context.get("detection") or {}
     report = context.get("forensicReport") or {}
-    lines = [
-        f"<b>{escape(str(context.get('alertType') or 'SUSPICIOUS ACTIVITY'))}</b>",
-        f"<b>Group:</b> <code>{escape(str(context.get('group') or 'Unknown'))}</code>",
-        f"<b>Sender:</b> {escape(str(context.get('sender') or 'Unknown'))}",
-    ]
+    alert_type = str(context.get("alertType") or "SUSPICIOUS ACTIVITY")
+    group = str(context.get("group") or "Unknown")
+    sender = str(context.get("sender") or "Unknown")
     preview = str(context.get("messagePreview") or "").strip()
+    
+    lines = [
+        f"<b>Hey team,</b>",
+        f"",
+        f"Just spotted something <b>suspicious</b> in group <code>{escape(group)}</code>.",
+    ]
+    
     if preview:
-        lines.append(f"<b>Message:</b> {escape(preview[:220])}")
+        lines.append(f"")
+        lines.append(f"User <b>{escape(sender)}</b> posted:")
+        lines.append(f"<i>\"{escape(preview[:200])}\"</i>")
+    
     if evidence.get("id"):
-        lines.append(f"<b>Evidence:</b> <code>{escape(str(evidence.get('id')))}</code>")
+        lines.append(f"")
+        lines.append(f"Evidence logged: <code>{escape(str(evidence.get('id')))}</code>")
+    
     if report.get("status") == "investigation-complete":
-        lines.extend(
-            [
-                f"<b>Paper:</b> {escape(str(report.get('paper') or 'Unknown'))}",
-                f"<b>Center:</b> {escape(str(report.get('center') or 'Unknown'))}",
-                f"<b>Confidence:</b> {escape(str(report.get('confidence') or 'N/A'))}%",
-            ]
-        )
+        paper = str(report.get("paper") or "Unknown")
+        center = str(report.get("center") or "Unknown")
+        confidence = str(report.get("confidence") or "N/A")
+        lines.append(f"")
+        lines.append(f"<b>Investigation complete:</b> Paper: {escape(paper)} | Center: {escape(center)} | Confidence: {escape(confidence)}%")
     else:
-        lines.append(
-            f"<b>Detection Score:</b> {escape(str(detection.get('score') or 0))}/"
-            f"{escape(str(detection.get('maxScore') or 50))}"
-        )
+        score = str(detection.get("score") or 0)
+        max_score = str(detection.get("maxScore") or 50)
+        lines.append(f"")
+        lines.append(f"Detection score: <b>{escape(score)}/{escape(max_score)}</b>")
         matches = detection.get("matches") if isinstance(detection.get("matches"), list) else []
         keywords = ", ".join(
             dict.fromkeys(str(item.get("text") or "") for item in matches if isinstance(item, dict) and item.get("text"))
         )
         if keywords:
-            lines.append(f"<b>Matched:</b> {escape(keywords[:180])}")
+            lines.append(f"Keywords found: <b>{escape(keywords[:150])}</b>")
+    
+    lines.append(f"")
+    lines.append(f"Working on it. Will update soon.")
+    
     return "\n".join(lines)
 
 

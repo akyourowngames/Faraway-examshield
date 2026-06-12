@@ -149,6 +149,10 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             self._send_json(self.store.reset_demo_environment())
             return
 
+        if path == "/telegram/chat":
+            self._test_telegram_chat()
+            return
+
         if path == "/plan":
             self._run_plan()
             return
@@ -597,6 +601,93 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             self._remove_monitored_group(parts[2])
             return
         self._send_json({"error": "Not found"}, status=404)
+
+    def _test_telegram_chat(self) -> None:
+        """Test endpoint for Telegram chat functionality."""
+        try:
+            payload = self._read_json()
+            chat_id = str(payload.get("chatId") or "").strip()
+            message_text = str(payload.get("message") or "").strip()
+            
+            if not chat_id or not message_text:
+                self._send_json({"error": "chatId and message are required."}, status=400)
+                return
+            
+            # Create a mock message object
+            mock_message = {
+                "message_id": 99999,
+                "chat": {"id": int(chat_id)},
+                "text": message_text,
+                "from": {
+                    "id": 12345,
+                    "first_name": "Test",
+                    "last_name": "User",
+                    "username": "testuser"
+                },
+                "date": int(time.time())
+            }
+            
+            # Use the telegram webhook to handle the chat
+            from .detect import scan_text
+            from .store import normalize_telegram_timestamp
+            
+            detection = scan_text(message_text)
+            created = self.store.create_telegram_event(
+                message_id="99999",
+                chat_id=chat_id,
+                timestamp=normalize_telegram_timestamp(int(time.time())),
+                text=message_text,
+                file=None,
+                detection=detection,
+            )
+            
+            # Try to get a chat response
+            llm = NvidiaClient(self.settings)
+            if llm.configured:
+                from .telegram import _extract_sender, _clean_telegram_html
+                sender = _extract_sender(mock_message)
+                
+                system_prompt = (
+                    "You are ExamShield AI, an intelligent exam security assistant. "
+                    "You monitor Telegram groups for potential exam leaks and suspicious activity. "
+                    "You are friendly, helpful, and professional. "
+                    "Respond naturally to questions about exam security, the monitoring system, or general queries. "
+                    "Keep responses concise (under 200 characters). "
+                    "Use Telegram HTML formatting: <b>, <i>, <code>. "
+                    "If someone asks what you do, briefly explain you monitor for exam leaks. "
+                    "If someone greets you, respond warmly. "
+                    "Be conversational and human-like."
+                )
+                
+                user_prompt = f"Message from {sender} in chat {chat_id}: {message_text}"
+                
+                response = llm.chat_text(
+                    model=self.settings.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    max_tokens=200,
+                    timeout=10,
+                )
+                cleaned = _clean_telegram_html(response)
+                
+                self._send_json({
+                    "status": "ok",
+                    "message": message_text,
+                    "chatId": chat_id,
+                    "response": cleaned or "No response generated",
+                    "detection": {
+                        "score": detection["score"],
+                        "categories": detection["categories"],
+                        "isSuspicious": is_suspicious(detection),
+                    },
+                    "evidenceCreated": created["evidence"] is not None,
+                })
+            else:
+                self._send_json({"error": "NVIDIA API key not configured."}, status=500)
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Chat test failed."}, status=400)
 
     def _add_monitored_group(self) -> None:
         try:
