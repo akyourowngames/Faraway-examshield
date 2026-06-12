@@ -2,11 +2,5 @@
   "framework": "nextjs",
   "installCommand": "npm install --legacy-peer-deps",
   "buildCommand": "npm run build",
-  "outputDirectory": ".next",
-  "crons": [
-    {
-      "path": "/api/keep-warm",
-      "schedule": "*/10 * * * *"
-    }
-  ]
+  "outputDirectory": ".next"
 }
