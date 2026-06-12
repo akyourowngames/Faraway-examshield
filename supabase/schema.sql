@@ -111,3 +111,146 @@ $$;
 insert into storage.buckets (id, name, public)
 values ('evidence-files', 'evidence-files', false)
 on conflict (id) do nothing;
+
+insert into storage.buckets (id, name, public)
+values ('agent-knowledge', 'agent-knowledge', false)
+on conflict (id) do nothing;
+
+-- ─────────────────────────────────────────────────────────────────────
+-- Community Agents
+-- ─────────────────────────────────────────────────────────────────────
+
+create table if not exists public.community_agents (
+  id uuid primary key default extensions.gen_random_uuid(),
+  name text not null,
+  description text not null default '',
+  category text not null default 'general',
+  visibility text not null default 'private',
+  status text not null default 'draft',
+  avatar text not null default '',
+  author text not null default '',
+  model text not null default 'gpt-4o',
+  system_prompt text not null default '',
+  response_style text not null default 'balanced',
+  citation_mode boolean not null default true,
+  tags text[] not null default '{}'::text[],
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.agent_llm_configs (
+  id uuid primary key default extensions.gen_random_uuid(),
+  agent_id uuid not null references public.community_agents(id) on delete cascade,
+  provider text not null,
+  model text not null default '',
+  api_key_encrypted text not null default '',
+  endpoint_url text not null default '',
+  extra_headers jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (agent_id)
+);
+
+create table if not exists public.agent_telegram_configs (
+  id uuid primary key default extensions.gen_random_uuid(),
+  agent_id uuid not null references public.community_agents(id) on delete cascade,
+  bot_token text not null default '',
+  bot_username text not null default '',
+  bot_verified boolean not null default false,
+  privacy_mode_disabled boolean not null default false,
+  added_to_group boolean not null default false,
+  promoted_admin boolean not null default false,
+  message_reading_enabled boolean not null default false,
+  webhook_url text not null default '',
+  deployment_status text not null default 'disconnected',
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (agent_id)
+);
+
+create table if not exists public.agent_knowledge_sources (
+  id uuid primary key default extensions.gen_random_uuid(),
+  agent_id uuid not null references public.community_agents(id) on delete cascade,
+  name text not null,
+  source_type text not null default 'document',
+  status text not null default 'queued',
+  file_count int not null default 0,
+  chunk_count int not null default 0,
+  total_chars int not null default 0,
+  error_message text,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.agent_knowledge_chunks (
+  id uuid primary key default extensions.gen_random_uuid(),
+  source_id uuid not null references public.agent_knowledge_sources(id) on delete cascade,
+  agent_id uuid not null references public.community_agents(id) on delete cascade,
+  content text not null,
+  content_hash text not null default '',
+  embedding extensions.vector(384),
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.agent_conversations (
+  id uuid primary key default extensions.gen_random_uuid(),
+  agent_id uuid not null references public.community_agents(id) on delete cascade,
+  user_message text not null,
+  agent_response text not null default '',
+  sources jsonb not null default '[]'::jsonb,
+  latency_ms int not null default 0,
+  status text not null default 'completed',
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+alter table public.community_agents enable row level security;
+alter table public.agent_llm_configs enable row level security;
+alter table public.agent_telegram_configs enable row level security;
+alter table public.agent_knowledge_sources enable row level security;
+alter table public.agent_knowledge_chunks enable row level security;
+alter table public.agent_conversations enable row level security;
+
+create index if not exists community_agents_status_idx on public.community_agents (status);
+create index if not exists community_agents_category_idx on public.community_agents (category);
+create index if not exists community_agents_visibility_idx on public.community_agents (visibility);
+create index if not exists agent_knowledge_sources_agent_id_idx on public.agent_knowledge_sources (agent_id);
+create index if not exists agent_knowledge_chunks_agent_id_idx on public.agent_knowledge_chunks (agent_id);
+create index if not exists agent_knowledge_chunks_source_id_idx on public.agent_knowledge_chunks (source_id);
+create index if not exists agent_conversations_agent_id_idx on public.agent_conversations (agent_id);
+
+create index if not exists agent_knowledge_chunks_embedding_hnsw
+  on public.agent_knowledge_chunks
+  using hnsw (embedding vector_cosine_ops)
+  where embedding is not null;
+
+create or replace function public.match_agent_knowledge (
+  query_embedding extensions.vector(384),
+  p_agent_id uuid,
+  match_threshold double precision default 0.7,
+  match_count int default 8
+)
+returns table (
+  id uuid,
+  content text,
+  metadata jsonb,
+  similarity double precision
+)
+language sql stable
+as $$
+  select
+    chunk.id,
+    chunk.content,
+    chunk.metadata,
+    1 - (chunk.embedding <=> query_embedding) as similarity
+  from public.agent_knowledge_chunks chunk
+  where chunk.embedding is not null
+    and chunk.agent_id = p_agent_id
+    and 1 - (chunk.embedding <=> query_embedding) >= match_threshold
+  order by chunk.embedding <=> query_embedding asc
+  limit match_count;
+$$;

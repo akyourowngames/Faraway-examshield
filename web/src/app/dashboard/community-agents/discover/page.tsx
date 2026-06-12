@@ -28,11 +28,11 @@ const itemVariants = {
 };
 
 const CATEGORY_COLORS: Record<AgentCategory, string> = {
-  security: "bg-white/10 text-white/70",
-  forensics: "bg-white/10 text-white/70",
-  compliance: "bg-white/10 text-white/70",
-  investigation: "bg-white/10 text-white/70",
-  monitoring: "bg-white/10 text-white/70",
+  education: "bg-white/10 text-white/70",
+  "school-assistant": "bg-white/10 text-white/70",
+  "university-assistant": "bg-white/10 text-white/70",
+  "coaching-assistant": "bg-white/10 text-white/70",
+  "security-assistant": "bg-white/10 text-white/70",
   general: "bg-white/10 text-white/70",
 };
 
@@ -53,7 +53,7 @@ function AgentCard({ agent }: { agent: Agent }) {
           />
 
           {/* Featured badge */}
-          {agent.isFeatured && (
+          {agent.visibility === "public" && (
             <div className="absolute top-0 right-0 px-2 py-0.5 bg-white text-black text-[9px] font-bold uppercase tracking-widest">
               <Sparkles className="w-2.5 h-2.5 inline mr-0.5 -mt-0.5" />
               Featured
@@ -143,7 +143,7 @@ export default function DiscoverPage() {
 
     switch (sortBy) {
       case "featured":
-        agents.sort((a, b) => (b.isFeatured ? 1 : 0) - (a.isFeatured ? 1 : 0));
+        agents.sort((a, b) => (b.visibility === "public" ? 1 : 0) - (a.visibility === "public" ? 1 : 0));
         break;
       case "trending":
         agents.sort((a, b) => b.conversationCount - a.conversationCount);
@@ -159,9 +159,9 @@ export default function DiscoverPage() {
     return agents;
   }, [search, selectedCategory, sortBy]);
 
-  const featured = filtered.filter((a) => a.isFeatured);
-  const trending = filtered.filter((a) => a.isTrending);
-  const recent = filtered.filter((a) => !a.isFeatured && !a.isTrending);
+  const featured = filtered.filter((a) => a.visibility === "public");
+  const trending = filtered.filter((a) => a.conversationCount > 200);
+  const recent = filtered.filter((a) => a.visibility !== "public" && a.conversationCount <= 200);
 
   return (
     <div className="space-y-8">

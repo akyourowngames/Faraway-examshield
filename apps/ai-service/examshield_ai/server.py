@@ -23,10 +23,12 @@ from .pipeline import EvidencePipeline
 from .planner import ToolPlanner
 from .responses import conversation_messages, grounded_messages
 from .settings import Settings, load_settings
-from .store import EvidenceStore, UploadedFile, normalize_telegram_timestamp
+from .store import EvidenceStore, UploadedFile, normalize_telegram_timestamp, AgentStore
 from .telegram import TelegramWebhook
 from .tools import ExamshieldToolRegistry
 from .workers import AnalysisTask, AnalysisWorkerPool
+from .llm_providers import list_providers, validate_api_key, ProviderConfig, chat_completion as provider_chat_completion
+from .rag import ingest_knowledge_source, search_agent_knowledge, RAGConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,6 +46,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
     workers: AnalysisWorkerPool
     pipeline: EvidencePipeline
     memory: MemoryManager
+    agent_store: AgentStore
 
     def do_OPTIONS(self) -> None:
         self._send_empty(204)
@@ -114,11 +117,30 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         if path == "/telegram/status":
             self._get_telegram_status()
             return
-        if len(parts) == 3 and parts[0] == "analysis" and parts[1] == "jobs":
+        if len(parts) == 2 and parts[0] == "analysis" and parts[1] == "jobs":
             try:
                 self._send_json(self.store.analysis_job_snapshot(parts[2]))
             except LookupError as exc:
                 self._send_json({"error": str(exc)}, status=404)
+            return
+        # Community Agents
+        if path == "/llm/providers":
+            self._send_json({"providers": list_providers()})
+            return
+        if path == "/agents":
+            self._list_agents()
+            return
+        if len(parts) == 2 and parts[0] == "agents":
+            self._get_agent(parts[1])
+            return
+        if len(parts) == 3 and parts[0] == "agents" and parts[1] == "stats":
+            self._get_agent_stats(parts[2])
+            return
+        if len(parts) == 3 and parts[0] == "agents" and parts[2] == "knowledge":
+            self._list_knowledge_sources(parts[1])
+            return
+        if len(parts) == 3 and parts[0] == "agents" and parts[2] == "conversations":
+            self._list_conversations(parts[1])
             return
         self._send_json({"error": "Not found"}, status=404)
 
@@ -174,6 +196,28 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
 
         if path == "/chat":
             self._run_chat()
+            return
+        # Community Agents
+        if path == "/agents":
+            self._create_agent()
+            return
+        if len(parts) == 3 and parts[0] == "agents" and parts[1] == "llm" and parts[2] == "validate":
+            self._validate_llm_key()
+            return
+        if len(parts) == 3 and parts[0] == "agents" and parts[2] == "llm":
+            self._upsert_agent_llm(parts[1])
+            return
+        if len(parts) == 3 and parts[0] == "agents" and parts[2] == "telegram":
+            self._upsert_agent_telegram(parts[1])
+            return
+        if len(parts) == 3 and parts[0] == "agents" and parts[2] == "knowledge":
+            self._create_knowledge_source(parts[1])
+            return
+        if len(parts) == 4 and parts[0] == "agents" and parts[3] == "upload":
+            self._upload_knowledge_files(parts[1], parts[2])
+            return
+        if len(parts) == 3 and parts[0] == "agents" and parts[2] == "test":
+            self._test_agent(parts[1])
             return
 
         self._send_json({"error": "Not found"}, status=404)
@@ -596,6 +640,281 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send_json({"error": str(exc) or "Memory lookup failed."}, status=400)
 
+    # ─────────────────────────────────────────────────────────────────
+    # Community Agents
+    # ─────────────────────────────────────────────────────────────────
+
+    def _list_agents(self) -> None:
+        try:
+            status = None
+            parsed = urlparse(self.path)
+            for param in (parsed.query or "").split("&"):
+                if param.startswith("status="):
+                    status = param.split("=", 1)[1] or None
+            agents = self.agent_store.list_agents(status=status)
+            self._send_json({"agents": agents, "total": len(agents)})
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Failed to list agents."}, status=400)
+
+    def _get_agent(self, agent_id: str) -> None:
+        try:
+            agent = self.agent_store.get_agent(agent_id)
+            if not agent:
+                self._send_json({"error": "Agent not found."}, status=404)
+                return
+            llm_config = self.agent_store.get_llm_config(agent_id)
+            tg_config = self.agent_store.get_telegram_config(agent_id)
+            sources = self.agent_store.list_knowledge_sources(agent_id)
+            stats = self.agent_store.get_agent_stats(agent_id)
+            self._send_json({
+                "agent": agent,
+                "llmConfig": {k: v for k, v in (llm_config or {}).items() if k != "apiKeyEncrypted"} if llm_config else None,
+                "telegramConfig": tg_config,
+                "knowledgeSources": sources,
+                "stats": stats,
+            })
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Failed to get agent."}, status=400)
+
+    def _create_agent(self) -> None:
+        try:
+            data = self._read_json()
+            agent = self.agent_store.create_agent(data)
+            self._send_json({"agent": agent, "message": "Agent created."}, status=201)
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Failed to create agent."}, status=400)
+
+    def _update_agent(self, agent_id: str) -> None:
+        try:
+            data = self._read_json()
+            agent = self.agent_store.update_agent(agent_id, data)
+            self._send_json({"agent": agent, "message": "Agent updated."})
+        except LookupError as exc:
+            self._send_json({"error": str(exc)}, status=404)
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Failed to update agent."}, status=400)
+
+    def _delete_agent(self, agent_id: str) -> None:
+        try:
+            deleted = self.agent_store.delete_agent(agent_id)
+            if deleted:
+                self._send_json({"message": "Agent deleted."})
+            else:
+                self._send_json({"error": "Agent not found."}, status=404)
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Failed to delete agent."}, status=400)
+
+    def _upsert_agent_llm(self, agent_id: str) -> None:
+        try:
+            data = self._read_json()
+            config = self.agent_store.upsert_llm_config(agent_id, data)
+            self._send_json({"config": {k: v for k, v in config.items() if k != "apiKeyEncrypted"}, "message": "LLM config saved."})
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Failed to save LLM config."}, status=400)
+
+    def _upsert_agent_telegram(self, agent_id: str) -> None:
+        try:
+            data = self._read_json()
+            config = self.agent_store.upsert_telegram_config(agent_id, data)
+            self._send_json({"config": config, "message": "Telegram config saved."})
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Failed to save Telegram config."}, status=400)
+
+    def _validate_llm_key(self) -> None:
+        try:
+            data = self._read_json()
+            provider = str(data.get("provider", "")).strip()
+            api_key = str(data.get("apiKey", "")).strip()
+            model = str(data.get("model", "")).strip()
+            endpoint_url = str(data.get("endpointUrl", "")).strip()
+
+            if not provider:
+                self._send_json({"error": "provider is required."}, status=400)
+                return
+
+            if provider != "custom" and not api_key:
+                self._send_json({"error": "apiKey is required for this provider."}, status=400)
+                return
+
+            if provider == "custom" and not endpoint_url:
+                self._send_json({"error": "endpointUrl is required for custom provider."}, status=400)
+                return
+
+            if not model:
+                from .llm_providers import PROVIDER_REGISTRY
+                models = PROVIDER_REGISTRY.get(provider, {}).get("models", [])
+                model = models[0] if models else "gpt-4o"
+
+            config = ProviderConfig(provider=provider, api_key=api_key, model=model, endpoint_url=endpoint_url)
+            result = validate_api_key(config)
+            self._send_json(result)
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Validation failed."}, status=400)
+
+    def _create_knowledge_source(self, agent_id: str) -> None:
+        try:
+            data = self._read_json()
+            source = self.agent_store.create_knowledge_source(agent_id, data)
+            self._send_json({"source": source, "message": "Knowledge source created."}, status=201)
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Failed to create knowledge source."}, status=400)
+
+    def _list_knowledge_sources(self, agent_id: str) -> None:
+        try:
+            sources = self.agent_store.list_knowledge_sources(agent_id)
+            self._send_json({"sources": sources, "total": len(sources)})
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Failed to list sources."}, status=400)
+
+    def _upload_knowledge_files(self, agent_id: str, source_id: str) -> None:
+        try:
+            source = self.agent_store.get_knowledge_source(source_id)
+            if not source or source.get("agentId") != agent_id:
+                self._send_json({"error": "Knowledge source not found."}, status=404)
+                return
+
+            self.agent_store.update_knowledge_source(source_id, {"status": "processing"})
+
+            content_type = (self.headers.get("Content-Type") or "").lower()
+            if "multipart/form-data" not in content_type:
+                self._send_json({"error": "multipart/form-data required."}, status=400)
+                return
+
+            fields = self._read_multipart()
+            files_data = []
+            for key, value in fields.items():
+                if isinstance(value, UploadedFile) and value.data:
+                    files_data.append({
+                        "filename": value.filename,
+                        "data": value.data,
+                        "contentType": value.content_type,
+                    })
+
+            if not files_data:
+                self.agent_store.update_knowledge_source(source_id, {"status": "failed", "errorMessage": "No files uploaded."})
+                self._send_json({"error": "No files uploaded."}, status=400)
+                return
+
+            self.agent_store.update_knowledge_source(source_id, {"fileCount": len(files_data)})
+
+            rag_config = RAGConfig(
+                supabase_url=self.settings.supabase_url or "",
+                supabase_service_role_key=self.settings.supabase_service_role_key or "",
+                embed_function_url=f"{self.settings.supabase_url}/functions/v1/embed" if self.settings.supabase_url else "",
+            )
+
+            if not rag_config.supabase_url:
+                self.agent_store.update_knowledge_source(source_id, {"status": "failed", "errorMessage": "Supabase not configured."})
+                self._send_json({"error": "Supabase not configured for RAG."}, status=400)
+                return
+
+            result = ingest_knowledge_source(source_id, agent_id, files_data, rag_config)
+            self._send_json(result)
+        except Exception as exc:
+            try:
+                self.agent_store.update_knowledge_source(source_id, {"status": "failed", "errorMessage": str(exc)})
+            except Exception:
+                pass
+            self._send_json({"error": str(exc) or "Upload failed."}, status=400)
+
+    def _test_agent(self, agent_id: str) -> None:
+        try:
+            data = self._read_json()
+            question = str(data.get("question", "")).strip()
+            if not question:
+                self._send_json({"error": "question is required."}, status=400)
+                return
+
+            agent = self.agent_store.get_agent(agent_id)
+            if not agent:
+                self._send_json({"error": "Agent not found."}, status=404)
+                return
+
+            llm_config = self.agent_store.get_llm_config(agent_id)
+            if not llm_config:
+                self._send_json({"error": "LLM not configured for this agent."}, status=400)
+                return
+
+            rag_config = RAGConfig(
+                supabase_url=self.settings.supabase_url or "",
+                supabase_service_role_key=self.settings.supabase_service_role_key or "",
+                embed_function_url=f"{self.settings.supabase_url}/functions/v1/embed" if self.settings.supabase_url else "",
+            )
+
+            context_chunks: list[dict[str, Any]] = []
+            if rag_config.supabase_url:
+                try:
+                    context_chunks = search_agent_knowledge(question, agent_id, rag_config)
+                except Exception as exc:
+                    logger.warning("RAG search failed for agent test: %s", exc)
+
+            system_prompt = agent.get("systemPrompt", "") or "You are a helpful assistant."
+            if context_chunks:
+                context_text = "\n\n".join(c.get("content", "") for c in context_chunks)
+                system_prompt += f"\n\nUse the following knowledge to answer:\n\n{context_text}"
+
+            style = agent.get("responseStyle", "balanced")
+            if style == "short":
+                system_prompt += "\n\nKeep responses concise (1-2 paragraphs)."
+            elif style == "detailed":
+                system_prompt += "\n\nProvide detailed, comprehensive answers."
+
+            if agent.get("citationMode") and context_chunks:
+                system_prompt += "\n\nCite sources when referencing specific information."
+
+            provider_config = ProviderConfig(
+                provider=llm_config.get("provider", "openai"),
+                api_key=llm_config.get("apiKeyEncrypted", ""),
+                model=llm_config.get("model", "gpt-4o"),
+                endpoint_url=llm_config.get("endpointUrl", ""),
+                extra_headers=llm_config.get("extraHeaders", {}),
+            )
+
+            import time as _time
+            start = _time.monotonic()
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": question},
+            ]
+            result = provider_chat_completion(provider_config, messages, max_tokens=1024, timeout=30)
+            latency_ms = int((_time.monotonic() - start) * 1000)
+
+            response_text = result.get("content", "")
+            if result.get("error"):
+                response_text = f"Error: {result['error']}"
+
+            self.agent_store.log_conversation(
+                agent_id=agent_id,
+                user_message=question,
+                agent_response=response_text,
+                sources=[{"content": c.get("content", "")[:200], "similarity": c.get("similarity", 0)} for c in context_chunks],
+                latency_ms=latency_ms,
+            )
+
+            self._send_json({
+                "response": response_text,
+                "sources": context_chunks,
+                "latencyMs": latency_ms,
+                "model": provider_config.model,
+                "provider": provider_config.provider,
+            })
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Agent test failed."}, status=400)
+
+    def _get_agent_stats(self, agent_id: str) -> None:
+        try:
+            stats = self.agent_store.get_agent_stats(agent_id)
+            self._send_json(stats)
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Failed to get stats."}, status=400)
+
+    def _list_conversations(self, agent_id: str) -> None:
+        try:
+            convs = self.agent_store.list_conversations(agent_id)
+            self._send_json({"conversations": convs, "total": len(convs)})
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Failed to list conversations."}, status=400)
+
     def _read_json(self) -> dict[str, Any]:
         try:
             length = int(self.headers.get("Content-Length") or "0")
@@ -664,6 +983,17 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         parts = [part for part in path.split("/") if part]
         if len(parts) == 3 and parts[0] == "telegram" and parts[1] == "groups":
             self._remove_monitored_group(parts[2])
+            return
+        if len(parts) == 2 and parts[0] == "agents":
+            self._delete_agent(parts[1])
+            return
+        self._send_json({"error": "Not found"}, status=404)
+
+    def do_PUT(self) -> None:
+        path = urlparse(self.path).path
+        parts = [part for part in path.split("/") if part]
+        if len(parts) == 2 and parts[0] == "agents":
+            self._update_agent(parts[1])
             return
         self._send_json({"error": "Not found"}, status=404)
 
@@ -778,6 +1108,7 @@ def build_handler(settings: Settings):
     ConfiguredExamshieldAiHandler.workers = workers
     ConfiguredExamshieldAiHandler.pipeline = pipeline
     ConfiguredExamshieldAiHandler.memory = pipeline.memory
+    ConfiguredExamshieldAiHandler.agent_store = AgentStore(store)
     return ConfiguredExamshieldAiHandler
 
 

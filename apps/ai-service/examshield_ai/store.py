@@ -1824,3 +1824,242 @@ def risk_and_status(index: int, exam: str) -> tuple[str, str]:
     if seed < 85:
         return "low", "registered"
     return "low", "received"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Community Agents CRUD
+# ─────────────────────────────────────────────────────────────────────
+
+AGENT_COLLECTIONS = (
+    "community-agents",
+    "agent-llm-configs",
+    "agent-telegram-configs",
+    "agent-knowledge-sources",
+    "agent-conversations",
+)
+
+
+def _next_agent_id() -> str:
+    return f"AGT-{uuid4().hex[:8]}"
+
+
+class AgentStore:
+    def __init__(self, evidence_store: EvidenceStore) -> None:
+        self._store = evidence_store
+
+    def _ensure(self) -> None:
+        for name in AGENT_COLLECTIONS:
+            (self._store.root / name).mkdir(parents=True, exist_ok=True)
+
+    def list_agents(self, status: str | None = None) -> list[JsonObject]:
+        self._ensure()
+        agents = self._store._read_json_dir("community-agents")
+        if status:
+            agents = [a for a in agents if a.get("status") == status]
+        return sorted(agents, key=lambda a: a.get("createdAt", ""), reverse=True)
+
+    def get_agent(self, agent_id: str) -> JsonObject | None:
+        return next(
+            (a for a in self._store._read_json_dir("community-agents") if a.get("id") == agent_id),
+            None,
+        )
+
+    def create_agent(self, data: JsonObject) -> JsonObject:
+        self._ensure()
+        agent_id = _next_agent_id()
+        now = utc_now()
+        agent = {
+            "id": agent_id,
+            "name": data.get("name", "Untitled Agent"),
+            "description": data.get("description", ""),
+            "category": data.get("category", "general"),
+            "visibility": data.get("visibility", "private"),
+            "status": "draft",
+            "avatar": (data.get("name", "UA") or "UA")[:2].upper(),
+            "author": data.get("author", ""),
+            "model": data.get("model", "gpt-4o"),
+            "systemPrompt": data.get("systemPrompt", ""),
+            "responseStyle": data.get("responseStyle", "balanced"),
+            "citationMode": data.get("citationMode", True),
+            "tags": data.get("tags", []),
+            "knowledgeCount": 0,
+            "conversationCount": 0,
+            "rating": 0,
+            "ratingCount": 0,
+            "metadata": data.get("metadata", {}),
+            "createdAt": now,
+            "updatedAt": now,
+        }
+        self._store._write_json("community-agents", f"{agent_id}.json", agent)
+        return agent
+
+    def update_agent(self, agent_id: str, data: JsonObject) -> JsonObject:
+        agent = self.get_agent(agent_id)
+        if not agent:
+            raise LookupError("Agent not found.")
+        updated = {**agent, **{k: v for k, v in data.items() if k != "id"}, "updatedAt": utc_now()}
+        self._store._write_json("community-agents", f"{agent_id}.json", updated)
+        return updated
+
+    def delete_agent(self, agent_id: str) -> bool:
+        agent = self.get_agent(agent_id)
+        if not agent:
+            return False
+        path = self._store.root / "community-agents" / f"{agent_id}.json"
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return True
+
+    def upsert_llm_config(self, agent_id: str, data: JsonObject) -> JsonObject:
+        self._ensure()
+        existing = next(
+            (c for c in self._store._read_json_dir("agent-llm-configs") if c.get("agentId") == agent_id),
+            None,
+        )
+        now = utc_now()
+        config = {
+            "id": existing["id"] if existing else f"LLM-{uuid4().hex[:8]}",
+            "agentId": agent_id,
+            "provider": data.get("provider", "openai"),
+            "model": data.get("model", ""),
+            "apiKeyEncrypted": data.get("apiKey", ""),
+            "endpointUrl": data.get("endpointUrl", ""),
+            "extraHeaders": data.get("extraHeaders", {}),
+            "createdAt": existing["createdAt"] if existing else now,
+            "updatedAt": now,
+        }
+        filename = f"{config['id']}.json"
+        self._store._write_json("agent-llm-configs", filename, config)
+        return config
+
+    def get_llm_config(self, agent_id: str) -> JsonObject | None:
+        return next(
+            (c for c in self._store._read_json_dir("agent-llm-configs") if c.get("agentId") == agent_id),
+            None,
+        )
+
+    def upsert_telegram_config(self, agent_id: str, data: JsonObject) -> JsonObject:
+        self._ensure()
+        existing = next(
+            (c for c in self._store._read_json_dir("agent-telegram-configs") if c.get("agentId") == agent_id),
+            None,
+        )
+        now = utc_now()
+        config = {
+            "id": existing["id"] if existing else f"TG-{uuid4().hex[:8]}",
+            "agentId": agent_id,
+            "botToken": data.get("botToken", ""),
+            "botUsername": data.get("botUsername", ""),
+            "botVerified": data.get("botVerified", False),
+            "privacyModeDisabled": data.get("privacyModeDisabled", False),
+            "addedToGroup": data.get("addedToGroup", False),
+            "promotedAdmin": data.get("promotedAdmin", False),
+            "messageReadingEnabled": data.get("messageReadingEnabled", False),
+            "webhookUrl": data.get("webhookUrl", ""),
+            "deploymentStatus": data.get("deploymentStatus", "disconnected"),
+            "metadata": data.get("metadata", {}),
+            "createdAt": existing["createdAt"] if existing else now,
+            "updatedAt": now,
+        }
+        filename = f"{config['id']}.json"
+        self._store._write_json("agent-telegram-configs", filename, config)
+        return config
+
+    def get_telegram_config(self, agent_id: str) -> JsonObject | None:
+        return next(
+            (c for c in self._store._read_json_dir("agent-telegram-configs") if c.get("agentId") == agent_id),
+            None,
+        )
+
+    def create_knowledge_source(self, agent_id: str, data: JsonObject) -> JsonObject:
+        self._ensure()
+        source_id = f"KS-{uuid4().hex[:8]}"
+        now = utc_now()
+        source = {
+            "id": source_id,
+            "agentId": agent_id,
+            "name": data.get("name", "Untitled Source"),
+            "sourceType": data.get("sourceType", "document"),
+            "status": "queued",
+            "fileCount": data.get("fileCount", 0),
+            "chunkCount": 0,
+            "totalChars": 0,
+            "errorMessage": None,
+            "metadata": data.get("metadata", {}),
+            "createdAt": now,
+            "updatedAt": now,
+        }
+        self._store._write_json("agent-knowledge-sources", f"{source_id}.json", source)
+        return source
+
+    def list_knowledge_sources(self, agent_id: str) -> list[JsonObject]:
+        self._ensure()
+        return [
+            s for s in self._store._read_json_dir("agent-knowledge-sources")
+            if s.get("agentId") == agent_id
+        ]
+
+    def get_knowledge_source(self, source_id: str) -> JsonObject | None:
+        return next(
+            (s for s in self._store._read_json_dir("agent-knowledge-sources") if s.get("id") == source_id),
+            None,
+        )
+
+    def update_knowledge_source(self, source_id: str, data: JsonObject) -> JsonObject:
+        source = self.get_knowledge_source(source_id)
+        if not source:
+            raise LookupError("Knowledge source not found.")
+        updated = {**source, **{k: v for k, v in data.items() if k != "id"}, "updatedAt": utc_now()}
+        self._store._write_json("agent-knowledge-sources", f"{source_id}.json", updated)
+        return updated
+
+    def log_conversation(self, agent_id: str, user_message: str, agent_response: str, sources: list[JsonObject] | None = None, latency_ms: int = 0) -> JsonObject:
+        self._ensure()
+        conv_id = f"CONV-{uuid4().hex[:8]}"
+        now = utc_now()
+        conv = {
+            "id": conv_id,
+            "agentId": agent_id,
+            "userMessage": user_message,
+            "agentResponse": agent_response,
+            "sources": sources or [],
+            "latencyMs": latency_ms,
+            "status": "completed",
+            "metadata": {},
+            "createdAt": now,
+        }
+        self._store._write_json("agent-conversations", f"{conv_id}.json", conv)
+
+        agent = self.get_agent(agent_id)
+        if agent:
+            count = agent.get("conversationCount", 0)
+            self.update_agent(agent_id, {"conversationCount": count + 1})
+
+        return conv
+
+    def list_conversations(self, agent_id: str, limit: int = 50) -> list[JsonObject]:
+        self._ensure()
+        convs = [
+            c for c in self._store._read_json_dir("agent-conversations")
+            if c.get("agentId") == agent_id
+        ]
+        return sorted(convs, key=lambda c: c.get("createdAt", ""), reverse=True)[:limit]
+
+    def get_agent_stats(self, agent_id: str) -> JsonObject:
+        conversations = self.list_conversations(agent_id)
+        sources = self.list_knowledge_sources(agent_id)
+        agent = self.get_agent(agent_id)
+
+        total_conversations = len(conversations)
+        avg_latency = (
+            sum(c.get("latencyMs", 0) for c in conversations) / max(total_conversations, 1)
+        )
+        return {
+            "totalConversations": total_conversations,
+            "totalKnowledgeSources": len(sources),
+            "totalChunks": sum(s.get("chunkCount", 0) for s in sources),
+            "avgLatencyMs": round(avg_latency, 1),
+            "status": agent.get("status") if agent else "unknown",
+        }

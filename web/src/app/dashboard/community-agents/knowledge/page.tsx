@@ -28,7 +28,7 @@ const itemVariants = {
   show: { opacity: 1, y: 0, transition: { type: "spring" as const, stiffness: 300, damping: 24 } },
 };
 
-const TYPE_ICONS: Record<KnowledgeSource["type"], typeof FileText> = {
+const TYPE_ICONS: Record<KnowledgeSource["sourceType"], typeof FileText> = {
   document: FileText,
   url: Globe,
   api: Upload,
@@ -36,14 +36,17 @@ const TYPE_ICONS: Record<KnowledgeSource["type"], typeof FileText> = {
 };
 
 const STATUS_ICONS: Record<KnowledgeSource["status"], typeof Check> = {
-  active: Check,
+  queued: RefreshCcw,
+  ready: Check,
   processing: RefreshCcw,
-  error: AlertTriangle,
+  embedding: RefreshCcw,
+  indexing: RefreshCcw,
+  failed: AlertTriangle,
 };
 
 function SourceRow({ source }: { source: KnowledgeSource }) {
   const [menuOpen, setMenuOpen] = useState(false);
-  const TypeIcon = TYPE_ICONS[source.type];
+  const TypeIcon = TYPE_ICONS[source.sourceType];
   const StatusIcon = STATUS_ICONS[source.status];
 
   return (
@@ -62,7 +65,7 @@ function SourceRow({ source }: { source: KnowledgeSource }) {
               {source.name}
             </h3>
             <span className={`text-[9px] uppercase tracking-widest px-2 py-0.5 font-bold ${
-              source.status === "active"
+              source.status === "ready"
                 ? "bg-white text-black"
                 : source.status === "processing"
                 ? "bg-white/10 text-white/60"
@@ -73,7 +76,7 @@ function SourceRow({ source }: { source: KnowledgeSource }) {
             </span>
           </div>
           <p className="text-xs text-white/40 mt-0.5">
-            {source.type.toUpperCase()} &middot; {source.itemCount.toLocaleString()} items
+            {source.sourceType.toUpperCase()} &middot; {source.fileCount.toLocaleString()} items
           </p>
         </div>
 
@@ -81,7 +84,7 @@ function SourceRow({ source }: { source: KnowledgeSource }) {
           <div className="flex items-center gap-1.5">
             <Clock className="w-3 h-3" />
             <span className="font-mono">
-              {new Date(source.lastSynced).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+              {new Date(source.updatedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
             </span>
           </div>
         </div>
@@ -136,8 +139,8 @@ export default function KnowledgePage() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
           { label: "Total Sources", value: MOCK_KNOWLEDGE_SOURCES.length },
-          { label: "Active", value: MOCK_KNOWLEDGE_SOURCES.filter((s) => s.status === "active").length },
-          { label: "Total Items", value: MOCK_KNOWLEDGE_SOURCES.reduce((a, s) => a + s.itemCount, 0).toLocaleString() },
+          { label: "Active", value: MOCK_KNOWLEDGE_SOURCES.filter((s) => s.status === "ready").length },
+          { label: "Total Items", value: MOCK_KNOWLEDGE_SOURCES.reduce((a, s) => a + s.fileCount, 0).toLocaleString() },
           { label: "Processing", value: MOCK_KNOWLEDGE_SOURCES.filter((s) => s.status === "processing").length },
         ].map((stat) => (
           <div key={stat.label} className="p-4 border border-white/10 bg-white/[0.02]">
