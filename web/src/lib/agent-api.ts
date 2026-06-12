@@ -10,16 +10,8 @@ import type {
   TelegramConfig,
 } from "@/lib/agent-types";
 
-function getApiUrl() {
-  const value = process.env.EXAMSHIELD_API_URL?.trim();
-  return value ? value.replace(/\/$/, "") : null;
-}
-
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const apiUrl = getApiUrl();
-  if (!apiUrl) throw new Error("EXAMSHIELD_API_URL not configured");
-
-  const res = await fetch(`${apiUrl}${path}`, {
+  const res = await fetch(`/api${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
@@ -88,7 +80,7 @@ export async function validateLLMKey(data: {
   model: string;
   endpointUrl?: string;
 }): Promise<{ valid: boolean; error?: string; model?: string; provider?: string }> {
-  return apiFetch("/agents/llm/validate", {
+  return apiFetch("/llm/validate", {
     method: "POST",
     body: JSON.stringify(data),
   });
@@ -139,15 +131,12 @@ export async function uploadKnowledgeFiles(
   sourceId: string,
   files: File[]
 ): Promise<{ status: string; chunksStored?: number; totalChars?: number; error?: string }> {
-  const apiUrl = getApiUrl();
-  if (!apiUrl) throw new Error("EXAMSHIELD_API_URL not configured");
-
   const formData = new FormData();
   for (const file of files) {
     formData.append("files", file);
   }
 
-  const res = await fetch(`${apiUrl}/agents/${agentId}/knowledge/${sourceId}/upload`, {
+  const res = await fetch(`/api/agents/${agentId}/knowledge/${sourceId}/upload`, {
     method: "POST",
     body: formData,
   });
