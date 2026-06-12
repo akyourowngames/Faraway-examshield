@@ -18,6 +18,7 @@ import {
   RefreshCcw,
   Menu,
   X,
+  Users,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { createClient } from "@/lib/supabase/client";
@@ -30,6 +31,7 @@ const NAV_ITEMS = [
   { name: "Investigation", href: "/dashboard/investigation", icon: Map },
   { name: "Exam Lifecycle", href: "/dashboard/lifecycle", icon: ShieldAlert },
   { name: "Alerts", href: "/dashboard/alerts", icon: BellRing },
+  { name: "Community Agents", href: "/dashboard/community-agents", icon: Users },
   { name: "Settings", href: "/dashboard/settings", icon: Settings },
 ];
 
@@ -124,7 +126,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <div className="flex-1 overflow-y-auto py-8 px-4 flex flex-col gap-2">
           <div className="px-4 mb-4 text-[10px] font-bold text-white/30 uppercase tracking-[0.2em]">Operations Grid</div>
           {NAV_ITEMS.map((item) => {
-            const isActive = pathname === item.href;
+            const isActive = item.href === "/dashboard"
+              ? pathname === "/dashboard"
+              : pathname === item.href || pathname.startsWith(item.href + "/");
             const Icon = item.icon;
             return (
               <Link key={item.name} href={item.href}>
@@ -195,7 +199,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               <div className="flex-1 overflow-y-auto py-6 px-3 flex flex-col gap-1">
                 <div className="px-3 mb-3 text-[10px] font-bold text-white/30 uppercase tracking-[0.2em]">Operations Grid</div>
                 {NAV_ITEMS.map((item) => {
-                  const isActive = pathname === item.href;
+                  const isActive = item.href === "/dashboard"
+                    ? pathname === "/dashboard"
+                    : pathname === item.href || pathname.startsWith(item.href + "/");
                   const Icon = item.icon;
                   return (
                     <Link key={item.name} href={item.href}>
