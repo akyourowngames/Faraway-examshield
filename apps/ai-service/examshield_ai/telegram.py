@@ -74,25 +74,28 @@ class TelegramWebhook:
         if not chat_id or not message_id:
             return {"message": "Telegram update ignored", "processed": False}
 
-        # Multi-group monitoring: check if group is monitored
-        if not store.is_monitored_group(chat_id):
-            # Fallback: add primary chat_id as monitored if not yet in registry
-            if chat_id == self.settings.telegram_chat_id:
-                store.add_monitored_group(chat_id, name="Primary")
-            else:
-                return {
-                    "message": "Group not monitored",
-                    "processed": False,
-                    "chatId": chat_id,
-                }
+        # Check if this is a private/direct message (chat type "private")
+        chat_type = str(chat.get("type") or "").lower()
+        is_private = chat_type == "private"
+
+        # For group messages: only process monitored groups, never reply in group
+        if not is_private:
+            if not store.is_monitored_group(chat_id):
+                if chat_id == self.settings.telegram_chat_id:
+                    store.add_monitored_group(chat_id, name="Primary")
+                else:
+                    return {
+                        "message": "Group not monitored",
+                        "processed": False,
+                        "chatId": chat_id,
+                    }
+
+        # For private/direct messages: respond conversationally via LLM
+        text = _extract_text(message)
+        if is_private and text:
+            self._handle_chat_message(chat_id, message, text)
 
         # Extract text and run leak detection
-        text = _extract_text(message)
-        
-        # Handle chat messages - respond to normal messages
-        if text and not is_suspicious(scan_text(text)):
-            self._handle_chat_message(chat_id, message, text)
-        
         detection = scan_text(text)
 
         # Download media if any
@@ -292,18 +295,16 @@ class TelegramWebhook:
         *,
         store: EvidenceStore | None = None,
     ) -> JsonObject:
-        """Send an alert to the admin chat when a leak is detected."""
+        """Send an alert to the admin/private chat only — never to the source group."""
 
         evidence = created["evidence"]
         alert_text = self._compose_alert(created, analysis, detection, text, chat_id, message)
         admin_chat_id = str(self.settings.telegram_admin_chat_id or "").strip()
-        source_chat_id = str(chat_id or "").strip()
 
+        # Only send to admin chat (private DM), never to the source group
         message_targets: list[str] = []
         if admin_chat_id:
             message_targets.append(admin_chat_id)
-        elif source_chat_id:
-            message_targets.append(source_chat_id)
 
         message_results: list[JsonObject] = []
         for target in message_targets:
@@ -315,23 +316,21 @@ class TelegramWebhook:
             )
 
         file_results: list[JsonObject] = []
-        if store and evidence and evidence.get("fileType") != "text/plain":
-            file_targets = [target for target in dict.fromkeys([source_chat_id, admin_chat_id]) if target]
-            for target in file_targets:
-                try:
-                    file_result = self._send_evidence_file(
-                        store,
-                        str(evidence.get("evidenceId") or ""),
-                        target,
-                    )
-                    file_results.append({"chatId": target, **file_result})
-                except Exception as exc:
-                    logger.warning(
-                        "Failed to attach evidence file %s to Telegram chat %s: %s",
-                        evidence.get("evidenceId"),
-                        target,
-                        exc,
-                    )
+        if store and evidence and evidence.get("fileType") != "text/plain" and admin_chat_id:
+            try:
+                file_result = self._send_evidence_file(
+                    store,
+                    str(evidence.get("evidenceId") or ""),
+                    admin_chat_id,
+                )
+                file_results.append({"chatId": admin_chat_id, **file_result})
+            except Exception as exc:
+                logger.warning(
+                    "Failed to attach evidence file %s to Telegram chat %s: %s",
+                    evidence.get("evidenceId"),
+                    admin_chat_id,
+                    exc,
+                )
 
         if not message_results and not file_results:
             return {"status": "skipped", "reason": "no_destination_chat"}
@@ -419,7 +418,7 @@ class TelegramWebhook:
         })
 
     def _handle_chat_message(self, chat_id: str, message: JsonObject, text: str) -> JsonObject | None:
-        """Handle normal chat messages using LLM for conversational responses."""
+        """Handle private/direct messages using LLM for conversational responses."""
         llm = NvidiaClient(self.settings)
         if not llm.configured or not text:
             return None
@@ -427,18 +426,20 @@ class TelegramWebhook:
         sender = _extract_sender(message)
         
         system_prompt = (
-            "You are ExamShield AI, an intelligent exam security assistant. "
-            "You monitor Telegram groups for potential exam leaks and suspicious activity. "
+            "You are ExamShield AI, an exam security assistant. "
+            "You are chatting with someone in a private Telegram DM. "
+            "You monitor groups for potential exam leaks and suspicious activity. "
             "You are friendly, helpful, and professional. "
             "Respond naturally to questions about exam security, the monitoring system, or general queries. "
             "Keep responses concise (under 200 characters). "
             "Use Telegram HTML formatting: <b>, <i>, <code>. "
             "If someone asks what you do, briefly explain you monitor for exam leaks. "
             "If someone greets you, respond warmly. "
-            "Be conversational and human-like."
+            "Be conversational and human-like. "
+            "Never send alerts or notifications here — this is a private chat for questions only."
         )
         
-        user_prompt = f"Message from {sender} in chat {chat_id}: {text}"
+        user_prompt = f"Message from {sender}: {text}"
         
         try:
             response = llm.chat_text(

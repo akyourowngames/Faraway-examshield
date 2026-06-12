@@ -603,53 +603,25 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         self._send_json({"error": "Not found"}, status=404)
 
     def _test_telegram_chat(self) -> None:
-        """Test endpoint for Telegram chat functionality."""
+        """Test endpoint for Telegram private chat functionality."""
         try:
             payload = self._read_json()
-            chat_id = str(payload.get("chatId") or "").strip()
+            chat_id = str(payload.get("chatId") or self.settings.telegram_admin_chat_id or "").strip()
             message_text = str(payload.get("message") or "").strip()
             
             if not chat_id or not message_text:
                 self._send_json({"error": "chatId and message are required."}, status=400)
                 return
             
-            # Create a mock message object
-            mock_message = {
-                "message_id": 99999,
-                "chat": {"id": int(chat_id)},
-                "text": message_text,
-                "from": {
-                    "id": 12345,
-                    "first_name": "Test",
-                    "last_name": "User",
-                    "username": "testuser"
-                },
-                "date": int(time.time())
-            }
-            
-            # Use the telegram webhook to handle the chat
-            from .detect import scan_text
-            from .store import normalize_telegram_timestamp
-            
-            detection = scan_text(message_text)
-            created = self.store.create_telegram_event(
-                message_id="99999",
-                chat_id=chat_id,
-                timestamp=normalize_telegram_timestamp(int(time.time())),
-                text=message_text,
-                file=None,
-                detection=detection,
-            )
-            
             # Try to get a chat response
             llm = NvidiaClient(self.settings)
             if llm.configured:
-                from .telegram import _extract_sender, _clean_telegram_html
-                sender = _extract_sender(mock_message)
+                from .telegram import _clean_telegram_html
                 
                 system_prompt = (
-                    "You are ExamShield AI, an intelligent exam security assistant. "
-                    "You monitor Telegram groups for potential exam leaks and suspicious activity. "
+                    "You are ExamShield AI, an exam security assistant. "
+                    "You are chatting with someone in a private Telegram DM. "
+                    "You monitor groups for potential exam leaks and suspicious activity. "
                     "You are friendly, helpful, and professional. "
                     "Respond naturally to questions about exam security, the monitoring system, or general queries. "
                     "Keep responses concise (under 200 characters). "
@@ -659,7 +631,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                     "Be conversational and human-like."
                 )
                 
-                user_prompt = f"Message from {sender} in chat {chat_id}: {message_text}"
+                user_prompt = f"User message: {message_text}"
                 
                 response = llm.chat_text(
                     model=self.settings.model,
@@ -672,17 +644,17 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 )
                 cleaned = _clean_telegram_html(response)
                 
+                # Send the response to the private chat
+                telegram = TelegramWebhook(self.settings)
+                if telegram.configured:
+                    telegram.send_message(chat_id, cleaned, parse_mode="HTML")
+                
                 self._send_json({
                     "status": "ok",
                     "message": message_text,
                     "chatId": chat_id,
                     "response": cleaned or "No response generated",
-                    "detection": {
-                        "score": detection["score"],
-                        "categories": detection["categories"],
-                        "isSuspicious": is_suspicious(detection),
-                    },
-                    "evidenceCreated": created["evidence"] is not None,
+                    "sentToTelegram": telegram.configured,
                 })
             else:
                 self._send_json({"error": "NVIDIA API key not configured."}, status=500)
