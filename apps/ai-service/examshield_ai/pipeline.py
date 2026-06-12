@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 
 from .detect import is_suspicious, scan_text
+from .memory import MemoryManager
 from .store import EvidenceStore, JsonObject
 from .telegram import TelegramWebhook, _should_send_alert
 from .workers import AnalysisTask, AnalysisWorkerPool, OcrRunner
@@ -22,6 +23,7 @@ class EvidencePipeline:
         self.store = store
         self.telegram = telegram
         self.workers = workers
+        self.memory = MemoryManager(store, telegram)
 
     def queue_media_analysis(
         self,
@@ -126,6 +128,15 @@ class EvidencePipeline:
                     )
                 except Exception as alert_exc:
                     logger.error("Alert failed for evidence %s: %s", evidence_id, alert_exc)
+            try:
+                self.memory.ingest_from_analysis(
+                    analysis,
+                    detection=combined_detection,
+                    text=text,
+                    notify=True,
+                )
+            except Exception as memory_exc:
+                logger.warning("Memory correlation failed for evidence %s: %s", evidence_id, memory_exc)
 
         self.workers.submit(
             self.store,
@@ -242,6 +253,17 @@ class EvidencePipeline:
                 if alert_activity:
                     activities.append(alert_activity)
                 completed["activity"] = activities
+                try:
+                    latest_evidence = self.store.get_evidence_by_id(evidence_id) or completed["evidence"]
+                    self.memory.ingest_evidence(
+                        latest_evidence,
+                        detection=detection,
+                        analysis=analysis,
+                        text=text,
+                        notify=True,
+                    )
+                except Exception as memory_exc:
+                    logger.warning("Memory correlation failed for text evidence %s: %s", evidence_id, memory_exc)
             except Exception as exc:
                 logger.warning("Failed to complete text evidence %s: %s", evidence_id, exc)
         return alert_sent

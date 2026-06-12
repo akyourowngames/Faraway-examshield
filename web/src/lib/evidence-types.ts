@@ -206,13 +206,49 @@ export type EvidenceListResponse = {
   forensicReports: ForensicReport[];
   telegramEvents: TelegramEvent[];
   alerts: AlertRecord[];
+  memoryItems: MemoryItem[];
+  memoryCorrelations: MemoryCorrelation[];
   stats: {
     totalEvidence: number;
     pendingAnalysis: number;
     processing: number;
     completed: number;
     failed: number;
+    memoryItems: number;
+    memoryCorrelations: number;
   };
+};
+
+export type MemoryItem = {
+  id: string;
+  memoryType: "confirmed-match" | "security-signal" | "manual-signal";
+  source: string;
+  sourceRef: string;
+  sourceEvidenceId: string | null;
+  content: string;
+  contentHash: string | null;
+  fingerprintHash: string | null;
+  severity: "low" | "medium" | "high" | "critical";
+  status: "active";
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type MemoryCorrelation = {
+  id: string;
+  correlationKey: string;
+  triggerMemoryId: string | null;
+  memoryIds: string[];
+  evidenceIds: string[];
+  sourceCount: number;
+  maxSimilarity: number;
+  severity: "low" | "medium" | "high" | "critical";
+  status: "open";
+  alertId: string | null;
+  summary: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
 };
 
 export type EvidenceUploadResponse = {

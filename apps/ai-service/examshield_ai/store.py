@@ -26,6 +26,8 @@ LIST_EVIDENCE_COLLECTIONS = (
     "reports",
     "telegram-events",
     "alerts",
+    "memory-items",
+    "memory-correlations",
 )
 
 
@@ -64,6 +66,8 @@ class EvidenceStore:
             "telegram-events",
             "alerts",
             "monitored-groups",
+            "memory-items",
+            "memory-correlations",
         ):
             (self.root / name).mkdir(parents=True, exist_ok=True)
 
@@ -79,8 +83,11 @@ class EvidenceStore:
                 "telegram-events",
                 "alerts",
                 "activity",
+                "memory-items",
+                "memory-correlations",
             ):
                 self._delete_collection(name)
+            self._delete_vector_memory_tables()
             self.ensure_registry_seed()
             return {
                 "message": "Demo Environment Reset",
@@ -103,6 +110,8 @@ class EvidenceStore:
             "reports",
             "telegram-events",
             "alerts",
+            "memory-items",
+            "memory-correlations",
         ):
             self._clear_runtime_directory(self.root / name)
         try:
@@ -171,6 +180,16 @@ class EvidenceStore:
             key=lambda item: _time_sort_key(item.get("createdAt")),
             reverse=True,
         )
+        memory_items = sorted(
+            collections.get("memory-items", []),
+            key=lambda item: _time_sort_key(item.get("createdAt")),
+            reverse=True,
+        )
+        memory_correlations = sorted(
+            collections.get("memory-correlations", []),
+            key=lambda item: _time_sort_key(item.get("createdAt")),
+            reverse=True,
+        )
 
         payload = {
             "evidence": evidence,
@@ -181,12 +200,16 @@ class EvidenceStore:
             "forensicReports": reports,
             "telegramEvents": telegram_events,
             "alerts": alerts,
+            "memoryItems": memory_items,
+            "memoryCorrelations": memory_correlations,
             "stats": {
                 "totalEvidence": len(evidence),
                 "pendingAnalysis": len([item for item in evidence if item.get("status") == "pending-analysis"]),
                 "processing": len([item for item in evidence if item.get("status") == "analyzing"]),
                 "completed": len([item for item in evidence if item.get("status") == "completed"]),
                 "failed": len([item for item in evidence if item.get("status") == "analysis-failed"]),
+                "memoryItems": len(memory_items),
+                "memoryCorrelations": len(memory_correlations),
             },
         }
         if ttl > 0:
@@ -333,6 +356,16 @@ class EvidenceStore:
             "telegramEvents": [item for item in data["telegramEvents"] if item.get("evidenceId") == evidence_id],
             "alert": _first(data["alerts"], evidence_id),
             "alerts": [item for item in data["alerts"] if item.get("evidenceId") == evidence_id],
+            "memoryItems": [
+                item
+                for item in data.get("memoryItems", [])
+                if item.get("sourceEvidenceId") == evidence_id
+            ],
+            "memoryCorrelations": [
+                item
+                for item in data.get("memoryCorrelations", [])
+                if evidence_id in (item.get("evidenceIds") or [])
+            ],
         }
 
     def create_evidence(
@@ -1463,6 +1496,17 @@ class EvidenceStore:
             extra_headers={"Prefer": "return=minimal"},
         )
         self._invalidate_collection_cache(collection)
+
+    def _delete_vector_memory_tables(self) -> None:
+        for table in ("examshield_memory_correlations", "examshield_memory_items"):
+            try:
+                self._supabase_json(
+                    "DELETE",
+                    f"/rest/v1/{table}?id=not.is.null",
+                    extra_headers={"Prefer": "return=minimal"},
+                )
+            except Exception as exc:
+                logger.warning("Skipping Supabase memory table reset for %s: %s", table, exc)
 
     def _supabase_json(
         self,

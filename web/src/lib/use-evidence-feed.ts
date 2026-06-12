@@ -12,12 +12,16 @@ export const EMPTY_EVIDENCE_STATE: EvidenceListResponse = {
   forensicReports: [],
   telegramEvents: [],
   alerts: [],
+  memoryItems: [],
+  memoryCorrelations: [],
   stats: {
     totalEvidence: 0,
     pendingAnalysis: 0,
     processing: 0,
     completed: 0,
     failed: 0,
+    memoryItems: 0,
+    memoryCorrelations: 0,
   },
 };
 

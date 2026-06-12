@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable
 
+from .memory import MemoryManager
 from .store import EvidenceStore, JsonObject, is_today
 
 
@@ -38,6 +39,7 @@ class ToolSpec:
 class ExamshieldToolRegistry:
     def __init__(self, store: EvidenceStore) -> None:
         self.store = store
+        self.memory = MemoryManager(store)
         self._tools = {
             "listEvidence": ToolSpec(
                 name="listEvidence",
@@ -109,6 +111,20 @@ class ExamshieldToolRegistry:
                 ),
                 handler=self._list_threats,
             ),
+            "searchMemory": ToolSpec(
+                name="searchMemory",
+                description="Search unified EXAMSHIELD threat memory for repeated leak patterns, similar OCR snippets, watermarks, papers, centers, or suspicious signals.",
+                parameters=schema(
+                    {
+                        "query": {
+                            "type": "string",
+                            "description": "The memory search text, leak pattern, watermark, paper, center, or suspicious clue.",
+                        }
+                    },
+                    required=("query",),
+                ),
+                handler=self._search_memory,
+            ),
             "generateReport": ToolSpec(
                 name="generateReport",
                 description="Generate a live EXAMSHIELD daily report, command briefing, executive report, or operational summary.",
@@ -161,6 +177,16 @@ class ExamshieldToolRegistry:
                     "risk": item.get("risk"),
                 }
                 for item in data["alerts"]
+                if item.get("status") == "open"
+            ][:5],
+            "memoryCorrelations": [
+                {
+                    "correlationKey": item.get("correlationKey"),
+                    "sourceCount": item.get("sourceCount"),
+                    "severity": item.get("severity"),
+                    "summary": item.get("summary"),
+                }
+                for item in data.get("memoryCorrelations", [])
                 if item.get("status") == "open"
             ][:5],
         }
@@ -368,6 +394,9 @@ class ExamshieldToolRegistry:
             else registry_threats
         )
         active_alerts = [item for item in data["alerts"] if item.get("status") == "open"]
+        memory_correlations = [
+            item for item in data.get("memoryCorrelations", []) if item.get("status") == "open"
+        ]
         critical_registry = len([item for item in registry_threats if item.get("riskLevel") == "critical"])
         medium_registry = len([item for item in registry_threats if item.get("riskLevel") == "medium"])
         compromised_papers = [item for item in top_threats if item.get("status") == "compromised"]
@@ -385,16 +414,27 @@ class ExamshieldToolRegistry:
             current_investigation=current_investigation(data),
             metrics=[
                 metric("Open Alerts", len(active_alerts)),
+                metric("Memory Correlations", len(memory_correlations)),
                 metric("Registry Threats", len(top_threats)),
                 metric("Compromised Papers", len(compromised_papers)),
                 metric("Critical Registry", critical_registry),
-                metric("Medium Registry", medium_registry),
             ],
             sections=[
                 {
                     "title": "Critical Alerts",
                     "rows": [alert_row(item) for item in active_alerts[:5]]
                     or [metric("Status", "No active alerts.")],
+                },
+                {
+                    "title": "Unified Memory",
+                    "rows": [
+                        metric(
+                            item.get("correlationKey"),
+                            f"{item.get('sourceCount')} sources / {format_status(item.get('severity'))} / {item.get('summary')}",
+                        )
+                        for item in memory_correlations[:5]
+                    ]
+                    or [metric("Status", "No open memory correlations.")],
                 },
                 {
                     "title": "Compromised Papers",
@@ -413,12 +453,63 @@ class ExamshieldToolRegistry:
         result["openAlerts"] = len(active_alerts)
         result["registryThreatCount"] = len(registry_threats)
         result["compromisedPaperCount"] = len(compromised_papers)
+        result["memoryCorrelationCount"] = len(memory_correlations)
+        return with_context(result)
+
+    def _search_memory(self, arguments: JsonObject) -> ToolExecution:
+        query = str(arguments.get("query") or "").strip()
+        if not query:
+            result = create_result(
+                tool="searchMemory",
+                title="MEMORY SEARCH NEEDS A QUERY",
+                summary="Ask with a leak phrase, watermark, paper ID, center, or suspicious clue.",
+                current_investigation=empty_investigation(),
+                metrics=[metric("Matches", 0)],
+                sections=[],
+                evidence_ids=[],
+            )
+            return with_context(result)
+        search = self.memory.search(query)
+        matches = search.get("matches") if isinstance(search.get("matches"), list) else []
+        result = create_result(
+            tool="searchMemory",
+            title="MEMORY MATCHES" if matches else "NO MEMORY MATCHES",
+            summary=(
+                f"Found {len(matches)} unified memory match{'es' if len(matches) != 1 else ''} for the requested signal."
+                if matches
+                else "No similar threat memory is currently stored for that signal."
+            ),
+            current_investigation=current_investigation(self.store.list_evidence()),
+            metrics=[
+                metric("Matches", len(matches)),
+                metric("Storage", self.memory.status()["storage"]),
+                metric("Threshold", self.memory.status()["matchThreshold"]),
+                metric("Top Similarity", format_similarity((matches or [{}])[0].get("similarity"))),
+            ],
+            sections=[
+                {
+                    "title": "Top Memory Matches",
+                    "rows": [
+                        metric(
+                            item.get("sourceEvidenceId") or item.get("memoryType"),
+                            f"{format_similarity(item.get('similarity'))} / {format_status(item.get('severity'))} / {memory_preview(item)}",
+                        )
+                        for item in matches[:6]
+                    ]
+                    or [metric("Status", "No related memory items.")],
+                }
+            ],
+            evidence_ids=[item.get("sourceEvidenceId") for item in matches if item.get("sourceEvidenceId")],
+        )
         return with_context(result)
 
     def _generate_report(self, arguments: JsonObject) -> ToolExecution:
         data = self.store.list_evidence()
         registry = self.store.read_registry()
         active_alerts = [item for item in data["alerts"] if item.get("status") == "open"]
+        memory_correlations = [
+            item for item in data.get("memoryCorrelations", []) if item.get("status") == "open"
+        ]
         running = [
             item
             for item in data["evidence"]
@@ -445,6 +536,7 @@ class ExamshieldToolRegistry:
                 metric("Running", len(running)),
                 metric("Confirmed Leaks", len(confirmed)),
                 metric("Open Alerts", len(active_alerts)),
+                metric("Memory Correlations", len(memory_correlations)),
             ],
             sections=[
                 {
@@ -452,6 +544,7 @@ class ExamshieldToolRegistry:
                     "rows": [
                         metric("Threat Level", "Critical" if active_alerts else "Stable"),
                         metric("Registry Critical Papers", registry_critical),
+                        metric("Unified Memory Alerts", len(memory_correlations)),
                         metric("Telegram Events", len(data["telegramEvents"])),
                         metric("Completed Investigations", data["stats"]["completed"]),
                     ],
@@ -466,6 +559,17 @@ class ExamshieldToolRegistry:
                     ]
                     if latest_report
                     else [metric("Status", "No confirmed leak reports.")],
+                },
+                {
+                    "title": "Memory Intelligence",
+                    "rows": [
+                        metric(
+                            item.get("correlationKey"),
+                            f"{item.get('sourceCount')} sources / {format_status(item.get('severity'))} / {item.get('summary')}",
+                        )
+                        for item in memory_correlations[:4]
+                    ]
+                    or [metric("Status", "No open unified memory correlations.")],
                 },
                 {
                     "title": "Recommended Action",

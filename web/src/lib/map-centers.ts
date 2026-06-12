@@ -244,11 +244,11 @@ export function buildThreatMapCenters(
       state: center.state,
       lat: center.lat,
       lng: center.lng,
-      status: center.hasCompromised
+      status: (center.hasCompromised
         ? "compromised"
         : center.hasInvestigating || center.openAlerts > 0
           ? "investigating"
-          : "secure",
+          : "secure") as ThreatMapCenter["status"],
       risk: center.maxRisk,
       activeCases: center.openAlerts,
       evidenceCount: center.evidenceIds.size,

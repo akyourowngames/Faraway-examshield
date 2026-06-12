@@ -17,6 +17,7 @@ from .chat import ChatSession
 from .detect import is_suspicious, scan_text
 from .events import sse_bytes
 from .llm import NvidiaClient
+from .memory import MemoryManager
 from .ocr import SUPPORTED_TYPES, analyze_image, ocr_runtime_status
 from .pipeline import EvidencePipeline
 from .planner import ToolPlanner
@@ -42,6 +43,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
     telegram: TelegramWebhook
     workers: AnalysisWorkerPool
     pipeline: EvidencePipeline
+    memory: MemoryManager
 
     def do_OPTIONS(self) -> None:
         self._send_empty(204)
@@ -77,6 +79,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                     "uploadRoot": str(self.settings.upload_root),
                     "registryPath": str(self.settings.registry_path),
                     "storage": "supabase" if self.store.supabase_enabled else "local-json",
+                    "memory": self.memory.status(),
                     "telegram": {
                         "webhookConfigured": self.telegram.configured,
                         "botTokenSet": bool(self.settings.telegram_bot_token),
@@ -100,6 +103,9 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             return
         if path == "/alerts":
             self._send_json({"alerts": self.store.list_evidence()["alerts"]})
+            return
+        if len(parts) == 2 and parts[0] == "memory":
+            self._get_memory(parts[1])
             return
         # Monitored Telegram groups
         if path == "/telegram/groups":
@@ -144,6 +150,15 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             return
         if path == "/telegram/groups":
             self._add_monitored_group()
+            return
+        if path == "/memory/ingest":
+            self._memory_ingest()
+            return
+        if path == "/memory/search":
+            self._memory_search()
+            return
+        if path == "/memory/correlate":
+            self._memory_correlate()
             return
         if path == "/demo/reset":
             self._send_json(self.store.reset_demo_environment())
@@ -287,12 +302,16 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 return
 
             def on_complete(_analysis: dict[str, Any], error: Exception | None) -> None:
-                if not error:
+                if error:
+                    try:
+                        self.store.fail_analysis_job(job_id, str(error) or "Background OCR failed")
+                    except Exception as fail_exc:
+                        logger.error("Failed to mark job %s failed: %s", job_id, fail_exc)
                     return
                 try:
-                    self.store.fail_analysis_job(job_id, str(error) or "Background OCR failed")
-                except Exception as fail_exc:
-                    logger.error("Failed to mark job %s failed: %s", job_id, fail_exc)
+                    self.memory.ingest_from_analysis(_analysis, notify=True)
+                except Exception as memory_exc:
+                    logger.warning("Memory correlation failed for manual job %s: %s", job_id, memory_exc)
 
             submitted = self.workers.submit(
                 self.store,
@@ -531,6 +550,52 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             "model_context": execution.model_context,
         })
 
+    def _memory_ingest(self) -> None:
+        try:
+            self._send_json(self.memory.ingest_manual(self._read_json()), status=201)
+        except LookupError as exc:
+            self._send_json({"error": str(exc)}, status=404)
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Memory ingest failed."}, status=400)
+
+    def _memory_search(self) -> None:
+        try:
+            payload = self._read_json()
+            query = str(payload.get("query") or payload.get("content") or "").strip()
+            if not query:
+                self._send_json({"error": "query is required."}, status=400)
+                return
+            threshold = float(payload.get("threshold") or payload.get("matchThreshold") or 0.76)
+            match_count = int(payload.get("matchCount") or payload.get("limit") or 8)
+            self._send_json(self.memory.search(query, threshold=threshold, match_count=match_count))
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Memory search failed."}, status=400)
+
+    def _memory_correlate(self) -> None:
+        try:
+            payload = self._read_json()
+            memory_id = str(payload.get("memoryId") or "").strip()
+            evidence_id = str(payload.get("evidenceId") or "").strip()
+            if memory_id:
+                self._send_json(self.memory.correlate_memory_id(memory_id))
+                return
+            if evidence_id:
+                result = self.memory.ingest_manual({"evidenceId": evidence_id})
+                self._send_json(result.get("correlation") or {"correlated": False})
+                return
+            self._send_json({"error": "memoryId or evidenceId is required."}, status=400)
+        except LookupError as exc:
+            self._send_json({"error": str(exc)}, status=404)
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Memory correlation failed."}, status=400)
+
+    def _get_memory(self, memory_id: str) -> None:
+        try:
+            result = self.memory.get_memory(memory_id)
+            self._send_json(result if result else {"error": "Memory item not found."}, status=200 if result else 404)
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Memory lookup failed."}, status=400)
+
     def _read_json(self) -> dict[str, Any]:
         try:
             length = int(self.headers.get("Content-Length") or "0")
@@ -712,6 +777,7 @@ def build_handler(settings: Settings):
     ConfiguredExamshieldAiHandler.telegram = telegram
     ConfiguredExamshieldAiHandler.workers = workers
     ConfiguredExamshieldAiHandler.pipeline = pipeline
+    ConfiguredExamshieldAiHandler.memory = pipeline.memory
     return ConfiguredExamshieldAiHandler
 
 
