@@ -101,14 +101,31 @@ export async function proxyApi(path: string, request?: Request) {
     );
   }
 
-  const upstream = await fetchUpstream(`${apiUrl}${path}`, {
-    method: request?.method ?? "GET",
-    headers: getForwardHeaders(request),
-    body: request ? await request.arrayBuffer() : undefined,
-    cache: "no-store",
-  });
+  const method = request?.method ?? "GET";
+  let body: ArrayBuffer | undefined;
+  if (method !== "GET" && method !== "HEAD" && request) {
+    try {
+      body = await request.arrayBuffer();
+    } catch {
+      body = undefined;
+    }
+  }
 
-  return buildProxyResponse(upstream);
+  try {
+    const upstream = await fetchUpstream(`${apiUrl}${path}`, {
+      method,
+      headers: getForwardHeaders(request),
+      body,
+      cache: "no-store",
+    });
+
+    return buildProxyResponse(upstream);
+  } catch (error) {
+    return Response.json(
+      { error: `Backend unreachable: ${error instanceof Error ? error.message : "unknown"}` },
+      { status: 502 },
+    );
+  }
 }
 
 export async function proxyStreamApi(path: string, request: Request) {
@@ -120,20 +137,34 @@ export async function proxyStreamApi(path: string, request: Request) {
     );
   }
 
-  const upstream = await fetchUpstream(`${apiUrl}${path}`, {
-    method: request.method,
-    headers: getForwardHeaders(request),
-    body: await request.arrayBuffer(),
-    cache: "no-store",
-  });
-
-  if (!upstream.ok) {
-    const text = await upstream.text();
-    return Response.json(
-      { error: text || `Upstream error ${upstream.status}` },
-      { status: upstream.status },
-    );
+  let body: ArrayBuffer;
+  try {
+    body = await request.arrayBuffer();
+  } catch {
+    body = new ArrayBuffer(0);
   }
 
-  return buildProxyResponse(upstream);
+  try {
+    const upstream = await fetchUpstream(`${apiUrl}${path}`, {
+      method: request.method,
+      headers: getForwardHeaders(request),
+      body,
+      cache: "no-store",
+    });
+
+    if (!upstream.ok) {
+      const text = await upstream.text();
+      return Response.json(
+        { error: text || `Upstream error ${upstream.status}` },
+        { status: upstream.status },
+      );
+    }
+
+    return buildProxyResponse(upstream);
+  } catch (error) {
+    return Response.json(
+      { error: `Backend unreachable: ${error instanceof Error ? error.message : "unknown"}` },
+      { status: 502 },
+    );
+  }
 }
