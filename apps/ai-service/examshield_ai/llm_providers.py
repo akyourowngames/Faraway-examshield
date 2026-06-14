@@ -356,10 +356,14 @@ def validate_api_key(config: ProviderConfig) -> dict[str, Any]:
         if exc.code == 401:
             return {"valid": False, "error": "Invalid API key."}
         elif exc.code == 403:
+            if config.provider == "opencode":
+                return {"valid": False, "error": "API key rejected. Make sure you are using an OpenCode Zen key from https://opencode.ai/auth (not the CLI key), and that your account has credits."}
             return {"valid": False, "error": "API key does not have access to this resource."}
         elif exc.code == 429:
             return {"valid": True, "model": config.model, "provider": config.provider}
         else:
+            if config.provider == "opencode" and exc.code == 500:
+                return {"valid": False, "error": "Invalid API key or server error. Ensure you are using an OpenCode Zen key from https://opencode.ai/auth."}
             return {"valid": False, "error": f"Validation failed (HTTP {exc.code}): {error_body[:200]}"}
     except urllib.error.URLError:
         return {"valid": False, "error": "Network error reaching provider API."}
