@@ -10,18 +10,48 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
-    "openrouter": {
-        "name": "OpenRouter",
-        "base_url": "https://openrouter.ai/api/v1",
+    "openai": {
+        "name": "OpenAI",
+        "base_url": "https://api.openai.com/v1",
         "models": [
-            "anthropic/claude-3.5-sonnet",
-            "openai/gpt-4o",
-            "openai/gpt-4o-mini",
-            "meta-llama/llama-3.1-70b-instruct",
-            "google/gemini-2.0-flash-001",
+            "gpt-4o",
+            "gpt-4o-mini",
+            "gpt-4-turbo",
+            "gpt-3.5-turbo",
         ],
         "requires_key": True,
         "requires_endpoint": False,
+        "key_prefix": "sk-",
+        "validate_url": "https://api.openai.com/v1/models",
+        "validate_method": "GET",
+    },
+    "anthropic": {
+        "name": "Anthropic",
+        "base_url": "https://api.anthropic.com/v1",
+        "models": [
+            "claude-sonnet-4-20250514",
+            "claude-3-5-sonnet-20241022",
+            "claude-3-haiku-20240307",
+        ],
+        "requires_key": True,
+        "requires_endpoint": False,
+        "key_prefix": "sk-ant-",
+        "validate_url": "https://api.anthropic.com/v1/messages",
+        "validate_method": "POST",
+    },
+    "grok": {
+        "name": "Grok (xAI)",
+        "base_url": "https://api.x.ai/v1",
+        "models": [
+            "grok-3",
+            "grok-3-mini",
+            "grok-2",
+        ],
+        "requires_key": True,
+        "requires_endpoint": False,
+        "key_prefix": "xai-",
+        "validate_url": "https://api.x.ai/v1/models",
+        "validate_method": "GET",
     },
     "groq": {
         "name": "Groq",
@@ -34,58 +64,24 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         ],
         "requires_key": True,
         "requires_endpoint": False,
+        "key_prefix": "gsk_",
+        "validate_url": "https://api.groq.com/openai/v1/models",
+        "validate_method": "GET",
     },
-    "google": {
-        "name": "Google AI",
-        "base_url": "https://generativelanguage.googleapis.com/v1beta",
+    "opencode": {
+        "name": "OpenCode",
+        "base_url": "https://api.opencode.ai/v1",
         "models": [
-            "gemini-2.0-flash",
-            "gemini-1.5-pro",
-            "gemini-1.5-flash",
+            "claude-opus-4-6",
+            "claude-sonnet-4-6",
+            "gpt-5",
+            "gpt-5-mini",
         ],
         "requires_key": True,
         "requires_endpoint": False,
-    },
-    "openai": {
-        "name": "OpenAI",
-        "base_url": "https://api.openai.com/v1",
-        "models": [
-            "gpt-4o",
-            "gpt-4o-mini",
-            "gpt-4-turbo",
-            "gpt-3.5-turbo",
-        ],
-        "requires_key": True,
-        "requires_endpoint": False,
-    },
-    "anthropic": {
-        "name": "Anthropic",
-        "base_url": "https://api.anthropic.com/v1",
-        "models": [
-            "claude-sonnet-4-20250514",
-            "claude-3-5-sonnet-20241022",
-            "claude-3-haiku-20240307",
-        ],
-        "requires_key": True,
-        "requires_endpoint": False,
-    },
-    "nvidia-nim": {
-        "name": "NVIDIA NIM",
-        "base_url": "https://integrate.api.nvidia.com/v1",
-        "models": [
-            "meta/llama-4-maverick-17b-128e-instruct",
-            "mistralai/ministral-14b-instruct-2512",
-            "deepseek-ai/deepseek-v4-flash",
-        ],
-        "requires_key": True,
-        "requires_endpoint": False,
-    },
-    "custom": {
-        "name": "Custom Endpoint",
-        "base_url": "",
-        "models": [],
-        "requires_key": True,
-        "requires_endpoint": True,
+        "key_prefix": "sk-",
+        "validate_url": "https://api.opencode.ai/v1/models",
+        "validate_method": "GET",
     },
 }
 
@@ -259,8 +255,56 @@ def chat_completion(config: ProviderConfig, messages: list[dict[str, str]], **kw
 
 
 def validate_api_key(config: ProviderConfig) -> dict[str, Any]:
-    test_messages = [{"role": "user", "content": "Say 'ok' in one word."}]
-    result = chat_completion(config, test_messages, max_tokens=10, timeout=15)
-    if result.get("error"):
-        return {"valid": False, "error": result["error"]}
-    return {"valid": True, "model": config.model, "provider": config.provider}
+    provider_info = PROVIDER_REGISTRY.get(config.provider, {})
+    validate_url = provider_info.get("validate_url")
+    validate_method = provider_info.get("validate_method", "GET")
+
+    if not validate_url:
+        return {"valid": False, "error": f"Provider '{config.provider}' not supported for validation."}
+
+    if config.provider == "anthropic":
+        headers = {
+            "x-api-key": config.api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        payload = json.dumps({
+            "model": config.model or "claude-3-haiku-20240307",
+            "max_tokens": 10,
+            "messages": [{"role": "user", "content": "Say ok"}],
+        }).encode("utf-8")
+    else:
+        headers = {
+            "Authorization": f"Bearer {config.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = None
+
+    req = urllib.request.Request(validate_url, data=payload, headers=headers, method=validate_method)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+            model = config.model
+            if not model and config.provider != "anthropic":
+                models = data.get("data", [])
+                if models and isinstance(models, list):
+                    model = models[0].get("id", config.model)
+            return {"valid": True, "model": model, "provider": config.provider}
+    except urllib.error.HTTPError as exc:
+        error_body = ""
+        try:
+            error_body = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        if exc.code == 401:
+            return {"valid": False, "error": "Invalid API key."}
+        elif exc.code == 403:
+            return {"valid": False, "error": "API key does not have access to this resource."}
+        elif exc.code == 429:
+            return {"valid": True, "model": config.model, "provider": config.provider}
+        else:
+            return {"valid": False, "error": f"Validation failed (HTTP {exc.code}): {error_body[:200]}"}
+    except urllib.error.URLError:
+        return {"valid": False, "error": "Network error reaching provider API."}
+    except Exception as exc:
+        return {"valid": False, "error": str(exc) or "Validation failed."}
