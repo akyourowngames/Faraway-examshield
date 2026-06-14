@@ -49,7 +49,17 @@ const FALLBACK_PROVIDERS: LLMProviderInfo[] = [
   { id: "anthropic", name: "Anthropic", models: ["claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022", "claude-3-haiku-20240307"], requiresKey: true, requiresEndpoint: false },
   { id: "grok", name: "Grok (xAI)", models: ["grok-3", "grok-3-mini", "grok-2"], requiresKey: true, requiresEndpoint: false },
   { id: "groq", name: "Groq", models: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768", "gemma2-9b-it"], requiresKey: true, requiresEndpoint: false },
-  { id: "opencode", name: "OpenCode", models: ["claude-opus-4-6", "claude-sonnet-4-6", "gpt-5", "gpt-5-mini"], requiresKey: true, requiresEndpoint: false },
+  { id: "opencode", name: "OpenCode Zen", models: [
+    "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6",
+    "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-haiku-4-5",
+    "gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano",
+    "gpt-5.3-codex", "gpt-5.2", "gpt-5.2-codex", "gpt-5.1", "gpt-5.1-codex",
+    "gpt-5", "gpt-5-nano",
+    "gemini-3.5-flash", "gemini-3.1-pro", "gemini-3-flash",
+    "deepseek-v4-flash", "deepseek-v4-pro",
+    "grok-build-0.1", "big-pickle", "qwen3.6-plus",
+    "minimax-m2.5", "minimax-m3-free", "glm-5", "glm-5.1", "kimi-k2.6",
+  ], requiresKey: true, requiresEndpoint: false },
 ];
 
 export default function CreateAgentPage() {
