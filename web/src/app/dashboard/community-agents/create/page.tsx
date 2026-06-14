@@ -44,6 +44,14 @@ const KNOWLEDGE_TYPES = [
   { icon: Globe, label: "URL", desc: "Import content from a web page", value: "url" },
 ];
 
+const FALLBACK_PROVIDERS: LLMProviderInfo[] = [
+  { id: "openai", name: "OpenAI", models: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"], requiresKey: true, requiresEndpoint: false },
+  { id: "anthropic", name: "Anthropic", models: ["claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022", "claude-3-haiku-20240307"], requiresKey: true, requiresEndpoint: false },
+  { id: "grok", name: "Grok (xAI)", models: ["grok-3", "grok-3-mini", "grok-2"], requiresKey: true, requiresEndpoint: false },
+  { id: "groq", name: "Groq", models: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768", "gemma2-9b-it"], requiresKey: true, requiresEndpoint: false },
+  { id: "opencode", name: "OpenCode", models: ["claude-opus-4-6", "claude-sonnet-4-6", "gpt-5", "gpt-5-mini"], requiresKey: true, requiresEndpoint: false },
+];
+
 export default function CreateAgentPage() {
   const router = useRouter();
   const [step, setStep] = useState(0);
@@ -57,7 +65,7 @@ export default function CreateAgentPage() {
   const [visibility, setVisibility] = useState<"private" | "public">("private");
 
   // Step 2: LLM
-  const [providers, setProviders] = useState<LLMProviderInfo[]>([]);
+  const [providers, setProviders] = useState<LLMProviderInfo[]>(FALLBACK_PROVIDERS);
   const [selectedProvider, setSelectedProvider] = useState<LLMProvider>("openai");
   const [apiKey, setApiKey] = useState("");
   const [selectedModel, setSelectedModel] = useState("");
@@ -88,7 +96,17 @@ export default function CreateAgentPage() {
   const [botVerifyInfo, setBotVerifyInfo] = useState<{ firstName?: string; canJoinGroups?: boolean; canReadAllGroupMessages?: boolean } | null>(null);
 
   useEffect(() => {
-    listLLMProviders().then((data) => setProviders(data.providers)).catch(() => {});
+    listLLMProviders()
+      .then((data) => {
+        if (data.providers && data.providers.length > 0) {
+          setProviders(data.providers);
+        } else {
+          setProviders(FALLBACK_PROVIDERS);
+        }
+      })
+      .catch(() => {
+        setProviders(FALLBACK_PROVIDERS);
+      });
   }, []);
 
   const currentProvider = providers.find((p) => p.id === selectedProvider);
