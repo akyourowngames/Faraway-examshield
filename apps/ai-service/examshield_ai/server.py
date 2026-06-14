@@ -219,6 +219,12 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         if len(parts) == 3 and parts[0] == "agents" and parts[2] == "test":
             self._test_agent(parts[1])
             return
+        if len(parts) == 3 and parts[0] == "agents" and parts[2] == "deploy":
+            self._deploy_agent(parts[1])
+            return
+        if path == "/telegram/verify-bot":
+            self._verify_bot_token()
+            return
 
         self._send_json({"error": "Not found"}, status=404)
 
@@ -766,6 +772,123 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send_json({"error": str(exc) or "Failed to list sources."}, status=400)
 
+    def _delete_knowledge_source(self, agent_id: str, source_id: str) -> None:
+        try:
+            source = self.agent_store.get_knowledge_source(source_id)
+            if not source or source.get("agentId") != agent_id:
+                self._send_json({"error": "Knowledge source not found."}, status=404)
+                return
+            self.agent_store.delete_knowledge_source(source_id)
+            self._send_json({"message": "Knowledge source deleted."})
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Failed to delete source."}, status=400)
+
+    def _verify_bot_token(self) -> None:
+        try:
+            data = self._read_json()
+            token = str(data.get("token", "")).strip()
+            if not token:
+                self._send_json({"error": "Bot token is required."}, status=400)
+                return
+
+            import urllib.request
+            import urllib.error
+            url = f"https://api.telegram.org/bot{token}/getMe"
+            req = urllib.request.Request(url, method="GET")
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    result = json.loads(resp.read().decode())
+                    if result.get("ok"):
+                        bot = result.get("result", {})
+                        self._send_json({
+                            "valid": True,
+                            "botUsername": bot.get("username", ""),
+                            "botFirstName": bot.get("first_name", ""),
+                            "botId": bot.get("id"),
+                            "canJoinGroups": bot.get("can_join_groups", False),
+                            "canReadAllGroupMessages": bot.get("can_read_all_group_messages", False),
+                        })
+                    else:
+                        self._send_json({"valid": False, "error": result.get("description", "Invalid token.")})
+            except urllib.error.HTTPError as exc:
+                if exc.code == 401:
+                    self._send_json({"valid": False, "error": "Invalid bot token."})
+                else:
+                    self._send_json({"valid": False, "error": f"Telegram API error ({exc.code})."})
+            except urllib.error.URLError:
+                self._send_json({"valid": False, "error": "Network error reaching Telegram API."})
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Verification failed."}, status=400)
+
+    def _deploy_agent(self, agent_id: str) -> None:
+        try:
+            agent = self.agent_store.get_agent(agent_id)
+            if not agent:
+                self._send_json({"error": "Agent not found."}, status=404)
+                return
+
+            llm_config = self.agent_store.get_llm_config(agent_id)
+            if not llm_config:
+                self._send_json({"error": "LLM not configured. Complete provider setup first."}, status=400)
+                return
+
+            telegram_config = self.agent_store.get_telegram_config(agent_id)
+            if not telegram_config or not telegram_config.get("botToken"):
+                self._send_json({"error": "Telegram not configured. Add a bot token first."}, status=400)
+                return
+
+            self.agent_store.update_agent(agent_id, {"status": "deploying"})
+
+            import urllib.request
+            import urllib.error
+            token = telegram_config["botToken"]
+            url = f"https://api.telegram.org/bot{token}/getMe"
+            req = urllib.request.Request(url, method="GET")
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    result = json.loads(resp.read().decode())
+                    if not result.get("ok"):
+                        self.agent_store.update_agent(agent_id, {"status": "failed"})
+                        self.agent_store.update_telegram_config(agent_id, {"deploymentStatus": "invalid-token"})
+                        self._send_json({"error": "Bot token is invalid."}, status=400)
+                        return
+            except Exception:
+                self.agent_store.update_agent(agent_id, {"status": "failed"})
+                self.agent_store.update_telegram_config(agent_id, {"deploymentStatus": "network-error"})
+                self._send_json({"error": "Failed to verify bot with Telegram."}, status=500)
+                return
+
+            webhook_url = f"{self.settings.public_url}/telegram/webhook" if self.settings.public_url else ""
+            if webhook_url:
+                set_url = f"https://api.telegram.org/bot{token}/setWebhook"
+                set_body = json.dumps({"url": webhook_url}).encode()
+                set_req = urllib.request.Request(set_url, data=set_body, method="POST", headers={"Content-Type": "application/json"})
+                try:
+                    with urllib.request.urlopen(set_req, timeout=10) as resp:
+                        result = json.loads(resp.read().decode())
+                        if not result.get("ok"):
+                            self.agent_store.update_agent(agent_id, {"status": "failed"})
+                            self._send_json({"error": f"Webhook setup failed: {result.get('description', 'unknown')}"}, status=500)
+                            return
+                except Exception as exc:
+                    self.agent_store.update_agent(agent_id, {"status": "failed"})
+                    self._send_json({"error": f"Webhook setup failed: {exc}"}, status=500)
+                    return
+
+            self.agent_store.update_agent(agent_id, {"status": "active"})
+            self.agent_store.update_telegram_config(agent_id, {
+                "deploymentStatus": "deployed",
+                "botVerified": True,
+                "webhookUrl": webhook_url,
+            })
+            self._send_json({"message": "Agent deployed successfully.", "status": "active", "webhookUrl": webhook_url})
+        except Exception as exc:
+            try:
+                self.agent_store.update_agent(agent_id, {"status": "failed"})
+            except Exception:
+                pass
+            self._send_json({"error": str(exc) or "Deployment failed."}, status=500)
+
     def _upload_knowledge_files(self, agent_id: str, source_id: str) -> None:
         try:
             source = self.agent_store.get_knowledge_source(source_id)
@@ -986,6 +1109,9 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             return
         if len(parts) == 2 and parts[0] == "agents":
             self._delete_agent(parts[1])
+            return
+        if len(parts) == 4 and parts[0] == "agents" and parts[2] == "knowledge":
+            self._delete_knowledge_source(parts[1], parts[3])
             return
         self._send_json({"error": "Not found"}, status=404)
 

@@ -2015,6 +2015,17 @@ class AgentStore:
         self._store._write_json("agent-knowledge-sources", f"{source_id}.json", updated)
         return updated
 
+    def delete_knowledge_source(self, source_id: str) -> bool:
+        self._ensure()
+        source = self.get_knowledge_source(source_id)
+        if not source:
+            return False
+        path = self._store._data_dir / "agent-knowledge-sources" / f"{source_id}.json"
+        if path.exists():
+            path.unlink()
+            return True
+        return False
+
     def log_conversation(self, agent_id: str, user_message: str, agent_response: str, sources: list[JsonObject] | None = None, latency_ms: int = 0) -> JsonObject:
         self._ensure()
         conv_id = f"CONV-{uuid4().hex[:8]}"

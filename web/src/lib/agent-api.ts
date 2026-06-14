@@ -160,6 +160,37 @@ export async function testAgent(
   });
 }
 
+// ── Telegram Verify ──
+
+export async function verifyBotToken(token: string): Promise<{
+  valid: boolean;
+  botUsername?: string;
+  botFirstName?: string;
+  botId?: number;
+  canJoinGroups?: boolean;
+  canReadAllGroupMessages?: boolean;
+  error?: string;
+}> {
+  return apiFetch("/telegram/verify-bot", {
+    method: "POST",
+    body: JSON.stringify({ token }),
+  });
+}
+
+// ── Deploy Agent ──
+
+export async function deployAgent(agentId: string): Promise<{ message: string; status: string; webhookUrl?: string }> {
+  return apiFetch(`/agents/${agentId}/deploy`, {
+    method: "POST",
+  });
+}
+
+// ── Delete Knowledge Source ──
+
+export async function deleteKnowledgeSource(agentId: string, sourceId: string): Promise<void> {
+  await apiFetch(`/agents/${agentId}/knowledge/${sourceId}`, { method: "DELETE" });
+}
+
 // ── Conversations & Stats ──
 
 export async function listConversations(

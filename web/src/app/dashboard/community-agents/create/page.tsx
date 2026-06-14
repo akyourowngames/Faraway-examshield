@@ -25,7 +25,7 @@ import {
   ExternalLink,
   TestTube,
 } from "lucide-react";
-import { createAgent, listLLMProviders, validateLLMKey, upsertLLMConfig, upsertTelegramConfig, createKnowledgeSource, uploadKnowledgeFiles, testAgent } from "@/lib/agent-api";
+import { createAgent, listLLMProviders, validateLLMKey, upsertLLMConfig, upsertTelegramConfig, createKnowledgeSource, uploadKnowledgeFiles, testAgent, verifyBotToken } from "@/lib/agent-api";
 import type { LLMProviderInfo, LLMProvider, AgentCategory, ResponseStyle } from "@/lib/agent-types";
 
 const STEPS = ["Basics", "LLM Provider", "Telegram", "Knowledge", "Behavior", "Review"];
@@ -84,6 +84,10 @@ export default function CreateAgentPage() {
   const [testing, setTesting] = useState(false);
 
   const [createdAgentId, setCreatedAgentId] = useState<string | null>(null);
+  const [stepError, setStepError] = useState("");
+  const [verifyingBot, setVerifyingBot] = useState(false);
+  const [botVerified, setBotVerified] = useState(false);
+  const [botVerifyInfo, setBotVerifyInfo] = useState<{ firstName?: string; canJoinGroups?: boolean; canReadAllGroupMessages?: boolean } | null>(null);
 
   useEffect(() => {
     listLLMProviders().then((data) => setProviders(data.providers)).catch(() => {});
@@ -190,7 +194,55 @@ export default function CreateAgentPage() {
     }
   }
 
+  async function handleVerifyBot() {
+    if (!botToken.trim()) return;
+    setVerifyingBot(true);
+    setStepError("");
+    try {
+      const result = await verifyBotToken(botToken.trim());
+      if (result.valid) {
+        setBotVerified(true);
+        setBotUsername(result.botUsername || "");
+        setBotVerifyInfo({
+          firstName: result.botFirstName,
+          canJoinGroups: result.canJoinGroups,
+          canReadAllGroupMessages: result.canReadAllGroupMessages,
+        });
+      } else {
+        setBotVerified(false);
+        setStepError(result.error || "Invalid bot token");
+      }
+    } catch (e) {
+      setBotVerified(false);
+      setStepError(e instanceof Error ? e.message : "Verification failed");
+    } finally {
+      setVerifyingBot(false);
+    }
+  }
+
+  function validateStep(): string {
+    switch (step) {
+      case 0:
+        if (!name.trim()) return "Agent name is required.";
+        break;
+      case 1:
+        if (selectedProvider !== "custom" && !apiKey.trim()) return "API key is required.";
+        if (!displayModel && selectedProvider !== "custom") return "Select a model.";
+        break;
+      case 2:
+        if (botToken.trim() && !botVerified) return "Verify your bot token before proceeding.";
+        break;
+    }
+    return "";
+  }
+
   function next() {
+    const error = validateStep();
+    if (error) {
+      setStepError(error);
+      return;
+    }
+    setStepError("");
     if (step < STEPS.length - 1) setStep(step + 1);
   }
   function prev() {
@@ -387,21 +439,42 @@ export default function CreateAgentPage() {
               <p className="text-xs text-white/40">Connect a Telegram bot to deploy your agent. You can skip this and configure later.</p>
               <div>
                 <label className="block text-[10px] uppercase tracking-widest text-white/40 mb-2 font-bold">Bot Token</label>
-                <input type="password" placeholder="123456:ABC-..." value={botToken} onChange={(e) => setBotToken(e.target.value)}
-                  className="w-full px-4 py-3 bg-white/[0.03] border border-white/10 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-white/30 transition-colors font-mono" />
+                <div className="flex gap-2">
+                  <input type="password" placeholder="123456:ABC-..." value={botToken} onChange={(e) => { setBotToken(e.target.value); setBotVerified(false); setBotVerifyInfo(null); }}
+                    className="flex-1 px-4 py-3 bg-white/[0.03] border border-white/10 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-white/30 transition-colors font-mono" />
+                  <button onClick={handleVerifyBot} disabled={verifyingBot || !botToken.trim()}
+                    className="flex items-center gap-2 px-4 py-3 bg-white/10 border border-white/15 text-white text-xs font-bold uppercase tracking-widest hover:bg-white/15 transition-colors disabled:opacity-30 shrink-0">
+                    {verifyingBot ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                    {verifyingBot ? "Verifying..." : "Verify"}
+                  </button>
+                </div>
+                {botVerified && (
+                  <div className="mt-2 flex items-center gap-2 text-[11px] text-emerald-400/80 font-bold">
+                    <Check className="w-3.5 h-3.5" />
+                    Connected as @{botUsername} {botVerifyInfo?.firstName ? `(${botVerifyInfo.firstName})` : ""}
+                  </div>
+                )}
               </div>
               <div>
                 <label className="block text-[10px] uppercase tracking-widest text-white/40 mb-2 font-bold">Bot Username</label>
                 <input type="text" placeholder="@your_bot_username" value={botUsername} onChange={(e) => setBotUsername(e.target.value)}
-                  className="w-full px-4 py-3 bg-white/[0.03] border border-white/10 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-white/30 transition-colors" />
+                  disabled={botVerified}
+                  className="w-full px-4 py-3 bg-white/[0.03] border border-white/10 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-white/30 transition-colors disabled:opacity-40" />
               </div>
               <div className="border border-white/10 bg-white/[0.02] p-4">
                 <div className="text-[10px] uppercase tracking-widest text-white/30 mb-3 font-bold">Setup Checklist</div>
                 <div className="space-y-2 text-xs text-white/40">
-                  {["Disable Privacy Mode", "Add Bot To Group", "Promote To Admin", "Enable Message Reading"].map((item) => (
-                    <div key={item} className="flex items-center gap-2">
-                      <div className="w-3.5 h-3.5 border border-white/20 rounded-sm" />
-                      {item}
+                  {[
+                    { label: "Disable Privacy Mode", done: botVerifyInfo?.canReadAllGroupMessages ?? false },
+                    { label: "Add Bot To Group", done: false },
+                    { label: "Promote To Admin", done: false },
+                    { label: "Enable Message Reading", done: botVerifyInfo?.canReadAllGroupMessages ?? false },
+                  ].map((item) => (
+                    <div key={item.label} className="flex items-center gap-2">
+                      <div className={`w-3.5 h-3.5 border rounded-sm flex items-center justify-center ${item.done ? "border-emerald-400/60 bg-emerald-400/10" : "border-white/20"}`}>
+                        {item.done && <Check className="w-2.5 h-2.5 text-emerald-400" />}
+                      </div>
+                      <span className={item.done ? "text-emerald-400/60" : ""}>{item.label}</span>
                     </div>
                   ))}
                 </div>
@@ -518,53 +591,98 @@ export default function CreateAgentPage() {
                 <Shield className="w-5 h-5 text-white/50" />
                 <h2 className="text-sm font-bold uppercase tracking-widest text-white">Review & Deploy</h2>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {[
-                  { label: "Name", value: name || "Untitled Agent" },
-                  { label: "Category", value: category },
-                  { label: "Visibility", value: visibility },
-                  { label: "Provider", value: selectedProvider },
-                  { label: "Model", value: displayModel || "Not set" },
-                  { label: "Telegram", value: botUsername || "Not configured" },
-                  { label: "Knowledge", value: `${knowledgeFiles.length} file(s)` },
-                  { label: "Response Style", value: responseStyle },
-                  { label: "Citations", value: citationMode ? "Enabled" : "Disabled" },
-                ].map((item) => (
-                  <div key={item.label} className="border border-white/10 bg-white/[0.02] p-4">
-                    <div className="text-[10px] uppercase tracking-widest text-white/30 mb-1">{item.label}</div>
-                    <div className="text-sm text-white font-bold capitalize">{item.value}</div>
-                  </div>
-                ))}
-              </div>
-              {systemPrompt && (
-                <div className="border border-white/10 bg-white/[0.02] p-4">
-                  <div className="text-[10px] uppercase tracking-widest text-white/30 mb-1">System Prompt</div>
-                  <div className="text-xs text-white/60 font-mono max-h-32 overflow-y-auto">{systemPrompt}</div>
-                </div>
-              )}
+              {(() => {
+                const checks = [
+                  { label: "Agent Name", ok: !!name.trim(), critical: true },
+                  { label: "LLM Provider", ok: !!selectedProvider, critical: true },
+                  { label: "API Key", ok: selectedProvider === "custom" || !!apiKey.trim(), critical: true },
+                  { label: "Model", ok: !!displayModel, critical: true },
+                  { label: "Telegram Bot", ok: !botToken.trim() || botVerified, critical: false },
+                  { label: "System Prompt", ok: !!systemPrompt.trim(), critical: false },
+                  { label: "Knowledge Files", ok: knowledgeFiles.length > 0 || selectedKnowledgeTypes.length === 0, critical: false },
+                ];
+                const allCritical = checks.filter(c => c.critical).every(c => c.ok);
+                return (
+                  <>
+                    <div className="border border-white/10 bg-white/[0.02] p-4">
+                      <div className="text-[10px] uppercase tracking-widest text-white/30 mb-3 font-bold">Readiness</div>
+                      <div className="space-y-2">
+                        {checks.map((c) => (
+                          <div key={c.label} className="flex items-center gap-2 text-xs">
+                            <div className={`w-3.5 h-3.5 border rounded-sm flex items-center justify-center ${c.ok ? "border-emerald-400/60 bg-emerald-400/10" : c.critical ? "border-red-400/60 bg-red-400/10" : "border-white/20"}`}>
+                              {c.ok && <Check className="w-2.5 h-2.5 text-emerald-400" />}
+                              {!c.ok && c.critical && <AlertTriangle className="w-2.5 h-2.5 text-red-400" />}
+                            </div>
+                            <span className={c.ok ? "text-white/60" : c.critical ? "text-red-400/70" : "text-white/40"}>{c.label}</span>
+                            <span className="ml-auto text-[10px] text-white/25">{c.ok ? "OK" : c.critical ? "Required" : "Optional"}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      {[
+                        { label: "Name", value: name || "Untitled Agent" },
+                        { label: "Category", value: category },
+                        { label: "Visibility", value: visibility },
+                        { label: "Provider", value: selectedProvider },
+                        { label: "Model", value: displayModel || "Not set" },
+                        { label: "Telegram", value: botUsername || "Not configured" },
+                        { label: "Knowledge", value: `${knowledgeFiles.length} file(s)` },
+                        { label: "Response Style", value: responseStyle },
+                        { label: "Citations", value: citationMode ? "Enabled" : "Disabled" },
+                      ].map((item) => (
+                        <div key={item.label} className="border border-white/10 bg-white/[0.02] p-4">
+                          <div className="text-[10px] uppercase tracking-widest text-white/30 mb-1">{item.label}</div>
+                          <div className="text-sm text-white font-bold capitalize">{item.value}</div>
+                        </div>
+                      ))}
+                    </div>
+                    {systemPrompt && (
+                      <div className="border border-white/10 bg-white/[0.02] p-4">
+                        <div className="text-[10px] uppercase tracking-widest text-white/30 mb-1">System Prompt</div>
+                        <div className="text-xs text-white/60 font-mono max-h-32 overflow-y-auto">{systemPrompt}</div>
+                      </div>
+                    )}
+                    {!allCritical && (
+                      <div className="flex items-center gap-2 text-[11px] text-red-400/70 font-bold">
+                        <AlertTriangle className="w-3.5 h-3.5" />
+                        Complete required fields before deploying.
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
             </div>
           )}
         </motion.div>
       </AnimatePresence>
 
       {/* Navigation */}
-      <div className="flex items-center justify-between">
-        <button onClick={prev} disabled={step === 0}
-          className="flex items-center gap-2 px-4 py-2 border border-white/15 bg-white/[0.03] text-white/60 text-xs font-bold uppercase tracking-widest hover:border-white/40 hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed">
-          <ArrowLeft className="w-3.5 h-3.5" /> Previous
-        </button>
-        {step < STEPS.length - 1 ? (
-          <button onClick={next}
-            className="flex items-center gap-2 px-6 py-2 bg-white text-black text-xs font-bold uppercase tracking-widest hover:bg-white/90 transition-colors">
-            Next <ArrowRight className="w-3.5 h-3.5" />
-          </button>
-        ) : (
-          <button onClick={handleCreate} disabled={creating}
-            className="flex items-center gap-2 px-6 py-2 bg-white text-black text-xs font-bold uppercase tracking-widest hover:bg-white/90 transition-colors disabled:opacity-50">
-            {creating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
-            {creating ? "Creating..." : "Create Agent"}
-          </button>
+      <div className="space-y-3">
+        {stepError && (
+          <div className="flex items-center gap-2 text-[11px] text-red-400/80 font-bold">
+            <AlertTriangle className="w-3.5 h-3.5" />
+            {stepError}
+          </div>
         )}
+        <div className="flex items-center justify-between">
+          <button onClick={prev} disabled={step === 0}
+            className="flex items-center gap-2 px-4 py-2 border border-white/15 bg-white/[0.03] text-white/60 text-xs font-bold uppercase tracking-widest hover:border-white/40 hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed">
+            <ArrowLeft className="w-3.5 h-3.5" /> Previous
+          </button>
+          {step < STEPS.length - 1 ? (
+            <button onClick={next}
+              className="flex items-center gap-2 px-6 py-2 bg-white text-black text-xs font-bold uppercase tracking-widest hover:bg-white/90 transition-colors">
+              Next <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          ) : (
+            <button onClick={handleCreate} disabled={creating || !name.trim() || !apiKey.trim() && selectedProvider !== "custom" || !displayModel && selectedProvider !== "custom"}
+              className="flex items-center gap-2 px-6 py-2 bg-white text-black text-xs font-bold uppercase tracking-widest hover:bg-white/90 transition-colors disabled:opacity-30">
+              {creating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+              {creating ? "Creating..." : "Create Agent"}
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
