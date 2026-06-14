@@ -43,15 +43,23 @@ export default function RegistryDashboard() {
   const [search, setSearch] = useState("");
   const [filterExam, setFilterExam] = useState<string>("");
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.all([listRegistryPapers(), getRegistryStats()])
-      .then(([paperData, statsData]) => {
-        setPapers(paperData.papers);
-        setStats(statsData);
+    listRegistryPapers()
+      .then((paperData) => {
+        setPapers(paperData.papers || []);
+        setFetchError(null);
       })
-      .catch(() => {})
+      .catch((err) => {
+        console.error("Registry papers fetch failed:", err);
+        setFetchError(err instanceof Error ? err.message : "Failed to load registry data.");
+      })
       .finally(() => setLoading(false));
+
+    getRegistryStats()
+      .then((statsData) => setStats(statsData))
+      .catch(() => {});
   }, []);
 
   const filtered = papers.filter((p) => {
@@ -143,6 +151,16 @@ export default function RegistryDashboard() {
         <input type="text" placeholder="Search papers by ID, exam, center, city..." value={search} onChange={(e) => setSearch(e.target.value)}
           className="w-full pl-10 pr-4 py-3 bg-white/[0.03] border border-white/10 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-white/30 transition-colors" />
       </div>
+
+      {fetchError && (
+        <div className="border border-red-500/20 bg-red-500/[0.05] p-4 flex items-center gap-3">
+          <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+          <div>
+            <div className="text-xs font-bold text-red-400">Failed to load registry</div>
+            <div className="text-[11px] text-red-400/60 mt-0.5">{fetchError}</div>
+          </div>
+        </div>
+      )}
 
       {/* Papers table */}
       <div className="border border-white/10 bg-white/[0.02] overflow-hidden">
