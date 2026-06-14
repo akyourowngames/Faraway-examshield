@@ -15,5 +15,12 @@ export async function GET(request: Request) {
     console.error('Auth callback error:', error.message)
   }
 
+  // If no code or exchange failed, check if there's already a valid session
+  const supabase = await createClient()
+  const { data: { session } } = await supabase.auth.getSession()
+  if (session) {
+    return NextResponse.redirect(`${origin}${next}`)
+  }
+
   return NextResponse.redirect(`${origin}/login?error=auth_callback_failed`)
 }
