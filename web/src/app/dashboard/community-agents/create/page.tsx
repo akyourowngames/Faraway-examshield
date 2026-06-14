@@ -61,8 +61,6 @@ export default function CreateAgentPage() {
   const [selectedProvider, setSelectedProvider] = useState<LLMProvider>("openai");
   const [apiKey, setApiKey] = useState("");
   const [selectedModel, setSelectedModel] = useState("");
-  const [customEndpoint, setCustomEndpoint] = useState("");
-  const [customModel, setCustomModel] = useState("");
   const [keyValidated, setKeyValidated] = useState(false);
   const [validating, setValidating] = useState(false);
   const [providerError, setProviderError] = useState("");
@@ -94,19 +92,18 @@ export default function CreateAgentPage() {
   }, []);
 
   const currentProvider = providers.find((p) => p.id === selectedProvider);
-  const modelOptions = selectedProvider === "custom" ? [] : currentProvider?.models ?? [];
-  const displayModel = selectedProvider === "custom" ? customModel : selectedModel;
+  const modelOptions = currentProvider?.models ?? [];
+  const displayModel = selectedModel || modelOptions[0] || "";
 
   async function handleValidateKey() {
-    if (!apiKey && selectedProvider !== "custom") return;
+    if (!apiKey) return;
     setValidating(true);
     setProviderError("");
     try {
       const result = await validateLLMKey({
         provider: selectedProvider,
         apiKey,
-        model: selectedProvider === "custom" ? customModel : selectedModel || modelOptions[0] || "",
-        endpointUrl: selectedProvider === "custom" ? customEndpoint : undefined,
+        model: selectedModel || modelOptions[0] || "",
       });
       if (result.valid) {
         setKeyValidated(true);
@@ -158,7 +155,6 @@ export default function CreateAgentPage() {
         provider: selectedProvider,
         model: displayModel || modelOptions[0] || "gpt-4o",
         apiKey,
-        endpointUrl: selectedProvider === "custom" ? customEndpoint : undefined,
       });
 
       // Save Telegram config if provided
@@ -226,8 +222,8 @@ export default function CreateAgentPage() {
         if (!name.trim()) return "Agent name is required.";
         break;
       case 1:
-        if (selectedProvider !== "custom" && !apiKey.trim()) return "API key is required.";
-        if (!displayModel && selectedProvider !== "custom") return "Select a model.";
+        if (!apiKey.trim()) return "API key is required.";
+        if (!displayModel) return "Select a model.";
         break;
       case 2:
         if (botToken.trim() && !botVerified) return "Verify your bot token before proceeding.";
@@ -373,32 +369,11 @@ export default function CreateAgentPage() {
                   ))}
                 </div>
               </div>
-              {selectedProvider !== "custom" && (
-                <div>
-                  <label className="block text-[10px] uppercase tracking-widest text-white/40 mb-2 font-bold">API Key</label>
-                  <input type="password" placeholder="sk-..." value={apiKey} onChange={(e) => { setApiKey(e.target.value); setKeyValidated(false); }}
-                    className="w-full px-4 py-3 bg-white/[0.03] border border-white/10 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-white/30 transition-colors font-mono" />
-                </div>
-              )}
-              {selectedProvider === "custom" && (
-                <>
-                  <div>
-                    <label className="block text-[10px] uppercase tracking-widest text-white/40 mb-2 font-bold">Endpoint URL</label>
-                    <input type="text" placeholder="https://your-api.com/v1/chat/completions" value={customEndpoint} onChange={(e) => setCustomEndpoint(e.target.value)}
-                      className="w-full px-4 py-3 bg-white/[0.03] border border-white/10 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-white/30 transition-colors font-mono" />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] uppercase tracking-widest text-white/40 mb-2 font-bold">API Key</label>
-                    <input type="password" placeholder="your-api-key" value={apiKey} onChange={(e) => { setApiKey(e.target.value); setKeyValidated(false); }}
-                      className="w-full px-4 py-3 bg-white/[0.03] border border-white/10 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-white/30 transition-colors font-mono" />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] uppercase tracking-widest text-white/40 mb-2 font-bold">Model Name</label>
-                    <input type="text" placeholder="e.g. gpt-4o" value={customModel} onChange={(e) => setCustomModel(e.target.value)}
-                      className="w-full px-4 py-3 bg-white/[0.03] border border-white/10 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-white/30 transition-colors font-mono" />
-                  </div>
-                </>
-              )}
+              <div>
+                <label className="block text-[10px] uppercase tracking-widest text-white/40 mb-2 font-bold">API Key</label>
+                <input type="password" placeholder="sk-..." value={apiKey} onChange={(e) => { setApiKey(e.target.value); setKeyValidated(false); }}
+                  className="w-full px-4 py-3 bg-white/[0.03] border border-white/10 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-white/30 transition-colors font-mono" />
+              </div>
               {modelOptions.length > 0 && (
                 <div>
                   <label className="block text-[10px] uppercase tracking-widest text-white/40 mb-2 font-bold">Model</label>
@@ -413,7 +388,7 @@ export default function CreateAgentPage() {
                 </div>
               )}
               <div className="flex items-center gap-3">
-                <button onClick={handleValidateKey} disabled={validating || (!apiKey && selectedProvider !== "custom")}
+                <button onClick={handleValidateKey} disabled={validating || !apiKey}
                   className="flex items-center gap-2 px-4 py-2 border border-white/15 bg-white/[0.03] text-white/60 text-xs font-bold uppercase tracking-widest hover:border-white/40 hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed">
                   {validating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Key className="w-3.5 h-3.5" />}
                   Validate Key
@@ -595,7 +570,7 @@ export default function CreateAgentPage() {
                 const checks = [
                   { label: "Agent Name", ok: !!name.trim(), critical: true },
                   { label: "LLM Provider", ok: !!selectedProvider, critical: true },
-                  { label: "API Key", ok: selectedProvider === "custom" || !!apiKey.trim(), critical: true },
+                  { label: "API Key", ok: !!apiKey.trim(), critical: true },
                   { label: "Model", ok: !!displayModel, critical: true },
                   { label: "Telegram Bot", ok: !botToken.trim() || botVerified, critical: false },
                   { label: "System Prompt", ok: !!systemPrompt.trim(), critical: false },
@@ -676,7 +651,7 @@ export default function CreateAgentPage() {
               Next <ArrowRight className="w-3.5 h-3.5" />
             </button>
           ) : (
-            <button onClick={handleCreate} disabled={creating || !name.trim() || !apiKey.trim() && selectedProvider !== "custom" || !displayModel && selectedProvider !== "custom"}
+            <button onClick={handleCreate} disabled={creating || !name.trim() || !apiKey.trim() || !displayModel}
               className="flex items-center gap-2 px-6 py-2 bg-white text-black text-xs font-bold uppercase tracking-widest hover:bg-white/90 transition-colors disabled:opacity-30">
               {creating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
               {creating ? "Creating..." : "Create Agent"}

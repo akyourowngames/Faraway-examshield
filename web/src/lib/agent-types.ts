@@ -13,13 +13,11 @@ export type AgentVisibility = "private" | "public";
 export type ResponseStyle = "short" | "balanced" | "detailed";
 
 export type LLMProvider =
-  | "openrouter"
-  | "groq"
-  | "google"
   | "openai"
   | "anthropic"
-  | "nvidia-nim"
-  | "custom";
+  | "grok"
+  | "groq"
+  | "opencode";
 
 export type TelegramDeploymentStatus =
   | "disconnected"
