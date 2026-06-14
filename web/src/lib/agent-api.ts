@@ -22,9 +22,20 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
 
-  const data = await res.json();
+  const text = await res.text();
+  let data: unknown;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    throw new Error(`Backend returned invalid response (${res.status}): ${text.slice(0, 200)}`);
+  }
+
   if (!res.ok) {
-    throw new Error(data?.error || `Request failed (${res.status})`);
+    const errData = data as Record<string, unknown> | null;
+    throw new Error(
+      (errData && typeof errData === "object" && "error" in errData ? String((errData as { error: unknown }).error) : null) ||
+        `Request failed (${res.status})`
+    );
   }
   return data as T;
 }
