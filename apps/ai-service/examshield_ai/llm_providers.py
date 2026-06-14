@@ -72,43 +72,60 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "name": "OpenCode Zen",
         "base_url": "https://opencode.ai/zen/v1",
         "models": [
-            "claude-opus-4-8",
-            "claude-opus-4-7",
-            "claude-opus-4-6",
-            "claude-sonnet-4-6",
-            "claude-sonnet-4-5",
+            "big-pickle",
+            "deepseek-v4-flash-free",
+            "mimo-v2.5-free",
+            "north-mini-code-free",
+            "nemotron-3-ultra-free",
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+            "minimax-m2.5",
+            "minimax-m2.7",
+            "glm-5",
+            "glm-5.1",
+            "kimi-k2.5",
+            "kimi-k2.6",
+            "grok-build-0.1",
+            "qwen3.5-plus",
+            "qwen3.6-plus",
+            "qwen3.7-plus",
+            "qwen3.7-max",
             "claude-haiku-4-5",
-            "gpt-5.5",
-            "gpt-5.5-pro",
+            "claude-sonnet-4",
+            "claude-sonnet-4-5",
+            "claude-sonnet-4-6",
+            "claude-opus-4-1",
+            "claude-opus-4-5",
+            "claude-opus-4-6",
+            "claude-opus-4-7",
+            "claude-opus-4-8",
+            "claude-fable-5",
+            "gpt-5",
+            "gpt-5-nano",
+            "gpt-5.1",
+            "gpt-5.1-codex",
+            "gpt-5.1-codex-max",
+            "gpt-5.1-codex-mini",
+            "gpt-5.2",
+            "gpt-5.2-codex",
+            "gpt-5.3-codex",
+            "gpt-5.3-codex-spark",
             "gpt-5.4",
             "gpt-5.4-mini",
             "gpt-5.4-nano",
-            "gpt-5.3-codex",
-            "gpt-5.2",
-            "gpt-5.2-codex",
-            "gpt-5.1",
-            "gpt-5.1-codex",
-            "gpt-5",
-            "gpt-5-nano",
-            "gemini-3.5-flash",
-            "gemini-3.1-pro",
+            "gpt-5.4-pro",
+            "gpt-5.5",
+            "gpt-5.5-pro",
             "gemini-3-flash",
-            "deepseek-v4-flash",
-            "deepseek-v4-pro",
-            "grok-build-0.1",
-            "big-pickle",
-            "qwen3.6-plus",
-            "minimax-m2.5",
-            "minimax-m3-free",
-            "glm-5",
-            "glm-5.1",
-            "kimi-k2.6",
+            "gemini-3.1-pro",
+            "gemini-3.5-flash",
         ],
         "requires_key": True,
         "requires_endpoint": False,
         "key_prefix": "sk-",
-        "validate_url": "https://opencode.ai/zen/v1/models",
-        "validate_method": "GET",
+        "validate_url": "https://opencode.ai/zen/v1/chat/completions",
+        "validate_method": "POST",
+        "validate_model": "big-pickle",
     },
 }
 
@@ -300,6 +317,17 @@ def validate_api_key(config: ProviderConfig) -> dict[str, Any]:
             "max_tokens": 10,
             "messages": [{"role": "user", "content": "Say ok"}],
         }).encode("utf-8")
+    elif config.provider == "opencode":
+        validate_model = provider_info.get("validate_model", "big-pickle")
+        headers = {
+            "Authorization": f"Bearer {config.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = json.dumps({
+            "model": validate_model,
+            "max_tokens": 5,
+            "messages": [{"role": "user", "content": "hi"}],
+        }).encode("utf-8")
     else:
         headers = {
             "Authorization": f"Bearer {config.api_key}",
@@ -312,10 +340,12 @@ def validate_api_key(config: ProviderConfig) -> dict[str, Any]:
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode("utf-8", errors="replace"))
             model = config.model
-            if not model and config.provider != "anthropic":
+            if not model and config.provider not in ("anthropic", "opencode"):
                 models = data.get("data", [])
                 if models and isinstance(models, list):
                     model = models[0].get("id", config.model)
+            if not model and config.provider == "opencode":
+                model = provider_info.get("validate_model", "big-pickle")
             return {"valid": True, "model": model, "provider": config.provider}
     except urllib.error.HTTPError as exc:
         error_body = ""
