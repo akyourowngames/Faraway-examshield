@@ -19,6 +19,7 @@ import {
   Menu,
   X,
   Users,
+  BookOpen,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { createClient } from "@/lib/supabase/client";
@@ -27,6 +28,7 @@ const NAV_ITEMS = [
   { name: "Command Center", href: "/dashboard", icon: Activity },
   { name: "EXAMSHIELD AI", href: "/dashboard/ai", icon: Bot },
   { name: "Evidence Center", href: "/dashboard/evidence", icon: Files },
+  { name: "Question Registry", href: "/dashboard/registry", icon: BookOpen },
   { name: "Threat Intelligence", href: "/dashboard/threats", icon: Crosshair },
   { name: "Investigation", href: "/dashboard/investigation", icon: Map },
   { name: "Exam Lifecycle", href: "/dashboard/lifecycle", icon: ShieldAlert },

@@ -8,6 +8,9 @@ import type {
   KnowledgeSource,
   LLMConfig,
   TelegramConfig,
+  RegistryPaper,
+  RegistryStats,
+  MatchResult,
 } from "@/lib/agent-types";
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
@@ -201,4 +204,43 @@ export async function listConversations(
 
 export async function getAgentStats(agentId: string): Promise<AgentStats> {
   return apiFetch(`/agents/${agentId}/stats`);
+}
+
+// ── Question Registry ──
+
+export async function listRegistryPapers(): Promise<{ papers: RegistryPaper[]; total: number }> {
+  return apiFetch("/registry");
+}
+
+export async function getRegistryPaper(paperId: string): Promise<{ paper: RegistryPaper }> {
+  return apiFetch(`/registry/${encodeURIComponent(paperId)}`);
+}
+
+export async function getRegistryStats(): Promise<RegistryStats> {
+  return apiFetch("/registry/stats");
+}
+
+export async function createRegistryPaper(data: Partial<RegistryPaper>): Promise<{ paper: RegistryPaper }> {
+  return apiFetch("/registry", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function updateRegistryPaper(paperId: string, data: Partial<RegistryPaper>): Promise<{ paper: RegistryPaper }> {
+  return apiFetch(`/registry/${encodeURIComponent(paperId)}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteRegistryPaper(paperId: string): Promise<void> {
+  await apiFetch(`/registry/${encodeURIComponent(paperId)}`, { method: "DELETE" });
+}
+
+export async function matchEvidenceToRegistry(ocrText: string, evidenceId?: string): Promise<{ matches: MatchResult[]; total: number }> {
+  return apiFetch("/registry/match", {
+    method: "POST",
+    body: JSON.stringify({ ocrText, evidenceId }),
+  });
 }

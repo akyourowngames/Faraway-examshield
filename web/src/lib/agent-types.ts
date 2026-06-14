@@ -13,13 +13,11 @@ export type AgentVisibility = "private" | "public";
 export type ResponseStyle = "short" | "balanced" | "detailed";
 
 export type LLMProvider =
-  | "openrouter"
-  | "groq"
-  | "google"
   | "openai"
   | "anthropic"
-  | "nvidia-nim"
-  | "custom";
+  | "grok"
+  | "groq"
+  | "opencode";
 
 export type TelegramDeploymentStatus =
   | "disconnected"
@@ -136,4 +134,65 @@ export type AgentMetric = {
   value: string | number;
   change: number;
   changeLabel: string;
+};
+
+// ── Question Registry ──
+
+export type PaperType = "question-paper" | "answer-key" | "internal-draft";
+
+export type PaperStatus = "registered" | "received" | "in_transit" | "investigating" | "compromised";
+
+export type RiskLevel = "low" | "medium" | "high" | "critical";
+
+export type FingerprintStatus = "pending" | "processing" | "ready" | "failed";
+
+export type RegistryPaper = {
+  paperId: string;
+  exam: string;
+  year: number;
+  paperSet: string;
+  paperType: PaperType;
+  description: string;
+  watermarkId: string;
+  questionFingerprint: string;
+  centerCode: string;
+  centerName: string;
+  city: string;
+  state: string;
+  printBatch: string;
+  printerId: string;
+  printedAt: string;
+  distributedAt: string;
+  riskLevel: RiskLevel;
+  status: PaperStatus;
+  uploadedAt: string;
+  fingerprintStatus: FingerprintStatus;
+  ocrConfidence: number;
+  totalQuestions: number;
+  protected: boolean;
+  fileType: string;
+  originalFilename: string;
+};
+
+export type RegistryStats = {
+  totalPapers: number;
+  protectedPapers: number;
+  compromisedPapers: number;
+  investigatingPapers: number;
+  byExam: Record<string, number>;
+};
+
+export type MatchResult = {
+  matchedPaperId: string;
+  matchedExam: string;
+  matchedSet: string;
+  similarityScore: number;
+  confidence: "high" | "medium" | "low";
+  status: "likely-leak" | "possible-match" | "weak-match";
+  centerCode: string;
+  centerName: string;
+  city: string;
+  state: string;
+  riskLevel: string;
+  matchedWatermarkId: string;
 };

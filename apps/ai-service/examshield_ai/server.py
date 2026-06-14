@@ -117,6 +117,16 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         if path == "/telegram/status":
             self._get_telegram_status()
             return
+        # Question Registry
+        if path == "/registry":
+            self._list_registry_papers()
+            return
+        if path == "/registry/stats":
+            self._get_registry_stats()
+            return
+        if len(parts) == 2 and parts[0] == "registry":
+            self._get_registry_paper(parts[1])
+            return
         if len(parts) == 2 and parts[0] == "analysis" and parts[1] == "jobs":
             try:
                 self._send_json(self.store.analysis_job_snapshot(parts[2]))
@@ -126,6 +136,9 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         # Community Agents
         if path == "/llm/providers":
             self._send_json({"providers": list_providers()})
+            return
+        if path == "/llm/validate":
+            self._validate_llm_key()
             return
         if path == "/agents":
             self._list_agents()
@@ -150,6 +163,9 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
 
         if path in {"/ocr/analyze", "/analyze"}:
             self._run_ocr()
+            return
+        if path == "/llm/validate":
+            self._validate_llm_key()
             return
 
         if path == "/evidence/upload":
@@ -188,6 +204,14 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
 
         if path == "/telegram/chat":
             self._test_telegram_chat()
+            return
+
+        # Question Registry
+        if path == "/registry":
+            self._create_registry_paper()
+            return
+        if path == "/registry/match":
+            self._match_evidence_to_registry()
             return
 
         if path == "/plan":
@@ -1113,6 +1137,9 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         if len(parts) == 4 and parts[0] == "agents" and parts[2] == "knowledge":
             self._delete_knowledge_source(parts[1], parts[3])
             return
+        if len(parts) == 2 and parts[0] == "registry":
+            self._delete_registry_paper(parts[1])
+            return
         self._send_json({"error": "Not found"}, status=404)
 
     def do_PUT(self) -> None:
@@ -1121,7 +1148,108 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         if len(parts) == 2 and parts[0] == "agents":
             self._update_agent(parts[1])
             return
+        if len(parts) == 2 and parts[0] == "registry":
+            self._update_registry_paper(parts[1])
+            return
         self._send_json({"error": "Not found"}, status=404)
+
+    # ── Question Registry ──
+
+    def _list_registry_papers(self) -> None:
+        try:
+            papers = self.store.read_registry()
+            self._send_json({"papers": papers, "total": len(papers)})
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Failed to list papers."}, status=400)
+
+    def _get_registry_paper(self, paper_id: str) -> None:
+        try:
+            paper = self.store.get_registry_paper(paper_id)
+            if not paper:
+                self._send_json({"error": "Paper not found."}, status=404)
+                return
+            self._send_json({"paper": paper})
+        except Exception as exc:
+            self._send_json({"error": str(exc)}, status=400)
+
+    def _get_registry_stats(self) -> None:
+        try:
+            papers = self.store.read_registry()
+            total = len(papers)
+            protected = sum(1 for p in papers if p.get("protected", True))
+            compromised = sum(1 for p in papers if p.get("status") == "compromised")
+            investigating = sum(1 for p in papers if p.get("status") == "investigating")
+            by_exam: dict[str, int] = {}
+            for p in papers:
+                exam = p.get("exam", "Unknown")
+                by_exam[exam] = by_exam.get(exam, 0) + 1
+            self._send_json({
+                "totalPapers": total,
+                "protectedPapers": protected,
+                "compromisedPapers": compromised,
+                "investigatingPapers": investigating,
+                "byExam": by_exam,
+            })
+        except Exception as exc:
+            self._send_json({"error": str(exc)}, status=400)
+
+    def _create_registry_paper(self) -> None:
+        try:
+            data = self._read_json()
+            paper_id = str(data.get("paperId", "")).strip()
+            if not paper_id:
+                self._send_json({"error": "paperId is required."}, status=400)
+                return
+            existing = self.store.get_registry_paper(paper_id)
+            if existing:
+                self._send_json({"error": f"Paper {paper_id} already exists."}, status=409)
+                return
+            paper = self.store.add_registry_paper(data)
+            self._send_json({"paper": paper, "message": "Paper registered."}, status=201)
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Failed to create paper."}, status=400)
+
+    def _update_registry_paper(self, paper_id: str) -> None:
+        try:
+            data = self._read_json()
+            paper = self.store.update_registry_paper(paper_id, data)
+            self._send_json({"paper": paper})
+        except LookupError as exc:
+            self._send_json({"error": str(exc)}, status=404)
+        except Exception as exc:
+            self._send_json({"error": str(exc)}, status=400)
+
+    def _delete_registry_paper(self, paper_id: str) -> None:
+        try:
+            deleted = self.store.delete_registry_paper(paper_id)
+            if not deleted:
+                self._send_json({"error": "Paper not found."}, status=404)
+                return
+            self._send_json({"message": "Paper deleted."})
+        except Exception as exc:
+            self._send_json({"error": str(exc)}, status=400)
+
+    def _match_evidence_to_registry(self) -> None:
+        try:
+            data = self._read_json()
+            ocr_text = str(data.get("ocrText", "")).strip()
+            evidence_id = str(data.get("evidenceId", "")).strip()
+            if not ocr_text:
+                self._send_json({"error": "ocrText is required."}, status=400)
+                return
+            matches = self.store.match_evidence_against_registry(ocr_text)
+            if matches and evidence_id:
+                best = matches[0]
+                if best.get("similarityScore", 0) > 70:
+                    self.store.record_activity({
+                        "type": "paper-matched",
+                        "title": "Paper Matched",
+                        "evidenceId": evidence_id,
+                        "detail": f"Matched {best.get('matchedExam')} ({best.get('matchedSet')}) at {best.get('similarityScore')}%",
+                    })
+            self._send_json({"matches": matches, "total": len(matches)})
+        except Exception as exc:
+            self._send_json({"error": str(exc)}, status=400)
 
     def _test_telegram_chat(self) -> None:
         """Test endpoint for Telegram private chat functionality."""

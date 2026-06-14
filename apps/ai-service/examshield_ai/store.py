@@ -1297,6 +1297,101 @@ class EvidenceStore:
             return []
         return parsed if isinstance(parsed, list) else []
 
+    def get_registry_paper(self, paper_id: str) -> JsonObject | None:
+        return next((p for p in self.read_registry() if p.get("paperId") == paper_id), None)
+
+    def add_registry_paper(self, data: JsonObject) -> JsonObject:
+        records = self.read_registry()
+        existing = next((p for p in records if p.get("paperId") == data.get("paperId")), None)
+        if existing:
+            raise LookupError(f"Paper {data.get('paperId')} already exists.")
+        paper = {
+            "watermarkId": data.get("watermarkId", f"WMK-{len(records) + 1:03d}"),
+            "paperId": data["paperId"],
+            "exam": data.get("exam", ""),
+            "year": data.get("year", 2026),
+            "paperSet": data.get("paperSet", "A"),
+            "questionFingerprint": data.get("questionFingerprint", ""),
+            "centerCode": data.get("centerCode", ""),
+            "centerName": data.get("centerName", ""),
+            "city": data.get("city", ""),
+            "state": data.get("state", ""),
+            "printBatch": data.get("printBatch", ""),
+            "printerId": data.get("printerId", ""),
+            "printedAt": data.get("printedAt", utc_now()),
+            "distributedAt": data.get("distributedAt", utc_now()),
+            "riskLevel": data.get("riskLevel", "low"),
+            "status": data.get("status", "registered"),
+            "description": data.get("description", ""),
+            "paperType": data.get("paperType", "question-paper"),
+            "uploadedAt": utc_now(),
+            "fingerprintStatus": data.get("fingerprintStatus", "ready"),
+            "ocrConfidence": data.get("ocrConfidence", 0),
+            "totalQuestions": data.get("totalQuestions", 0),
+            "protected": data.get("protected", True),
+            "fileType": data.get("fileType", ""),
+            "originalFilename": data.get("originalFilename", ""),
+        }
+        records.append(paper)
+        self._write_registry(records)
+        return paper
+
+    def update_registry_paper(self, paper_id: str, data: JsonObject) -> JsonObject:
+        records = self.read_registry()
+        paper = next((p for p in records if p.get("paperId") == paper_id), None)
+        if not paper:
+            raise LookupError(f"Paper {paper_id} not found.")
+        paper.update({k: v for k, v in data.items() if k != "paperId"})
+        self._write_registry(records)
+        return paper
+
+    def delete_registry_paper(self, paper_id: str) -> bool:
+        records = self.read_registry()
+        new_records = [p for p in records if p.get("paperId") != paper_id]
+        if len(new_records) == len(records):
+            return False
+        self._write_registry(new_records)
+        return True
+
+    def _write_registry(self, records: list[JsonObject]) -> None:
+        if self.supabase_enabled:
+            self._write_document("registry", "papers", {"items": records})
+        else:
+            self.settings.registry_path.parent.mkdir(parents=True, exist_ok=True)
+            self.settings.registry_path.write_text(json.dumps(records, indent=2), encoding="utf-8")
+
+    def match_evidence_against_registry(self, ocr_text: str) -> list[JsonObject]:
+        if not ocr_text or len(ocr_text.strip()) < 10:
+            return []
+        query_tokens = tokenize(ocr_text)
+        if len(query_tokens) < 3:
+            return []
+        results: list[JsonObject] = []
+        for record in self.read_registry():
+            registry_text = " ".join(str(record.get(field) or "") for field in ("paperId", "exam", "paperSet", "centerCode", "centerName", "city", "state"))
+            registry_tokens = tokenize(registry_text)
+            if not registry_tokens:
+                continue
+            overlap = len(query_tokens.intersection(registry_tokens))
+            confidence = round((overlap / max(len(registry_tokens), 1)) * 100)
+            if confidence > 30:
+                results.append({
+                    "matchedPaperId": record.get("paperId"),
+                    "matchedExam": f"{record.get('exam', '')} {record.get('year', '')}",
+                    "matchedSet": record.get("paperSet"),
+                    "similarityScore": min(98, confidence),
+                    "confidence": "high" if confidence > 80 else "medium" if confidence > 50 else "low",
+                    "status": "likely-leak" if confidence > 80 else "possible-match" if confidence > 50 else "weak-match",
+                    "centerCode": record.get("centerCode"),
+                    "centerName": record.get("centerName"),
+                    "city": record.get("city"),
+                    "state": record.get("state"),
+                    "riskLevel": record.get("riskLevel"),
+                    "matchedWatermarkId": record.get("watermarkId"),
+                })
+        results.sort(key=lambda r: r.get("similarityScore", 0), reverse=True)
+        return results[:10]
+
     def ensure_registry_seed(self) -> None:
         if self.supabase_enabled:
             if self._read_document("registry", "papers"):
