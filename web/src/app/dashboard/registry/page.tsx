@@ -12,8 +12,10 @@ import {
   Loader2,
   FileText,
   Eye,
+  Upload,
+  Trash2,
 } from "lucide-react";
-import { listRegistryPapers, getRegistryStats, deleteRegistryPaper } from "@/lib/agent-api";
+import { listRegistryPapers, getRegistryStats, deleteRegistryPaper, resetRegistry } from "@/lib/agent-api";
 import type { RegistryPaper, RegistryStats } from "@/lib/agent-types";
 
 const itemVariants = {
@@ -22,15 +24,15 @@ const itemVariants = {
 };
 
 const STATUS_COLORS: Record<string, string> = {
-  registered: "bg-white text-black",
-  received: "bg-white/10 text-white/60",
-  in_transit: "bg-white/10 text-white/60",
-  investigating: "bg-amber-500/10 text-amber-400",
-  compromised: "bg-red-500/10 text-red-400",
+  registered: "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20",
+  received: "bg-blue-500/10 text-blue-400 border border-blue-500/20",
+  in_transit: "bg-amber-500/10 text-amber-400 border border-amber-500/20",
+  investigating: "bg-orange-500/10 text-orange-400 border border-orange-500/20",
+  compromised: "bg-red-500/10 text-red-400 border border-red-500/20",
 };
 
 const RISK_COLORS: Record<string, string> = {
-  low: "text-white/40",
+  low: "text-emerald-400",
   medium: "text-amber-400",
   high: "text-orange-400",
   critical: "text-red-400",
@@ -44,6 +46,7 @@ export default function RegistryDashboard() {
   const [filterExam, setFilterExam] = useState<string>("");
   const [deleting, setDeleting] = useState<string | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [resetting, setResetting] = useState(false);
 
   useEffect(() => {
     listRegistryPapers()
@@ -64,7 +67,7 @@ export default function RegistryDashboard() {
 
   const filtered = papers.filter((p) => {
     const q = search.toLowerCase();
-    const matchSearch = !q || p.paperId.toLowerCase().includes(q) || p.exam.toLowerCase().includes(q) || p.centerName.toLowerCase().includes(q) || p.city.toLowerCase().includes(q);
+    const matchSearch = !q || p.paperId.toLowerCase().includes(q) || p.exam.toLowerCase().includes(q) || (p.centerName || "").toLowerCase().includes(q) || (p.city || "").toLowerCase().includes(q);
     const matchExam = !filterExam || p.exam === filterExam;
     return matchSearch && matchExam;
   });
@@ -72,7 +75,7 @@ export default function RegistryDashboard() {
   const exams = [...new Set(papers.map((p) => p.exam))].sort();
 
   async function handleDelete(paperId: string) {
-    if (!confirm(`Delete paper ${paperId}?`)) return;
+    if (!confirm(`Delete paper ${paperId}? This cannot be undone.`)) return;
     setDeleting(paperId);
     try {
       await deleteRegistryPaper(paperId);
@@ -81,6 +84,20 @@ export default function RegistryDashboard() {
       // ignore
     } finally {
       setDeleting(null);
+    }
+  }
+
+  async function handleReset() {
+    if (!confirm("Clear ALL papers from the registry? This cannot be undone.")) return;
+    setResetting(true);
+    try {
+      await resetRegistry();
+      setPapers([]);
+      setStats(null);
+    } catch {
+      // ignore
+    } finally {
+      setResetting(false);
     }
   }
 
@@ -105,12 +122,18 @@ export default function RegistryDashboard() {
         </div>
         <Link href="/dashboard/registry/upload"
           className="flex items-center gap-2 px-4 py-2 bg-white text-black text-xs font-bold uppercase tracking-widest hover:bg-white/90 transition-colors">
-          <Plus className="w-3.5 h-3.5" /> Upload Paper
+          <Plus className="w-3.5 h-3.5" /> Register Paper
         </Link>
+        {papers.length > 0 && (
+          <button onClick={handleReset} disabled={resetting}
+            className="flex items-center gap-2 px-4 py-2 border border-red-500/20 text-red-400/60 text-xs font-bold uppercase tracking-widest hover:bg-red-500/10 transition-colors disabled:opacity-30">
+            {resetting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />} Clear All
+          </button>
+        )}
       </div>
 
       {/* Stats */}
-      {stats && (
+      {stats && stats.totalPapers > 0 && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           {[
             { label: "Total Papers", value: stats.totalPapers, icon: FileText },
@@ -130,7 +153,7 @@ export default function RegistryDashboard() {
       )}
 
       {/* Exam breakdown */}
-      {stats && Object.keys(stats.byExam).length > 0 && (
+      {stats && exams.length > 0 && (
         <div className="flex items-center gap-3 flex-wrap">
           <button onClick={() => setFilterExam("")}
             className={`px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest border transition-colors ${!filterExam ? "border-white/30 bg-white/10 text-white" : "border-white/10 text-white/40 hover:border-white/20"}`}>
@@ -139,18 +162,20 @@ export default function RegistryDashboard() {
           {exams.map((exam) => (
             <button key={exam} onClick={() => setFilterExam(exam)}
               className={`px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest border transition-colors ${filterExam === exam ? "border-white/30 bg-white/10 text-white" : "border-white/10 text-white/40 hover:border-white/20"}`}>
-              {exam} <span className="text-white/25 ml-1">({stats.byExam[exam]})</span>
+              {exam} <span className="text-white/25 ml-1">({papers.filter((p) => p.exam === exam).length})</span>
             </button>
           ))}
         </div>
       )}
 
       {/* Search */}
-      <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/30" />
-        <input type="text" placeholder="Search papers by ID, exam, center, city..." value={search} onChange={(e) => setSearch(e.target.value)}
-          className="w-full pl-10 pr-4 py-3 bg-white/[0.03] border border-white/10 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-white/30 transition-colors" />
-      </div>
+      {papers.length > 0 && (
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/30" />
+          <input type="text" placeholder="Search papers by ID, exam, center, city..." value={search} onChange={(e) => setSearch(e.target.value)}
+            className="w-full pl-10 pr-4 py-3 bg-white/[0.03] border border-white/10 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-white/30 transition-colors" />
+        </div>
+      )}
 
       {fetchError && (
         <div className="border border-red-500/20 bg-red-500/[0.05] p-4 flex items-center gap-3">
@@ -162,42 +187,67 @@ export default function RegistryDashboard() {
         </div>
       )}
 
-      {/* Papers table */}
-      <div className="border border-white/10 bg-white/[0.02] overflow-hidden">
-        <div className="grid grid-cols-7 gap-4 px-5 py-3 border-b border-white/10 text-[10px] uppercase tracking-widest text-white/30 font-bold">
-          <div>Paper ID</div>
-          <div>Exam</div>
-          <div>Set</div>
-          <div>Center</div>
-          <div>City</div>
-          <div>Status</div>
-          <div>Risk</div>
-        </div>
-        <motion.div variants={{ show: { transition: { staggerChildren: 0.03 } } }} initial="hidden" animate="show">
-          {filtered.length === 0 ? (
-            <div className="px-5 py-12 text-center text-white/30 text-sm">No papers found.</div>
-          ) : (
-            filtered.map((paper) => (
-              <motion.div key={paper.paperId} variants={itemVariants}
-                className="grid grid-cols-7 gap-4 px-5 py-4 border-b border-white/5 hover:bg-white/[0.02] transition-colors items-center">
-                <Link href={`/dashboard/registry/${paper.paperId}`} className="text-sm font-bold text-white hover:text-white/80 transition-colors font-mono">
-                  {paper.paperId}
-                </Link>
-                <div className="text-xs text-white/60">{paper.exam} {paper.year}</div>
-                <div className="text-xs text-white/60">{paper.paperSet}</div>
-                <div className="text-xs text-white/40 truncate">{paper.centerCode}</div>
-                <div className="text-xs text-white/40">{paper.city}</div>
-                <span className={`text-[9px] uppercase tracking-widest px-2 py-0.5 font-bold w-fit ${STATUS_COLORS[paper.status] || "bg-white/10 text-white/60"}`}>
-                  {paper.status}
-                </span>
-                <span className={`text-xs font-bold capitalize ${RISK_COLORS[paper.riskLevel] || "text-white/40"}`}>
-                  {paper.riskLevel}
-                </span>
-              </motion.div>
-            ))
-          )}
+      {/* Empty state */}
+      {!fetchError && papers.length === 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="border border-white/10 bg-white/[0.02] p-12 text-center"
+        >
+          <div className="w-16 h-16 border border-white/10 bg-white/[0.03] rounded-full flex items-center justify-center mx-auto mb-6">
+            <BookOpen className="w-7 h-7 text-white/20" />
+          </div>
+          <h2 className="text-lg font-heading font-bold text-white uppercase tracking-widest mb-2">
+            Registry Empty
+          </h2>
+          <p className="text-white/40 text-sm max-w-md mx-auto mb-6">
+            No papers have been registered yet. Upload an official examination paper to begin tracking and protecting it.
+          </p>
+          <Link href="/dashboard/registry/upload"
+            className="inline-flex items-center gap-2 px-6 py-3 bg-white text-black text-xs font-bold uppercase tracking-widest hover:bg-white/90 transition-colors">
+            <Upload className="w-3.5 h-3.5" /> Register Your First Paper
+          </Link>
         </motion.div>
-      </div>
+      )}
+
+      {/* Papers table */}
+      {papers.length > 0 && (
+        <div className="border border-white/10 bg-white/[0.02] overflow-hidden">
+          <div className="grid grid-cols-7 gap-4 px-5 py-3 border-b border-white/10 text-[10px] uppercase tracking-widest text-white/30 font-bold">
+            <div>Paper ID</div>
+            <div>Exam</div>
+            <div>Set</div>
+            <div>Center</div>
+            <div>City</div>
+            <div>Status</div>
+            <div>Risk</div>
+          </div>
+          <motion.div variants={{ show: { transition: { staggerChildren: 0.03 } } }} initial="hidden" animate="show">
+            {filtered.length === 0 ? (
+              <div className="px-5 py-12 text-center text-white/30 text-sm">No papers match your search.</div>
+            ) : (
+              filtered.map((paper) => (
+                <motion.div key={paper.paperId} variants={itemVariants}
+                  className="grid grid-cols-7 gap-4 px-5 py-4 border-b border-white/5 hover:bg-white/[0.02] transition-colors items-center">
+                  <Link href={`/dashboard/registry/${paper.paperId}`} className="text-sm font-bold text-white hover:text-white/80 transition-colors font-mono">
+                    {paper.paperId}
+                  </Link>
+                  <div className="text-xs text-white/60">{paper.exam} {paper.year}</div>
+                  <div className="text-xs text-white/60">{paper.paperSet}</div>
+                  <div className="text-xs text-white/40 truncate">{paper.centerCode}</div>
+                  <div className="text-xs text-white/40">{paper.city}</div>
+                  <span className={`text-[9px] uppercase tracking-widest px-2 py-0.5 font-bold w-fit rounded-sm ${STATUS_COLORS[paper.status] || "bg-white/10 text-white/60"}`}>
+                    {paper.status.replace("_", " ")}
+                  </span>
+                  <span className={`text-xs font-bold capitalize ${RISK_COLORS[paper.riskLevel] || "text-white/40"}`}>
+                    {paper.riskLevel}
+                  </span>
+                </motion.div>
+              ))
+            )}
+          </motion.div>
+        </div>
+      )}
     </div>
   );
 }

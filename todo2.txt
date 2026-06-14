@@ -1,0 +1,535 @@
+# EXAMSHIELD - QUESTION PAPER REGISTRY & EVIDENCE MATCHING SYSTEM
+
+## Mission
+
+Build a complete Question Paper Registry system that allows authorized users to upload official examination papers and enables EXAMSHIELD to automatically compare uploaded evidence against registered papers.
+
+This feature must feel production-ready, visually consistent with the existing EXAMSHIELD UI, and fully integrated into the current workflow.
+
+---
+
+# HIGH LEVEL FLOW
+
+Official Question Paper Upload
+
+↓
+
+Question Registry
+
+↓
+
+OCR + Fingerprint Generation
+
+↓
+
+Secure Storage
+
+↓
+
+Evidence Upload
+
+↓
+
+OCR Extraction
+
+↓
+
+Similarity Matching
+
+↓
+
+Match Result
+
+↓
+
+Investigation Creation
+
+---
+
+# FRONTEND REQUIREMENTS
+
+## New Navigation Section
+
+Add:
+
+Question Registry
+
+Position:
+
+Between
+
+Evidence Center
+
+and
+
+Investigation Workspace
+
+Maintain existing sidebar styling.
+
+Use current design language:
+
+* dark luxury theme
+* glass panels
+* soft lighting
+* smooth motion
+* responsive layout
+
+---
+
+# REGISTRY DASHBOARD
+
+Create:
+
+Question Registry Dashboard
+
+Sections:
+
+### Statistics
+
+Cards:
+
+* Total Papers
+* Protected Papers
+* Matching Requests
+* Confirmed Matches
+
+### Recent Papers
+
+Table:
+
+* Exam
+* Set
+* Upload Date
+* Status
+* Fingerprint Status
+
+### Recent Matches
+
+Table:
+
+* Evidence ID
+* Matched Paper
+* Similarity Score
+* Status
+
+---
+
+# UPLOAD QUESTION PAPER PAGE
+
+Create:
+
+Upload Official Paper
+
+Fields:
+
+Exam Name
+
+Examples:
+
+* NEET 2026
+* JEE Advanced 2026
+* UPSC Prelims 2026
+
+Paper Set
+
+Examples:
+
+* A
+* B
+* C
+* D
+
+Paper Type
+
+* Question Paper
+* Answer Key
+* Internal Draft
+
+Upload File
+
+Supported:
+
+* PDF
+* JPG
+* PNG
+
+Description
+
+Optional
+
+---
+
+# UPLOAD EXPERIENCE
+
+After upload:
+
+Show progress pipeline.
+
+Queued
+
+↓
+
+OCR Extraction
+
+↓
+
+Fingerprint Generation
+
+↓
+
+Registry Protection
+
+↓
+
+Ready
+
+Animated timeline required.
+
+---
+
+# PAPER DETAILS PAGE
+
+Create:
+
+Paper Intelligence View
+
+Display:
+
+Exam
+
+Set
+
+Upload Date
+
+Fingerprint
+
+Status
+
+OCR Confidence
+
+Total Questions Extracted
+
+Protected Status
+
+Evidence Matches
+
+---
+
+# FINGERPRINTING SYSTEM
+
+Backend Requirement
+
+After upload:
+
+Generate:
+
+* OCR text
+* Question signatures
+* Document fingerprint
+* Metadata
+
+Store separately.
+
+Purpose:
+
+Evidence matching.
+
+Do NOT expose raw OCR text publicly.
+
+---
+
+# EVIDENCE MATCHING SYSTEM
+
+When evidence is uploaded:
+
+Pipeline:
+
+Evidence
+
+↓
+
+OCR
+
+↓
+
+Question Extraction
+
+↓
+
+Similarity Analysis
+
+↓
+
+Registry Search
+
+↓
+
+Match Result
+
+---
+
+# MATCH RESULTS UI
+
+Add new section:
+
+Evidence Correlation
+
+Display:
+
+Matched Exam
+
+Matched Set
+
+Similarity Score
+
+Matched Questions
+
+Confidence
+
+Status
+
+---
+
+# VISUAL MATCH CARD
+
+Example:
+
+Potential Match Found
+
+Exam:
+NEET 2026
+
+Set:
+A
+
+Similarity:
+94%
+
+Confidence:
+High
+
+Status:
+Likely Leak
+
+---
+
+# INVESTIGATION INTEGRATION
+
+When similarity exceeds threshold:
+
+Automatically create:
+
+Investigation
+
+Include:
+
+* matched paper
+* similarity score
+* extracted evidence text
+* registry reference
+
+---
+
+# AI COPILOT INTEGRATION
+
+AI should gain access to:
+
+Question Registry
+
+Capabilities:
+
+Example Questions:
+
+Show registered papers
+
+Find matches for EV-005
+
+Which paper matched this evidence?
+
+Summarize similarity findings
+
+---
+
+# SECURITY REQUIREMENTS
+
+Store:
+
+Original File
+
+Encrypted
+
+Store:
+
+OCR Output
+
+Protected
+
+Store:
+
+Fingerprint
+
+Searchable
+
+Never expose original documents publicly.
+
+Only authorized users may access them.
+
+---
+
+# RESPONSIVE DESIGN
+
+Desktop
+
+Full dashboard experience
+
+Tablet
+
+Adaptive grid
+
+Mobile
+
+Single-column layout
+
+No horizontal scrolling
+
+---
+
+# TESTING REQUIREMENTS
+
+## Upload Testing
+
+Verify:
+
+PDF Upload
+
+Image Upload
+
+Large File Upload
+
+Invalid File Rejection
+
+---
+
+## OCR Testing
+
+Verify:
+
+OCR Success
+
+OCR Failure
+
+Retry Logic
+
+OCR Confidence Calculation
+
+---
+
+## Matching Tests
+
+Verify:
+
+Exact Match
+
+Partial Match
+
+No Match
+
+Low Confidence Match
+
+Multiple Match Candidates
+
+---
+
+## Investigation Tests
+
+Verify:
+
+Investigation Created
+
+Registry Reference Stored
+
+Evidence Linked
+
+---
+
+## Security Tests
+
+Verify:
+
+Unauthorized Access Blocked
+
+Registry Data Protected
+
+Fingerprint Search Works
+
+Original Files Hidden
+
+---
+
+# VERIFICATION CHECKLIST
+
+Before merge:
+
+✓ Upload works
+
+✓ OCR completes
+
+✓ Fingerprint generated
+
+✓ Registry entry created
+
+✓ Evidence upload works
+
+✓ Similarity matching works
+
+✓ Match results displayed
+
+✓ Investigation creation works
+
+✓ AI can access registry information
+
+✓ Responsive design verified
+
+✓ No console errors
+
+✓ Build passes
+
+✓ Deployment passes
+
+---
+
+# SUCCESS CRITERIA
+
+Demo Flow:
+
+Official Paper Uploaded
+
+↓
+
+Paper Protected In Registry
+
+↓
+
+Evidence Uploaded
+
+↓
+
+OCR Analysis
+
+↓
+
+Similarity Match Found
+
+↓
+
+Leak Detection Alert
+
+↓
+
+Investigation Created
+
+↓
+
+AI Explains Findings
+
+The feature should feel like a core part of EXAMSHIELD and not a separate add-on.

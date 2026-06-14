@@ -210,6 +210,9 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         if path == "/registry":
             self._create_registry_paper()
             return
+        if path == "/registry/reset":
+            self._reset_registry()
+            return
         if path == "/registry/match":
             self._match_evidence_to_registry()
             return
@@ -1208,6 +1211,13 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             self._send_json({"paper": paper, "message": "Paper registered."}, status=201)
         except Exception as exc:
             self._send_json({"error": str(exc) or "Failed to create paper."}, status=400)
+
+    def _reset_registry(self) -> None:
+        try:
+            self.store._write_registry([])
+            self._send_json({"message": "Registry cleared.", "total": 0})
+        except Exception as exc:
+            self._send_json({"error": str(exc) or "Failed to reset registry."}, status=400)
 
     def _update_registry_paper(self, paper_id: str) -> None:
         try:

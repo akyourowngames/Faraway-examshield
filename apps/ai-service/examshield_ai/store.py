@@ -1394,15 +1394,10 @@ class EvidenceStore:
 
     def ensure_registry_seed(self) -> None:
         if self.supabase_enabled:
-            if self._read_document("registry", "papers"):
-                return
-            self._write_document("registry", "papers", {"items": generate_registry_seed()})
-            return
-        if self.settings.registry_path.exists():
             return
         self.settings.registry_path.parent.mkdir(parents=True, exist_ok=True)
-        records = generate_registry_seed()
-        self.settings.registry_path.write_text(json.dumps(records, indent=2), encoding="utf-8")
+        if not self.settings.registry_path.exists():
+            self.settings.registry_path.write_text("[]", encoding="utf-8")
 
     def record_activity(self, activity: JsonObject) -> JsonObject:
         event = {**activity, "eventId": activity.get("eventId") or str(uuid4())}
@@ -1852,73 +1847,8 @@ def final_confidence_score(ocr_confidence: int | None, paper_confidence: int | N
     if watermark_confidence is not None and watermark_confidence > 0:
         ocr_component = paper_confidence if paper_confidence is not None else ocr_confidence or 0
         return round(ocr_component * 0.4 + watermark_confidence * 0.6)
-    return paper_confidence if paper_confidence is not None else ocr_confidence or 0
+        return paper_confidence if paper_confidence is not None else ocr_confidence or 0
 
-
-def generate_registry_seed() -> list[JsonObject]:
-    exams = [
-        ("NEET", ["A", "B", "C", "D"], 30),
-        ("JEE", ["A", "B", "C"], 25),
-        ("UPSC", ["A", "B"], 20),
-        ("GATE", ["A", "B", "C", "D", "E", "F", "G", "H"], 15),
-        ("CBSE", ["Math", "Chem", "Phy"], 20),
-    ]
-    centers = [
-        ("DEL", "New Delhi", "Delhi", "Delhi Public School - Sector 42"),
-        ("MUM", "Mumbai", "Maharashtra", "Bombay Scottish School - Mahim"),
-        ("BLR", "Bangalore", "Karnataka", "Bishop Cotton Boys' School"),
-        ("CHN", "Chennai", "Tamil Nadu", "Chettinad Vidyashram"),
-        ("KOL", "Kolkata", "West Bengal", "La Martiniere for Boys"),
-        ("LKO", "Lucknow", "Uttar Pradesh", "La Martiniere College"),
-        ("AMD", "Ahmedabad", "Gujarat", "Delhi Public School - Bopal"),
-        ("JPR", "Jaipur", "Rajasthan", "Delhi Public School - Jaipur"),
-        ("HYD", "Hyderabad", "Telangana", "The Hyderabad Public School - Begumpet"),
-        ("KOC", "Kochi", "Kerala", "Choice School - Tripunithura"),
-        ("CHD", "Chandigarh", "Punjab", "Sacred Heart Senior Secondary School"),
-        ("GGN", "Gurugram", "Haryana", "Shiv Nadar School"),
-    ]
-    records: list[JsonObject] = []
-    watermark_counter = 1
-    for exam, sets, center_count in exams:
-        for index in range(center_count):
-            code, city, state, center_name = centers[index % len(centers)]
-            paper_set = sets[index % len(sets)]
-            risk, status = risk_and_status(index, exam)
-            records.append(
-                {
-                    "watermarkId": f"WMK-{watermark_counter:03d}",
-                    "paperId": f"{exam}-2026-{paper_set}",
-                    "exam": exam,
-                    "year": 2026,
-                    "paperSet": paper_set,
-                    "questionFingerprint": f"{watermark_counter:08x}"[-8:],
-                    "centerCode": f"{code}-{(index % 50) + 1:02d}",
-                    "centerName": center_name,
-                    "city": city,
-                    "state": state,
-                    "printBatch": f"PB-{(index // 5) + 1:02d}",
-                    "printerId": f"PR-{(index % 12) + 1:02d}",
-                    "printedAt": "2026-05-15T00:00:00.000Z",
-                    "distributedAt": "2026-06-01T00:00:00.000Z",
-                    "riskLevel": risk,
-                    "status": status,
-                }
-            )
-            watermark_counter += 1
-    return records
-
-
-def risk_and_status(index: int, exam: str) -> tuple[str, str]:
-    seed = (index * 7 + ord(exam[0])) % 100
-    if seed < 8:
-        return "critical", "compromised"
-    if seed < 20:
-        return "high", "investigating"
-    if seed < 50:
-        return "medium", "in_transit"
-    if seed < 85:
-        return "low", "registered"
-    return "low", "received"
 
 
 # ─────────────────────────────────────────────────────────────────────

@@ -249,6 +249,10 @@ export async function deleteRegistryPaper(paperId: string): Promise<void> {
   await apiFetch(`/registry/${encodeURIComponent(paperId)}`, { method: "DELETE" });
 }
 
+export async function resetRegistry(): Promise<{ message: string }> {
+  return apiFetch("/registry/reset", { method: "POST" });
+}
+
 export async function matchEvidenceToRegistry(ocrText: string, evidenceId?: string): Promise<{ matches: MatchResult[]; total: number }> {
   return apiFetch("/registry/match", {
     method: "POST",

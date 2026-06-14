@@ -18,15 +18,15 @@ import { getRegistryPaper, deleteRegistryPaper } from "@/lib/agent-api";
 import type { RegistryPaper } from "@/lib/agent-types";
 
 const STATUS_COLORS: Record<string, string> = {
-  registered: "bg-white text-black",
-  received: "bg-white/10 text-white/60",
-  in_transit: "bg-white/10 text-white/60",
-  investigating: "bg-amber-500/10 text-amber-400",
-  compromised: "bg-red-500/10 text-red-400",
+  registered: "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20",
+  received: "bg-blue-500/10 text-blue-400 border border-blue-500/20",
+  in_transit: "bg-amber-500/10 text-amber-400 border border-amber-500/20",
+  investigating: "bg-orange-500/10 text-orange-400 border border-orange-500/20",
+  compromised: "bg-red-500/10 text-red-400 border border-red-500/20",
 };
 
 const RISK_COLORS: Record<string, string> = {
-  low: "text-white/40",
+  low: "text-emerald-400",
   medium: "text-amber-400",
   high: "text-orange-400",
   critical: "text-red-400",
@@ -97,8 +97,8 @@ export default function PaperDetailPage() {
 
       {/* Status badges */}
       <div className="flex items-center gap-3">
-        <span className={`text-[10px] uppercase tracking-widest px-3 py-1 font-bold ${STATUS_COLORS[paper.status] || "bg-white/10 text-white/60"}`}>
-          {paper.status}
+        <span className={`text-[10px] uppercase tracking-widest px-3 py-1 font-bold rounded-sm ${STATUS_COLORS[paper.status] || "bg-white/10 text-white/60"}`}>
+          {paper.status.replace("_", " ")}
         </span>
         <span className={`text-[10px] uppercase tracking-widest px-3 py-1 font-bold border border-white/10 ${RISK_COLORS[paper.riskLevel] || "text-white/40"}`}>
           {paper.riskLevel} risk

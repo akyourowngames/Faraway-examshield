@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { createRegistryPaper } from "@/lib/agent-api";
 
-const EXAM_OPTIONS = ["NEET", "JEE", "UPSC", "GATE", "CBSE"];
+const EXAM_OPTIONS = ["NEET", "JEE", "UPSC", "GATE", "CBSE", "ICSE", "SSC", "CAT", "CLAT", "NDA"];
 const SET_OPTIONS = ["A", "B", "C", "D", "E", "F", "G", "H"];
 const TYPE_OPTIONS = [
   { value: "question-paper", label: "Question Paper" },
@@ -42,6 +42,12 @@ export default function UploadPaperPage() {
   const [description, setDescription] = useState("");
   const [file, setFile] = useState<File | null>(null);
 
+  const [centerCode, setCenterCode] = useState("");
+  const [centerName, setCenterName] = useState("");
+  const [city, setCity] = useState("");
+  const [state, setState] = useState("");
+  const [year, setYear] = useState("2026");
+
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
     if (f) setFile(f);
@@ -50,6 +56,10 @@ export default function UploadPaperPage() {
   async function handleUpload() {
     if (!file) {
       setError("Please select a file to upload.");
+      return;
+    }
+    if (!centerCode.trim() || !centerName.trim() || !city.trim() || !state.trim()) {
+      setError("Center code, center name, city, and state are required.");
       return;
     }
 
@@ -63,30 +73,31 @@ export default function UploadPaperPage() {
         await new Promise((r) => setTimeout(r, 800));
       }
 
-      const paperId = `${exam}-2026-${paperSet}-${Date.now().toString(36).slice(-4).toUpperCase()}`;
+      const paperId = `${exam}-${year}-${paperSet}-${Date.now().toString(36).slice(-4).toUpperCase()}`;
+      const ts = new Date().toISOString();
 
       await createRegistryPaper({
         paperId,
         exam,
-        year: 2026,
+        year: parseInt(year, 10),
         paperSet,
         paperType: paperType as "question-paper" | "answer-key" | "internal-draft",
         description,
         fileType: file.name.split(".").pop() || "",
         originalFilename: file.name,
         fingerprintStatus: "ready",
-        ocrConfidence: 87 + Math.floor(Math.random() * 12),
-        totalQuestions: 30 + Math.floor(Math.random() * 70),
         protected: true,
         status: "registered",
         riskLevel: "low",
-        centerCode: "DEL-01",
-        centerName: "Delhi Public School",
-        city: "New Delhi",
-        state: "Delhi",
-        printBatch: "PB-01",
-        printerId: "PR-01",
-        watermarkId: `WMK-${Date.now().toString(36).slice(-3).toUpperCase()}`,
+        centerCode: centerCode.trim().toUpperCase(),
+        centerName: centerName.trim(),
+        city: city.trim(),
+        state: state.trim(),
+        printBatch: `PB-${Date.now().toString(36).slice(-3).toUpperCase()}`,
+        printerId: "UPLOADED",
+        printedAt: ts,
+        distributedAt: ts,
+        watermarkId: `WMK-${Date.now().toString(36).slice(-4).toUpperCase()}`,
         questionFingerprint: Date.now().toString(16).slice(-8),
       });
 
@@ -110,10 +121,10 @@ export default function UploadPaperPage() {
         </button>
         <div>
           <h1 className="text-3xl font-heading font-bold tracking-widest text-white uppercase">
-            Upload Official Paper
+            Register Paper
           </h1>
           <p className="text-white/40 text-xs font-mono uppercase tracking-widest mt-1">
-            Register an examination paper in the protection registry.
+            Register an official examination paper in the protection registry.
           </p>
         </div>
       </div>
@@ -121,35 +132,72 @@ export default function UploadPaperPage() {
       <div className="space-y-6 border border-white/10 bg-white/[0.02] p-6">
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-[10px] uppercase tracking-widest text-white/40 mb-2 font-bold">Exam Name</label>
+            <label className="block text-[10px] uppercase tracking-widest text-white/40 mb-2 font-bold">Exam Name *</label>
             <select value={exam} onChange={(e) => setExam(e.target.value)}
               className="w-full px-4 py-3 bg-white/[0.03] border border-white/10 text-white text-sm focus:outline-none focus:border-white/30 transition-colors appearance-none">
               {EXAM_OPTIONS.map((e) => <option key={e} value={e} className="bg-black">{e}</option>)}
             </select>
           </div>
           <div>
-            <label className="block text-[10px] uppercase tracking-widest text-white/40 mb-2 font-bold">Paper Set</label>
+            <label className="block text-[10px] uppercase tracking-widest text-white/40 mb-2 font-bold">Year *</label>
+            <select value={year} onChange={(e) => setYear(e.target.value)}
+              className="w-full px-4 py-3 bg-white/[0.03] border border-white/10 text-white text-sm focus:outline-none focus:border-white/30 transition-colors appearance-none">
+              {["2024", "2025", "2026", "2027"].map((y) => <option key={y} value={y} className="bg-black">{y}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-[10px] uppercase tracking-widest text-white/40 mb-2 font-bold">Paper Set *</label>
             <select value={paperSet} onChange={(e) => setPaperSet(e.target.value)}
               className="w-full px-4 py-3 bg-white/[0.03] border border-white/10 text-white text-sm focus:outline-none focus:border-white/30 transition-colors appearance-none">
               {SET_OPTIONS.map((s) => <option key={s} value={s} className="bg-black">{s}</option>)}
             </select>
           </div>
-        </div>
-
-        <div>
-          <label className="block text-[10px] uppercase tracking-widest text-white/40 mb-2 font-bold">Paper Type</label>
-          <div className="grid grid-cols-3 gap-2">
-            {TYPE_OPTIONS.map((t) => (
-              <button key={t.value} onClick={() => setPaperType(t.value)}
-                className={`px-4 py-3 text-xs font-bold uppercase tracking-widest border transition-colors ${paperType === t.value ? "border-white/30 bg-white/10 text-white" : "border-white/10 text-white/40 hover:border-white/20"}`}>
-                {t.label}
-              </button>
-            ))}
+          <div>
+            <label className="block text-[10px] uppercase tracking-widest text-white/40 mb-2 font-bold">Paper Type *</label>
+            <div className="grid grid-cols-3 gap-2">
+              {TYPE_OPTIONS.map((t) => (
+                <button key={t.value} onClick={() => setPaperType(t.value)}
+                  className={`px-3 py-2 text-[10px] font-bold uppercase tracking-widest border transition-colors ${paperType === t.value ? "border-white/30 bg-white/10 text-white" : "border-white/10 text-white/40 hover:border-white/20"}`}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
-        <div>
-          <label className="block text-[10px] uppercase tracking-widest text-white/40 mb-2 font-bold">Upload File</label>
+        <div className="border-t border-white/10 pt-4">
+          <div className="text-[10px] uppercase tracking-widest text-white/30 mb-3 font-bold">Examination Center Details</div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-[10px] uppercase tracking-widest text-white/40 mb-2 font-bold">Center Code *</label>
+              <input type="text" placeholder="e.g. DEL-01" value={centerCode} onChange={(e) => setCenterCode(e.target.value)}
+                className="w-full px-4 py-3 bg-white/[0.03] border border-white/10 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-white/30 transition-colors" />
+            </div>
+            <div>
+              <label className="block text-[10px] uppercase tracking-widest text-white/40 mb-2 font-bold">Center Name *</label>
+              <input type="text" placeholder="e.g. Delhi Public School" value={centerName} onChange={(e) => setCenterName(e.target.value)}
+                className="w-full px-4 py-3 bg-white/[0.03] border border-white/10 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-white/30 transition-colors" />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4 mt-4">
+            <div>
+              <label className="block text-[10px] uppercase tracking-widest text-white/40 mb-2 font-bold">City *</label>
+              <input type="text" placeholder="e.g. New Delhi" value={city} onChange={(e) => setCity(e.target.value)}
+                className="w-full px-4 py-3 bg-white/[0.03] border border-white/10 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-white/30 transition-colors" />
+            </div>
+            <div>
+              <label className="block text-[10px] uppercase tracking-widest text-white/40 mb-2 font-bold">State *</label>
+              <input type="text" placeholder="e.g. Delhi" value={state} onChange={(e) => setState(e.target.value)}
+                className="w-full px-4 py-3 bg-white/[0.03] border border-white/10 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-white/30 transition-colors" />
+            </div>
+          </div>
+        </div>
+
+        <div className="border-t border-white/10 pt-4">
+          <label className="block text-[10px] uppercase tracking-widest text-white/40 mb-2 font-bold">Upload File *</label>
           <label className="flex items-center justify-center gap-2 px-4 py-8 border border-dashed border-white/15 bg-white/[0.02] hover:border-white/25 transition-colors cursor-pointer">
             <Upload className="w-4 h-4 text-white/30" />
             <span className="text-xs text-white/40">{file ? file.name : "Click to upload PDF, JPG, or PNG"}</span>
@@ -158,8 +206,8 @@ export default function UploadPaperPage() {
         </div>
 
         <div>
-          <label className="block text-[10px] uppercase tracking-widest text-white/40 mb-2 font-bold">Description</label>
-          <textarea placeholder="Optional description..." value={description} onChange={(e) => setDescription(e.target.value)} rows={3}
+          <label className="block text-[10px] uppercase tracking-widest text-white/40 mb-2 font-bold">Notes</label>
+          <textarea placeholder="Optional notes about this paper..." value={description} onChange={(e) => setDescription(e.target.value)} rows={3}
             className="w-full px-4 py-3 bg-white/[0.03] border border-white/10 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-white/30 transition-colors resize-none" />
         </div>
 
@@ -204,7 +252,7 @@ export default function UploadPaperPage() {
         <button onClick={handleUpload} disabled={uploading || !file}
           className="flex items-center justify-center gap-2 w-full px-6 py-3 bg-white text-black text-xs font-bold uppercase tracking-widest hover:bg-white/90 transition-colors disabled:opacity-30">
           {uploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
-          {uploading ? "Processing..." : "Upload & Protect"}
+          {uploading ? "Processing..." : "Register Paper"}
         </button>
       </div>
     </div>
