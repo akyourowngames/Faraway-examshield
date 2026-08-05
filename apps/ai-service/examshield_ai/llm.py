@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -13,9 +14,10 @@ from .store import JsonObject
 TokenWriter = Callable[[str], None]
 
 
-class NvidiaClient:
+class KiloClient:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self._unavailable_until = 0.0
 
     @property
     def configured(self) -> bool:
@@ -36,6 +38,8 @@ class NvidiaClient:
             "top_p": 0.7,
             "max_tokens": max_tokens,
             "messages": messages,
+            # Kilo gateway streams internally; keep it off for JSON tool calls.
+            "stream": False,
         }
         if tools:
             payload["tools"] = tools
@@ -50,11 +54,25 @@ class NvidiaClient:
         on_token: TokenWriter,
         max_tokens: int | None = None,
         timeout: float | None = None,
+        tools: list[JsonObject] | None = None,
+        on_tool_call: Callable[[int, str, str], None] | None = None,
+        on_tool_delta: Callable[[int, str], None] | None = None,
     ) -> bool:
+        """Stream a chat completion, emitting text tokens and inline tool calls.
+
+        When ``tools`` is provided the request is sent with ``tool_choice:
+        "auto"`` so the model decides conversation vs. tool use in the same
+        request (Ares-style inline routing — no separate planning pass). Tool
+        call fragments are forwarded to ``on_tool_call`` (index/id/name) and
+        ``on_tool_delta`` (streaming argument JSON) as they arrive.
+        """
+        if time.monotonic() < self._unavailable_until:
+            raise RuntimeError("Kilo gateway is in a short retry cooldown after a failed request.")
         errors: list[str] = []
         token_limit = max_tokens if max_tokens is not None else self.settings.chat_max_tokens
+        per_model_timeout = timeout or self.settings.stream_timeout_seconds
         for candidate in self._candidate_models(model):
-            payload = {
+            payload: JsonObject = {
                 "model": candidate,
                 "temperature": 0,
                 "top_p": 0.7,
@@ -62,11 +80,14 @@ class NvidiaClient:
                 "stream": True,
                 "messages": messages,
             }
+            if tools:
+                payload["tools"] = tools
+                payload["tool_choice"] = "auto"
             request = self._request(payload)
             try:
-                timeout_sec = timeout or self.settings.stream_timeout_seconds
-                with urllib.request.urlopen(request, timeout=timeout_sec) as response:
+                with urllib.request.urlopen(request, timeout=per_model_timeout) as response:
                     emitted = False
+                    reasoning_buffer: list[str] = []
                     for raw_line in response:
                         line = raw_line.decode("utf-8", errors="replace").strip()
                         if not line.startswith("data:"):
@@ -78,16 +99,42 @@ class NvidiaClient:
                             parsed = json.loads(data)
                         except json.JSONDecodeError:
                             continue
-                        token = parsed.get("choices", [{}])[0].get("delta", {}).get("content") or ""
-                        if token:
+                        choice = parsed.get("choices", [{}])[0]
+                        delta = choice.get("delta", {})
+                        # Reasoning models (e.g. tencent/hy3 via Kilo) stream their
+                        # output in `reasoning`/`reasoning_content` and may leave
+                        # `content` empty until the final answer. Surface `content`
+                        # live as the answer; keep reasoning in reserve so a model
+                        # that never emits `content` still produces visible text
+                        # instead of an "empty stream" error.
+                        content_token = delta.get("content") or ""
+                        reasoning_token = delta.get("reasoning") or delta.get("reasoning_content") or ""
+                        if content_token:
                             emitted = True
-                            on_token(str(token))
+                            on_token(str(content_token))
+                        elif reasoning_token:
+                            reasoning_buffer.append(reasoning_token)
+                        for tc in delta.get("tool_calls") or []:
+                            emitted = True
+                            index = int(tc.get("index", 0))
+                            fn = tc.get("function", {})
+                            if on_tool_call is not None and (tc.get("id") or fn.get("name")):
+                                on_tool_call(index, str(tc.get("id") or ""), str(fn.get("name") or ""))
+                            if on_tool_delta is not None and fn.get("arguments"):
+                                on_tool_delta(index, str(fn.get("arguments")))
                     if emitted:
+                        self._unavailable_until = 0.0
+                        return True
+                    # No `content` arrived — surface the buffered reasoning as the answer.
+                    if reasoning_buffer:
+                        on_token("".join(reasoning_buffer))
+                        self._unavailable_until = 0.0
                         return True
                     errors.append(f"{candidate}: empty stream")
             except Exception as exc:
                 errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
-        raise RuntimeError("NVIDIA NIM stream failed for all models: " + " | ".join(errors))
+        self._unavailable_until = time.monotonic() + 10.0
+        raise RuntimeError("Kilo gateway stream failed for all models: " + " | ".join(errors))
 
     def chat_text(
         self,
@@ -112,20 +159,26 @@ class NvidiaClient:
                 raw = response.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as exc:
             details = exc.read().decode("utf-8", errors="replace")[:240]
-            raise RuntimeError(f"NVIDIA NIM returned {exc.code}: {details}") from exc
+            raise RuntimeError(f"Kilo gateway returned {exc.code}: {details}") from exc
         parsed = json.loads(raw)
         return parsed if isinstance(parsed, dict) else {}
 
     def _request_json_with_fallbacks(self, payload: JsonObject, model: str, timeout: float) -> JsonObject:
+        if time.monotonic() < self._unavailable_until:
+            raise RuntimeError("Kilo gateway is in a short retry cooldown after a failed request.")
         errors: list[str] = []
+        per_model_timeout = timeout
         for candidate in self._candidate_models(model):
             candidate_payload = dict(payload)
             candidate_payload["model"] = candidate
             try:
-                return self._request_json(candidate_payload, timeout)
+                response = self._request_json(candidate_payload, per_model_timeout)
+                self._unavailable_until = 0.0
+                return response
             except Exception as exc:
                 errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
-        raise RuntimeError("NVIDIA NIM chat request failed for all configured models: " + " | ".join(errors))
+        self._unavailable_until = time.monotonic() + 10.0
+        raise RuntimeError("Kilo gateway chat request failed for all configured models: " + " | ".join(errors))
 
     def _candidate_models(self, primary: str) -> tuple[str, ...]:
         models: list[str] = []
@@ -146,3 +199,7 @@ class NvidiaClient:
             },
             method="POST",
         )
+
+
+# Backwards-compatible alias so any stragglers importing NvidiaClient still work.
+NvidiaClient = KiloClient

@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 from .chat import ChatSession
 from .detect import is_suspicious, scan_text
 from .events import sse_bytes
-from .llm import NvidiaClient
+from .llm import KiloClient
 from .memory import MemoryManager
 from .ocr import SUPPORTED_TYPES, analyze_image, ocr_runtime_status
 from .pipeline import EvidencePipeline
@@ -24,11 +24,12 @@ from .planner import ToolPlanner
 from .responses import conversation_messages, grounded_messages
 from .settings import Settings, load_settings
 from .store import EvidenceStore, UploadedFile, normalize_telegram_timestamp, AgentStore
+from .agent_telegram import AgentTelegramService
 from .telegram import TelegramWebhook
 from .tools import ExamshieldToolRegistry
 from .workers import AnalysisTask, AnalysisWorkerPool
 from .llm_providers import list_providers, validate_api_key, ProviderConfig, chat_completion as provider_chat_completion
-from .rag import ingest_knowledge_source, search_agent_knowledge, RAGConfig
+from .rag import chunk_text, extract_text_from_file, ingest_knowledge_source, search_agent_knowledge, RAGConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,7 +42,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
     settings: Settings
     store: EvidenceStore
     registry: ExamshieldToolRegistry
-    client: NvidiaClient
+    client: KiloClient
     telegram: TelegramWebhook
     workers: AnalysisWorkerPool
     pipeline: EvidencePipeline
@@ -72,6 +73,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                     "service": "examshield-ai",
                     "model": self.settings.model,
                     "nimConfigured": self.client.configured,
+                    "kiloConfigured": self.client.configured,
                     "tools": self.registry.names(),
                     "ocr": {
                         "endpoint": "/ocr/analyze",
@@ -127,7 +129,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         if len(parts) == 2 and parts[0] == "registry":
             self._get_registry_paper(parts[1])
             return
-        if len(parts) == 2 and parts[0] == "analysis" and parts[1] == "jobs":
+        if len(parts) == 3 and parts[0] == "analysis" and parts[1] == "jobs":
             try:
                 self._send_json(self.store.analysis_job_snapshot(parts[2]))
             except LookupError as exc:
@@ -146,14 +148,23 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         if len(parts) == 2 and parts[0] == "agents":
             self._get_agent(parts[1])
             return
-        if len(parts) == 3 and parts[0] == "agents" and parts[1] == "stats":
-            self._get_agent_stats(parts[2])
+        if len(parts) == 3 and parts[0] == "agents" and parts[2] == "stats":
+            self._get_agent_stats(parts[1])
             return
         if len(parts) == 3 and parts[0] == "agents" and parts[2] == "knowledge":
             self._list_knowledge_sources(parts[1])
             return
         if len(parts) == 3 and parts[0] == "agents" and parts[2] == "conversations":
             self._list_conversations(parts[1])
+            return
+        # Reports
+        if path == "/reports/templates":
+            self._send_json({
+                "templates": [
+                    {"id": "evidence", "name": "Evidence Report", "description": "Detailed forensic report for a specific evidence item."},
+                    {"id": "summary", "name": "Dashboard Summary", "description": "High-level summary of all evidence, alerts, and investigations."},
+                ]
+            })
             return
         self._send_json({"error": "Not found"}, status=404)
 
@@ -240,8 +251,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         if len(parts) == 3 and parts[0] == "agents" and parts[2] == "knowledge":
             self._create_knowledge_source(parts[1])
             return
-        if len(parts) == 4 and parts[0] == "agents" and parts[3] == "upload":
-            self._upload_knowledge_files(parts[1], parts[2])
+        if len(parts) == 5 and parts[0] == "agents" and parts[2] == "knowledge" and parts[4] == "upload":
+            self._upload_knowledge_files(parts[1], parts[3])
             return
         if len(parts) == 3 and parts[0] == "agents" and parts[2] == "test":
             self._test_agent(parts[1])
@@ -251,6 +262,9 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             return
         if path == "/telegram/verify-bot":
             self._verify_bot_token()
+            return
+        if path == "/reports/generate":
+            self._generate_report()
             return
 
         self._send_json({"error": "Not found"}, status=404)
@@ -607,7 +621,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         current_evidence_id = str(current_evidence_id) if current_evidence_id else None
 
         if not self.client.configured:
-            self._send_json({"tool": None, "error": "NVIDIA_API_KEY is not configured."})
+            self._send_json({"tool": None, "error": "KILO_API_KEY is not configured."})
             return
 
         try:
@@ -699,10 +713,18 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             tg_config = self.agent_store.get_telegram_config(agent_id)
             sources = self.agent_store.list_knowledge_sources(agent_id)
             stats = self.agent_store.get_agent_stats(agent_id)
+            safe_telegram = None
+            if tg_config:
+                safe_telegram = {k: v for k, v in tg_config.items() if k != "botToken"}
+                safe_telegram["botTokenSet"] = bool(tg_config.get("botToken"))
             self._send_json({
-                "agent": agent,
+                "agent": {
+                    **agent,
+                    "knowledgeCount": stats["totalKnowledgeSources"],
+                    "conversationCount": stats["totalConversations"],
+                },
                 "llmConfig": {k: v for k, v in (llm_config or {}).items() if k != "apiKeyEncrypted"} if llm_config else None,
-                "telegramConfig": tg_config,
+                "telegramConfig": safe_telegram,
                 "knowledgeSources": sources,
                 "stats": stats,
             })
@@ -742,6 +764,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             data = self._read_json()
             config = self.agent_store.upsert_llm_config(agent_id, data)
             self._send_json({"config": {k: v for k, v in config.items() if k != "apiKeyEncrypted"}, "message": "LLM config saved."})
+        except LookupError as exc:
+            self._send_json({"error": str(exc)}, status=404)
         except Exception as exc:
             self._send_json({"error": str(exc) or "Failed to save LLM config."}, status=400)
 
@@ -749,7 +773,11 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         try:
             data = self._read_json()
             config = self.agent_store.upsert_telegram_config(agent_id, data)
-            self._send_json({"config": config, "message": "Telegram config saved."})
+            safe_config = {k: v for k, v in config.items() if k != "botToken"}
+            safe_config["botTokenSet"] = bool(config.get("botToken"))
+            self._send_json({"config": safe_config, "message": "Telegram config saved."})
+        except LookupError as exc:
+            self._send_json({"error": str(exc)}, status=404)
         except Exception as exc:
             self._send_json({"error": str(exc) or "Failed to save Telegram config."}, status=400)
 
@@ -789,6 +817,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             data = self._read_json()
             source = self.agent_store.create_knowledge_source(agent_id, data)
             self._send_json({"source": source, "message": "Knowledge source created."}, status=201)
+        except LookupError as exc:
+            self._send_json({"error": str(exc)}, status=404)
         except Exception as exc:
             self._send_json({"error": str(exc) or "Failed to create knowledge source."}, status=400)
 
@@ -953,12 +983,41 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 embed_function_url=f"{self.settings.supabase_url}/functions/v1/embed" if self.settings.supabase_url else "",
             )
 
-            if not rag_config.supabase_url:
-                self.agent_store.update_knowledge_source(source_id, {"status": "failed", "errorMessage": "Supabase not configured."})
-                self._send_json({"error": "Supabase not configured for RAG."}, status=400)
-                return
+            result: dict[str, Any] | None = None
+            if rag_config.supabase_url and rag_config.supabase_service_role_key:
+                result = ingest_knowledge_source(source_id, agent_id, files_data, rag_config)
 
-            result = ingest_knowledge_source(source_id, agent_id, files_data, rag_config)
+            if not result or result.get("status") != "ready":
+                local_chunks: list[dict[str, Any]] = []
+                total_chars = 0
+                for file_info in files_data:
+                    extracted = extract_text_from_file(
+                        str(file_info.get("filename") or ""),
+                        file_info.get("data") or b"",
+                        str(file_info.get("contentType") or "application/octet-stream"),
+                    )
+                    if not extracted:
+                        continue
+                    total_chars += len(extracted)
+                    for item in chunk_text(extracted):
+                        local_chunks.append({
+                            **item,
+                            "filename": file_info.get("filename", ""),
+                        })
+                if not local_chunks:
+                    message = "No text could be extracted from the uploaded files. Use PDF, TXT, or Markdown files with selectable text."
+                    self.agent_store.update_knowledge_source(source_id, {"status": "failed", "errorMessage": message})
+                    self._send_json({"error": message}, status=400)
+                    return
+                stored = self.agent_store.replace_knowledge_chunks(source_id, agent_id, local_chunks)
+                result = {"status": "ready", "chunksStored": stored, "totalChars": total_chars, "storage": "local"}
+
+            self.agent_store.update_knowledge_source(source_id, {
+                "status": "ready",
+                "chunkCount": int(result.get("chunksStored") or 0),
+                "totalChars": int(result.get("totalChars") or 0),
+                "errorMessage": None,
+            })
             self._send_json(result)
         except Exception as exc:
             try:
@@ -997,6 +1056,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                     context_chunks = search_agent_knowledge(question, agent_id, rag_config)
                 except Exception as exc:
                     logger.warning("RAG search failed for agent test: %s", exc)
+            if not context_chunks:
+                context_chunks = self.agent_store.search_knowledge_chunks(agent_id, question)
 
             system_prompt = agent.get("systemPrompt", "") or "You are a helpful assistant."
             if context_chunks:
@@ -1026,12 +1087,20 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": question},
             ]
-            result = provider_chat_completion(provider_config, messages, max_tokens=1024, timeout=30)
+            result = provider_chat_completion(provider_config, messages, max_tokens=1024, timeout=15)
             latency_ms = int((_time.monotonic() - start) * 1000)
 
             response_text = result.get("content", "")
             if result.get("error"):
-                response_text = f"Error: {result['error']}"
+                self._send_json({
+                    "error": f"{provider_config.provider} request failed: {result['error']}",
+                    "provider": provider_config.provider,
+                    "model": provider_config.model,
+                }, status=502)
+                return
+            if not str(response_text).strip():
+                self._send_json({"error": "The configured model returned an empty response."}, status=502)
+                return
 
             self.agent_store.log_conversation(
                 agent_id=agent_id,
@@ -1261,6 +1330,61 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send_json({"error": str(exc)}, status=400)
 
+    def _generate_report(self) -> None:
+        """POST /reports/generate — Generate a Markdown report."""
+        from .reports import generate_evidence_report, generate_summary_report, report_to_document_bytes
+
+        try:
+            payload = self._read_json()
+        except Exception:
+            payload = {}
+
+        evidence_id = str(payload.get("evidenceId") or "").strip()
+        report_type = str(payload.get("reportType") or ("evidence" if evidence_id else "summary")).strip()
+        send_to_telegram = bool(payload.get("sendToTelegram"))
+        telegram_chat_id = str(payload.get("chatId") or self.settings.telegram_admin_chat_id or "").strip()
+
+        if report_type == "evidence" and evidence_id:
+            md = generate_evidence_report(evidence_id, self.store)
+            filename = f"report-{evidence_id}.md"
+        else:
+            md = generate_summary_report(self.store)
+            filename = "report-dashboard-summary.md"
+            evidence_id = ""
+
+        result = {
+            "report": md,
+            "filename": filename,
+            "length": len(md),
+            "reportType": report_type,
+            "evidenceId": evidence_id or None,
+        }
+
+        # Optionally send to Telegram
+        if send_to_telegram and telegram_chat_id:
+            try:
+                from .telegram import TelegramWebhook
+                tg = TelegramWebhook(self.settings)
+                data_bytes = report_to_document_bytes(md)
+                caption = f"📄 Report: {evidence_id}" if evidence_id else "📊 Dashboard Summary Report"
+                tg._api_multipart(
+                    "sendDocument",
+                    fields={"chat_id": telegram_chat_id, "caption": caption},
+                    file_field="document",
+                    filename=filename,
+                    data=data_bytes,
+                    content_type="text/markdown",
+                )
+                result["sentToTelegram"] = True
+                result["telegramChatId"] = telegram_chat_id
+                logger.info("Report %s sent to Telegram chat %s", filename, telegram_chat_id)
+            except Exception as exc:
+                result["sentToTelegram"] = False
+                result["telegramError"] = str(exc)
+                logger.error("Failed to send report to Telegram: %s", exc)
+
+        self._send_json(result)
+
     def _test_telegram_chat(self) -> None:
         """Test endpoint for Telegram private chat functionality."""
         try:
@@ -1273,7 +1397,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 return
             
             # Try to get a chat response
-            llm = NvidiaClient(self.settings)
+            llm = KiloClient(self.settings)
             if llm.configured:
                 from .telegram import _clean_telegram_html
                 
@@ -1316,7 +1440,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                     "sentToTelegram": telegram.configured,
                 })
             else:
-                self._send_json({"error": "NVIDIA API key not configured."}, status=500)
+                self._send_json({"error": "KILO_API_KEY is not configured."}, status=500)
         except Exception as exc:
             self._send_json({"error": str(exc) or "Chat test failed."}, status=400)
 
@@ -1367,7 +1491,7 @@ def build_handler(settings: Settings):
     ConfiguredExamshieldAiHandler.settings = settings
     ConfiguredExamshieldAiHandler.store = store
     ConfiguredExamshieldAiHandler.registry = ExamshieldToolRegistry(store)
-    ConfiguredExamshieldAiHandler.client = NvidiaClient(settings)
+    ConfiguredExamshieldAiHandler.client = KiloClient(settings)
     ConfiguredExamshieldAiHandler.telegram = telegram
     ConfiguredExamshieldAiHandler.workers = workers
     ConfiguredExamshieldAiHandler.pipeline = pipeline
@@ -1417,6 +1541,53 @@ def main() -> None:
     except Exception as exc:
         logger.warning("Evidence cache warmup skipped: %s", exc)
     _start_stale_job_sweeper(handler.store)
+    # When no PUBLIC_URL is configured there is no webhook, so poll Telegram
+    # directly. This keeps the bot working in local/dev without a public host.
+    if handler.telegram.configured:
+        logger.info("Telegram webhook enabled (PUBLIC_URL set).")
+    else:
+        # If a community agent is configured with the SAME bot token as the
+        # global ExamShield bot, that agent's poller must own the token (it
+        # answers DMs as the agent). Running the global poll too would cause a
+        # Telegram getUpdates 409 conflict, so we hand the bot to the agent.
+        global_token = settings.telegram_bot_token or ""
+        agent_owns_global = False
+        if global_token:
+            for ag in handler.agent_store.list_agents(status="active"):
+                tg = handler.agent_store.get_telegram_config(str(ag.get("id") or ""))
+                if not tg:
+                    continue
+                if str(tg.get("deploymentStatus", "")).lower() in ("connected", "deployed", "active") and str(tg.get("botToken") or "") == global_token:
+                    agent_owns_global = True
+                    break
+
+        if agent_owns_global:
+            logger.info(
+                "Global Telegram bot token is owned by a community agent — the agent poller "
+                "will answer DMs as that agent; global assistant DM polling is skipped to avoid a getUpdates conflict."
+            )
+        else:
+            logger.info("Telegram webhook disabled (no PUBLIC_URL) — starting long-poll receiver.")
+            threading.Thread(
+                target=handler.telegram.start_polling,
+                kwargs={
+                    "store": handler.store,
+                    "ocr_runner": analyze_image,
+                    "pipeline": handler.pipeline,
+                },
+                daemon=True,
+                name="telegram-poll",
+            ).start()
+    # Community agents each have their own Telegram bot (configured via the
+    # agent's botToken). Poll those bots independently so DMs to an agent's bot
+    # are answered as that agent. This runs regardless of PUBLIC_URL because
+    # agent bots use getUpdates polling, not webhooks.
+    threading.Thread(
+        target=AgentTelegramService(handler.agent_store, settings).start,
+        daemon=True,
+        name="agent-telegram-poll",
+    ).start()
+
     server = ThreadingHTTPServer((settings.host, settings.port), handler)
     logger.info(f"EXAMSHIELD AI service listening on http://{settings.host}:{settings.port}")
     try:

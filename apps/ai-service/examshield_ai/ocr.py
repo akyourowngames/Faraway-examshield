@@ -266,7 +266,11 @@ def read_ocr_candidates_sequential(
 
         timeout = remaining_timeout(deadline)
         try:
-            candidate = read_ocr_candidate(image_path, psm, timeout=timeout)
+            candidate = (
+                read_ocr_candidate(image_path, psm, timeout=timeout)
+                if deadline is not None
+                else read_ocr_candidate(image_path, psm)
+            )
         except subprocess.TimeoutExpired:
             candidate = {
                 "status": "failed",
@@ -309,7 +313,11 @@ def read_ocr_candidates_parallel(
 
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ocr-psm") as executor:
         futures = {
-            executor.submit(read_ocr_candidate, image_path, psm, timeout=timeout): psm
+            (
+                executor.submit(read_ocr_candidate, image_path, psm, timeout=timeout)
+                if deadline is not None
+                else executor.submit(read_ocr_candidate, image_path, psm)
+            ): psm
             for psm in OCR_PSMS
         }
         for future in as_completed(futures):

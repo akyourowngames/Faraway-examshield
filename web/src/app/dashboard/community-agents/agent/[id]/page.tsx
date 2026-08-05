@@ -22,7 +22,7 @@ import {
   Upload,
   Plus,
 } from "lucide-react";
-import { getAgent, testAgent, listConversations, updateAgent, deleteKnowledgeSource, deployAgent, createKnowledgeSource, uploadKnowledgeFiles } from "@/lib/agent-api";
+import { getAgent, testAgent, listConversations, updateAgent, deleteAgent, deleteKnowledgeSource, deployAgent, createKnowledgeSource, uploadKnowledgeFiles } from "@/lib/agent-api";
 import type { AgentDetail, AgentConversation, AgentTestResult, KnowledgeSource } from "@/lib/agent-types";
 
 type Tab = "overview" | "knowledge" | "analytics" | "settings" | "telegram";
@@ -49,13 +49,16 @@ export default function AgentDashboardPage() {
   const [deploying, setDeploying] = useState(false);
   const [deletingSource, setDeletingSource] = useState<string | null>(null);
   const [uploadingKnowledge, setUploadingKnowledge] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const fetchDetail = useCallback(async () => {
+    setLoadError(null);
     try {
       const data = await getAgent(agentId);
       setDetail(data);
-    } catch {
-      router.push("/dashboard/community-agents/my-agents");
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "Could not load this agent.");
     } finally {
       setLoading(false);
     }
@@ -65,7 +68,9 @@ export default function AgentDashboardPage() {
 
   useEffect(() => {
     if (tab === "analytics") {
-      listConversations(agentId).then((data) => setConversations(data.conversations)).catch(() => {});
+      listConversations(agentId)
+        .then((data) => setConversations(data.conversations))
+        .catch((error) => setActionError(error instanceof Error ? error.message : "Could not load conversations."));
     }
   }, [tab, agentId]);
 
@@ -76,8 +81,8 @@ export default function AgentDashboardPage() {
       const result = await testAgent(agentId, testQuestion);
       setTestResult(result);
       fetchDetail();
-    } catch {
-      setTestResult({ response: "Test failed.", latencyMs: 0, sources: [], model: "", provider: "" });
+    } catch (error) {
+      setTestResult({ response: error instanceof Error ? error.message : "Test failed.", latencyMs: 0, sources: [], model: "", provider: "" });
     } finally {
       setTesting(false);
     }
@@ -89,8 +94,8 @@ export default function AgentDashboardPage() {
     try {
       await updateAgent(agentId, { status: newStatus });
       fetchDetail();
-    } catch {
-      // ignore
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Failed to update status.");
     }
   }
 
@@ -99,8 +104,8 @@ export default function AgentDashboardPage() {
     try {
       await deployAgent(agentId);
       fetchDetail();
-    } catch {
-      // ignore
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Deployment failed.");
     } finally {
       setDeploying(false);
     }
@@ -112,8 +117,8 @@ export default function AgentDashboardPage() {
     try {
       await deleteKnowledgeSource(agentId, sourceId);
       fetchDetail();
-    } catch {
-      // ignore
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Failed to delete source.");
     } finally {
       setDeletingSource(null);
     }
@@ -130,8 +135,8 @@ export default function AgentDashboardPage() {
       });
       await uploadKnowledgeFiles(agentId, source.id, Array.from(files));
       fetchDetail();
-    } catch {
-      // ignore
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Knowledge upload failed.");
     } finally {
       setUploadingKnowledge(false);
     }
@@ -145,11 +150,27 @@ export default function AgentDashboardPage() {
     );
   }
 
-  if (!detail) return null;
+  if (!detail) {
+    return (
+      <div className="border border-red-400/30 bg-red-400/[0.05] p-6">
+        <div className="text-xs font-bold uppercase tracking-widest text-red-300">Unable to load agent</div>
+        <p className="text-sm text-white/50 mt-3">{loadError || "Agent not found."}</p>
+        <button onClick={() => router.push("/dashboard/community-agents/my-agents")} className="mt-5 px-4 py-2 border border-white/20 text-xs font-bold uppercase tracking-widest text-white">
+          Back to agents
+        </button>
+      </div>
+    );
+  }
   const { agent, stats, knowledgeSources, llmConfig, telegramConfig } = detail;
 
   return (
     <div className="space-y-6">
+      {actionError && (
+        <div className="border border-red-400/30 bg-red-400/[0.05] p-4 flex items-center justify-between gap-4">
+          <p className="text-xs text-red-200">{actionError}</p>
+          <button onClick={() => setActionError(null)} className="text-[10px] uppercase tracking-widest text-white/60">Dismiss</button>
+        </div>
+      )}
       {/* Header */}
       <div className="flex items-end justify-between border-b border-white/10 pb-6">
         <div className="flex items-center gap-4">
@@ -381,7 +402,15 @@ export default function AgentDashboardPage() {
             </div>
             <div className="border border-red-500/20 bg-red-500/[0.02] p-6">
               <h3 className="text-xs font-semibold uppercase tracking-[0.15em] text-red-400/60 mb-4">Danger Zone</h3>
-              <button onClick={() => { if (confirm("Delete this agent?")) { updateAgent(agentId, { status: "failed" as never }); router.push("/dashboard/community-agents/my-agents"); } }}
+              <button onClick={async () => {
+                if (!confirm("Permanently delete this agent and its configurations, conversations, and knowledge?")) return;
+                try {
+                  await deleteAgent(agentId);
+                  router.push("/dashboard/community-agents/my-agents");
+                } catch (error) {
+                  setActionError(error instanceof Error ? error.message : "Failed to delete agent.");
+                }
+              }}
                 className="flex items-center gap-2 px-4 py-2 border border-red-500/30 text-red-400/60 text-[10px] font-bold uppercase tracking-widest hover:bg-red-500/10 transition-colors">
                 <Trash2 className="w-3 h-3" /> Delete Agent
               </button>
@@ -393,7 +422,7 @@ export default function AgentDashboardPage() {
           <div className="space-y-6">
             <div className="border border-white/10 bg-white/[0.02] p-6">
               <h3 className="text-xs font-semibold uppercase tracking-[0.15em] text-white/50 mb-4">Telegram Configuration</h3>
-              {telegramConfig && telegramConfig.botToken ? (
+              {telegramConfig && telegramConfig.botTokenSet ? (
                 <div className="space-y-3">
                   <div className="flex justify-between text-xs py-1.5 border-b border-white/[0.04]">
                     <span className="text-white/30 uppercase tracking-wider text-[10px]">Bot Username</span>

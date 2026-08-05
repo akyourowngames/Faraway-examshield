@@ -37,8 +37,8 @@ function AgentRow({ agent, onRefresh }: { agent: Agent; onRefresh: () => void })
       const newStatus: AgentStatus = agent.status === "active" ? "paused" : "active";
       await updateAgent(agent.id, { status: newStatus });
       onRefresh();
-    } catch {
-      // ignore
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Failed to update agent status.");
     } finally {
       setToggling(false);
     }
@@ -49,8 +49,8 @@ function AgentRow({ agent, onRefresh }: { agent: Agent; onRefresh: () => void })
     try {
       await deleteAgent(agent.id);
       onRefresh();
-    } catch {
-      // ignore
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Failed to delete agent.");
     }
   }
 
@@ -124,17 +124,20 @@ export default function MyAgentsPage() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const fetchAgents = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
     try {
-      const data = await listAgents(statusFilter === "all" ? undefined : statusFilter);
+      const data = await listAgents();
       setAgents(data.agents);
-    } catch {
-      // ignore
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "Could not load agents.");
     } finally {
       setLoading(false);
     }
-  }, [statusFilter]);
+  }, []);
 
   useEffect(() => { fetchAgents(); }, [fetchAgents]);
 
@@ -144,6 +147,7 @@ export default function MyAgentsPage() {
     draft: agents.filter((a) => a.status === "draft").length,
     paused: agents.filter((a) => a.status === "paused").length,
   };
+  const visibleAgents = statusFilter === "all" ? agents : agents.filter((agent) => agent.status === statusFilter);
 
   return (
     <div className="space-y-6">
@@ -169,23 +173,35 @@ export default function MyAgentsPage() {
         ))}
       </div>
 
+      {loadError && !loading && (
+        <div className="border border-red-400/30 bg-red-400/[0.05] p-5 flex items-center justify-between gap-4">
+          <div>
+            <div className="text-xs font-bold uppercase tracking-widest text-red-300">Agent service unavailable</div>
+            <p className="text-xs text-white/50 mt-2">{loadError}</p>
+          </div>
+          <button onClick={fetchAgents} className="px-4 py-2 border border-white/20 text-xs font-bold uppercase tracking-widest text-white hover:bg-white/10">
+            Retry
+          </button>
+        </div>
+      )}
+
       {loading ? (
         <div className="flex items-center justify-center py-20">
           <Loader2 className="w-6 h-6 text-white/30 animate-spin" />
         </div>
       ) : (
         <motion.div variants={containerVariants} initial="hidden" animate="show" className="space-y-3">
-          {agents.map((agent) => (
+          {visibleAgents.map((agent) => (
             <AgentRow key={agent.id} agent={agent} onRefresh={fetchAgents} />
           ))}
         </motion.div>
       )}
 
-      {!loading && agents.length === 0 && (
+      {!loading && !loadError && visibleAgents.length === 0 && (
         <div className="border border-dashed border-white/10 bg-white/[0.02] flex flex-col items-center justify-center text-center py-20">
           <Plus className="w-8 h-8 text-white/25 mb-4" />
-          <div className="text-xl font-heading uppercase tracking-widest text-white">No Agents</div>
-          <p className="text-sm text-white/45 mt-3 max-w-sm">Create your first agent to get started.</p>
+          <div className="text-xl font-heading uppercase tracking-widest text-white">{agents.length === 0 ? "No Agents" : `No ${statusFilter} agents`}</div>
+          <p className="text-sm text-white/45 mt-3 max-w-sm">{agents.length === 0 ? "Create your first agent to get started." : "Choose another status filter to view your agents."}</p>
           <Link href="/dashboard/community-agents/create" className="mt-6">
             <div className="px-4 py-2 bg-white text-black text-xs font-bold uppercase tracking-widest hover:bg-white/90 transition-colors cursor-pointer">Create Agent</div>
           </Link>

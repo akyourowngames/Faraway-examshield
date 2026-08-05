@@ -14,7 +14,7 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
-      - key: NVIDIA_API_KEY
+      - key: KILO_API_KEY
         sync: false
       - key: EXAMSHIELD_PUBLIC_URL
         sync: false
@@ -61,9 +61,9 @@ services:
       - key: EXAMSHIELD_STALE_JOB_MAX_AGE_SECONDS
         value: "300"
       - key: EXAMSHIELD_AI_PLANNER_MODEL
-        value: mistralai/ministral-14b-instruct-2512
+        value: tencent/hy3:free
       - key: EXAMSHIELD_AI_MODEL
-        value: meta/llama-4-maverick-17b-128e-instruct
+        value: tencent/hy3:free
       - key: EXAMSHIELD_TOOL_PLANNER_TIMEOUT_SECONDS
         value: "4"
       - key: EXAMSHIELD_AI_STREAM_TIMEOUT_SECONDS

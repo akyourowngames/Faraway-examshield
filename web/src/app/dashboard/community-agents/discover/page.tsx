@@ -42,7 +42,7 @@ function AgentCard({ agent }: { agent: Agent }) {
       variants={itemVariants}
       className="group relative"
     >
-      <Link href={`/dashboard/community-agents/my-agents?selected=${agent.id}`}>
+      <Link href={`/dashboard/community-agents/create?template=${encodeURIComponent(agent.id)}`}>
         <div className="relative border border-white/10 bg-white/[0.02] p-5 transition-all duration-300 hover:border-white/25 hover:bg-white/[0.04] overflow-hidden">
           {/* Ambient glow on hover */}
           <div
@@ -109,7 +109,7 @@ function AgentCard({ agent }: { agent: Agent }) {
               <span className="text-[10px] text-white/50 font-mono">{agent.knowledgeCount}</span>
             </div>
             <div className="ml-auto flex items-center gap-1 text-white/20 group-hover:text-white/50 transition-colors">
-              <span className="text-[9px] uppercase tracking-widest">View</span>
+              <span className="text-[9px] uppercase tracking-widest">Use Template</span>
               <ChevronRight className="w-3 h-3" />
             </div>
           </div>
@@ -169,10 +169,10 @@ export default function DiscoverPage() {
       <div className="flex items-end justify-between border-b border-white/10 pb-6">
         <div>
           <h1 className="text-4xl font-heading font-bold tracking-widest text-white uppercase">
-            Agent Marketplace
+            Agent Templates
           </h1>
           <p className="text-white/50 text-xs font-mono uppercase tracking-widest mt-2">
-            Discover and deploy AI agents for examination security.
+            Start from a prebuilt configuration, then connect your own verified model.
           </p>
         </div>
         <Link href="/dashboard/community-agents/create">
