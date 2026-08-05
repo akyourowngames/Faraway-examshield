@@ -127,6 +127,9 @@ export type ForensicReport = {
   ocrConfidence: number | null;
   watermarkConfidence: number | null;
   finalConfidence: number;
+  comparisonStatus?: "matched" | "no-match" | "not-run";
+  comparisonSource?: string | null;
+  referenceCount?: number;
   timestamp: string;
 };
 

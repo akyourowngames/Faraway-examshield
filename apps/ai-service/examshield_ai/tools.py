@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any, Callable
 
 from .memory import MemoryManager
+from .reports import generate_evidence_report, generate_summary_report
 from .store import EvidenceStore, JsonObject, is_today
 
 
@@ -130,6 +131,24 @@ class ExamshieldToolRegistry:
                 description="Generate a live EXAMSHIELD daily report, command briefing, executive report, or operational summary.",
                 parameters=schema({}),
                 handler=self._generate_report,
+            ),
+            "generateMdReport": ToolSpec(
+                name="generateMdReport",
+                description="Generate a detailed Markdown forensic report for a specific evidence item or a dashboard summary report. Use when the user asks for a report, forensic report, or wants to download/share a report.",
+                parameters=schema(
+                    {
+                        "evidenceId": {
+                            "type": "string",
+                            "description": "The evidence ID for a per-evidence report (e.g. EV-001). Omit or leave empty for a dashboard summary report.",
+                        },
+                        "reportType": {
+                            "type": "string",
+                            "enum": ["evidence", "summary"],
+                            "description": "Use evidence for a specific item report, summary for a dashboard overview.",
+                        },
+                    }
+                ),
+                handler=self._generate_md_report,
             ),
         }
 
@@ -585,6 +604,35 @@ class ExamshieldToolRegistry:
             ],
             evidence_ids=[item.get("evidenceId") for item in data["evidence"][:3] if item.get("evidenceId")],
         )
+        return with_context(result)
+
+    def _generate_md_report(self, arguments: JsonObject) -> ToolExecution:
+        report_type = str(arguments.get("reportType") or "summary").strip()
+        evidence_id = str(arguments.get("evidenceId") or "").strip()
+
+        if report_type == "evidence" and evidence_id:
+            md = generate_evidence_report(evidence_id, self.store)
+            title = f"EVIDENCE REPORT {evidence_id}"
+            summary = f"Detailed forensic report generated for {evidence_id}."
+        else:
+            md = generate_summary_report(self.store)
+            title = "DASHBOARD SUMMARY REPORT"
+            summary = "Full dashboard summary report generated."
+
+        result = create_result(
+            tool="generateMdReport",
+            title=title,
+            summary=summary,
+            current_investigation=empty_investigation(),
+            metrics=[metric("Report Type", report_type), metric("Length", f"{len(md)} chars")],
+            sections=[{
+                "title": "Report Preview",
+                "rows": [metric("Content", md[:1500])],
+            }],
+            evidence_ids=[evidence_id] if evidence_id else [],
+        )
+        result["markdownReport"] = md
+        result["filename"] = f"report-{evidence_id}.md" if evidence_id else "report-dashboard-summary.md"
         return with_context(result)
 
 

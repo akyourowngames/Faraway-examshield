@@ -24,9 +24,11 @@ import {
   Copy,
   ExternalLink,
   TestTube,
+  X,
 } from "lucide-react";
-import { createAgent, listLLMProviders, validateLLMKey, upsertLLMConfig, upsertTelegramConfig, createKnowledgeSource, uploadKnowledgeFiles, testAgent, verifyBotToken } from "@/lib/agent-api";
+import { createAgent, deleteAgent, listLLMProviders, validateLLMKey, upsertLLMConfig, upsertTelegramConfig, createKnowledgeSource, uploadKnowledgeFiles, testAgent, verifyBotToken } from "@/lib/agent-api";
 import type { LLMProviderInfo, LLMProvider, AgentCategory, ResponseStyle } from "@/lib/agent-types";
+import { MOCK_AGENTS } from "@/lib/agent-mock-data";
 
 const STEPS = ["Basics", "LLM Provider", "Telegram", "Knowledge", "Behavior", "Review"];
 
@@ -45,10 +47,10 @@ const KNOWLEDGE_TYPES = [
 ];
 
 const FALLBACK_PROVIDERS: LLMProviderInfo[] = [
-  { id: "openai", name: "OpenAI", models: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"], requiresKey: true, requiresEndpoint: false },
-  { id: "anthropic", name: "Anthropic", models: ["claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022", "claude-3-haiku-20240307"], requiresKey: true, requiresEndpoint: false },
-  { id: "grok", name: "Grok (xAI)", models: ["grok-3", "grok-3-mini", "grok-2"], requiresKey: true, requiresEndpoint: false },
-  { id: "groq", name: "Groq", models: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768", "gemma2-9b-it"], requiresKey: true, requiresEndpoint: false },
+  { id: "openai", name: "OpenAI", models: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"], requiresKey: true, requiresEndpoint: false, groupedModels: null },
+  { id: "anthropic", name: "Anthropic", models: ["claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022", "claude-3-haiku-20240307"], requiresKey: true, requiresEndpoint: false, groupedModels: null },
+  { id: "grok", name: "Grok (xAI)", models: ["grok-3", "grok-3-mini", "grok-2"], requiresKey: true, requiresEndpoint: false, groupedModels: null },
+  { id: "groq", name: "Groq", models: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768", "gemma2-9b-it"], requiresKey: true, requiresEndpoint: false, groupedModels: null },
   { id: "opencode", name: "OpenCode Zen", models: [
     "big-pickle", "deepseek-v4-flash-free", "mimo-v2.5-free",
     "north-mini-code-free", "nemotron-3-ultra-free",
@@ -64,7 +66,18 @@ const FALLBACK_PROVIDERS: LLMProviderInfo[] = [
     "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.4-pro",
     "gpt-5.5", "gpt-5.5-pro",
     "gemini-3-flash", "gemini-3.1-pro", "gemini-3.5-flash",
-  ], requiresKey: true, requiresEndpoint: false },
+  ], requiresKey: true, requiresEndpoint: false, groupedModels: {
+    "Free Models": ["big-pickle", "deepseek-v4-flash-free", "mimo-v2.5-free", "north-mini-code-free", "nemotron-3-ultra-free"],
+    "DeepSeek": ["deepseek-v4-flash", "deepseek-v4-pro"],
+    "MiniMax": ["minimax-m2.5", "minimax-m2.7"],
+    "GLM": ["glm-5", "glm-5.1"],
+    "Kimi": ["kimi-k2.5", "kimi-k2.6"],
+    "Grok": ["grok-build-0.1"],
+    "Qwen": ["qwen3.5-plus", "qwen3.6-plus", "qwen3.7-plus", "qwen3.7-max"],
+    "Claude": ["claude-haiku-4-5", "claude-sonnet-4", "claude-sonnet-4-5", "claude-sonnet-4-6", "claude-opus-4-1", "claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-fable-5"],
+    "GPT": ["gpt-5", "gpt-5-nano", "gpt-5.1", "gpt-5.1-codex", "gpt-5.1-codex-max", "gpt-5.1-codex-mini", "gpt-5.2", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.4-pro", "gpt-5.5", "gpt-5.5-pro"],
+    "Gemini": ["gemini-3-flash", "gemini-3.1-pro", "gemini-3.5-flash"],
+  }},
 ];
 
 export default function CreateAgentPage() {
@@ -124,6 +137,19 @@ export default function CreateAgentPage() {
       });
   }, []);
 
+  useEffect(() => {
+    const templateId = new URLSearchParams(window.location.search).get("template");
+    const template = MOCK_AGENTS.find((agent) => agent.id === templateId);
+    if (!template) return;
+    setName(`${template.name} Copy`);
+    setDescription(template.description);
+    setCategory(template.category);
+    setVisibility("private");
+    setSystemPrompt(template.systemPrompt);
+    setResponseStyle(template.responseStyle);
+    setCitationMode(template.citationMode);
+  }, []);
+
   const currentProvider = providers.find((p) => p.id === selectedProvider);
   const modelOptions = currentProvider?.models ?? [];
   const displayModel = selectedModel || modelOptions[0] || "";
@@ -164,9 +190,36 @@ export default function CreateAgentPage() {
     }
   }
 
+  function addKnowledgeFiles(fileList: FileList | null) {
+    if (!fileList || fileList.length === 0) return;
+    setKnowledgeFiles((prev) => {
+      const merged = [...prev];
+      for (const file of Array.from(fileList)) {
+        const duplicate = merged.some((f) => f.name === file.name && f.size === file.size);
+        if (!duplicate) merged.push(file);
+      }
+      return merged;
+    });
+  }
+
+  function removeKnowledgeFile(index: number) {
+    setKnowledgeFiles((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  function formatBytes(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
   async function handleCreate() {
+    if (!name.trim() || !apiKey.trim() || !displayModel || !keyValidated) {
+      setError("Complete and validate the LLM configuration before creating the agent.");
+      return;
+    }
     setCreating(true);
     setError("");
+    let pendingAgentId: string | null = null;
     try {
       const { agent } = await createAgent({
         name: name || "Untitled Agent",
@@ -181,6 +234,7 @@ export default function CreateAgentPage() {
       });
 
       const agentId = agent.id;
+      pendingAgentId = agentId;
       setCreatedAgentId(agentId);
 
       // Save LLM config
@@ -195,13 +249,13 @@ export default function CreateAgentPage() {
         await upsertTelegramConfig(agentId, {
           botToken,
           botUsername: botUsername || "",
-          botVerified: false,
-          privacyModeDisabled: false,
+          botVerified,
+          privacyModeDisabled: Boolean(botVerifyInfo?.canReadAllGroupMessages),
           addedToGroup: false,
           promotedAdmin: false,
-          messageReadingEnabled: false,
+          messageReadingEnabled: Boolean(botVerifyInfo?.canReadAllGroupMessages),
           webhookUrl: "",
-          deploymentStatus: "disconnected",
+          deploymentStatus: botVerified ? "connected" : "disconnected",
         });
       }
 
@@ -217,6 +271,14 @@ export default function CreateAgentPage() {
 
       router.push(`/dashboard/community-agents/my-agents`);
     } catch (e) {
+      if (pendingAgentId) {
+        try {
+          await deleteAgent(pendingAgentId);
+          setCreatedAgentId(null);
+        } catch {
+          // Preserve the original setup error; the orphan can still be removed from My Agents.
+        }
+      }
       setError(e instanceof Error ? e.message : "Failed to create agent");
     } finally {
       setCreating(false);
@@ -257,6 +319,7 @@ export default function CreateAgentPage() {
       case 1:
         if (!apiKey.trim()) return "API key is required.";
         if (!displayModel) return "Select a model.";
+        if (!keyValidated) return "Validate the API key before proceeding.";
         break;
       case 2:
         if (botToken.trim() && !botVerified) return "Verify your bot token before proceeding.";
@@ -410,14 +473,49 @@ export default function CreateAgentPage() {
               {modelOptions.length > 0 && (
                 <div>
                   <label className="block text-[10px] uppercase tracking-widest text-white/40 mb-2 font-bold">Model</label>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    {modelOptions.map((m) => (
-                      <button key={m} onClick={() => { setSelectedModel(m); setKeyValidated(false); }}
-                        className={`px-4 py-3 border transition-colors text-left ${selectedModel === m ? "border-white/30 bg-white/10" : "border-white/10 hover:border-white/20"}`}>
-                        <div className="text-xs font-bold text-white uppercase tracking-wider">{m}</div>
-                      </button>
-                    ))}
-                  </div>
+                  {currentProvider?.groupedModels ? (
+                    // Grouped dropdown for providers with many models (like OpenCode Zen)
+                    <div className="space-y-3">
+                      <div className="relative">
+                        <select
+                          value={selectedModel || ""}
+                          onChange={(e) => {
+                            if (e.target.value) {
+                              setSelectedModel(e.target.value);
+                              setKeyValidated(false);
+                            }
+                          }}
+                          className="w-full px-4 py-3 bg-white/[0.03] border border-white/10 text-white text-sm focus:outline-none focus:border-white/30 transition-colors appearance-none cursor-pointer pr-10"
+                          style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='rgba(255,255,255,0.4)' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px center' }}
+                        >
+                          <option value="" className="bg-black text-white">Select a model...</option>
+                          {Object.entries(currentProvider.groupedModels).map(([group, models]) => (
+                            <optgroup key={group} label={group} className="bg-black text-white font-bold">
+                              {models.map((m) => (
+                                <option key={m} value={m} className="bg-black text-white font-normal">{m}</option>
+                              ))}
+                            </optgroup>
+                          ))}
+                        </select>
+                      </div>
+                      {selectedModel && (
+                        <div className="flex items-center gap-2 px-3 py-2 border border-white/10 bg-white/[0.02]">
+                          <div className="text-[10px] text-white/40 uppercase tracking-wider">Selected:</div>
+                          <div className="text-xs font-bold text-white">{selectedModel}</div>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    // Simple grid for providers with few models
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {modelOptions.map((m) => (
+                        <button key={m} onClick={() => { setSelectedModel(m); setKeyValidated(false); }}
+                          className={`px-4 py-3 border transition-colors text-left ${selectedModel === m ? "border-white/30 bg-white/10" : "border-white/10 hover:border-white/20"}`}>
+                          <div className="text-xs font-bold text-white uppercase tracking-wider">{m}</div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
               <div className="flex items-center gap-3">
@@ -521,12 +619,46 @@ export default function CreateAgentPage() {
               {selectedKnowledgeTypes.includes("document") && (
                 <div>
                   <label className="block text-[10px] uppercase tracking-widest text-white/40 mb-2 font-bold">Upload Files</label>
-                  <label className="flex items-center justify-center gap-2 px-4 py-8 border border-dashed border-white/15 bg-white/[0.02] hover:border-white/25 transition-colors cursor-pointer">
-                    <Upload className="w-4 h-4 text-white/30" />
-                    <span className="text-xs text-white/40">{knowledgeFiles.length > 0 ? `${knowledgeFiles.length} file(s) selected` : "Click to upload PDF, TXT, or Markdown"}</span>
-                    <input type="file" multiple accept=".pdf,.txt,.md" className="hidden"
-                      onChange={(e) => setKnowledgeFiles(Array.from(e.target.files || []))} />
-                  </label>
+                  {knowledgeFiles.length === 0 ? (
+                    <label className="flex items-center justify-center gap-2 px-4 py-8 border border-dashed border-white/15 bg-white/[0.02] hover:border-white/25 transition-colors cursor-pointer">
+                      <Upload className="w-4 h-4 text-white/30" />
+                      <span className="text-xs text-white/40">Click to upload PDF, TXT, or Markdown</span>
+                      <input type="file" multiple accept=".pdf,.txt,.md" className="hidden"
+                        onChange={(e) => addKnowledgeFiles(e.target.files)} />
+                    </label>
+                  ) : (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] uppercase tracking-widest text-white/40 font-bold">
+                          {knowledgeFiles.length} file(s) selected
+                        </span>
+                        <div className="flex items-center gap-3">
+                          <label className="text-[10px] uppercase tracking-widest text-white/50 hover:text-white cursor-pointer underline">
+                            Add more
+                            <input type="file" multiple accept=".pdf,.txt,.md" className="hidden"
+                              onChange={(e) => addKnowledgeFiles(e.target.files)} />
+                          </label>
+                          <button type="button" onClick={() => setKnowledgeFiles([])}
+                            className="text-[10px] uppercase tracking-widest text-red-300/70 hover:text-red-300 transition-colors">
+                            Clear all
+                          </button>
+                        </div>
+                      </div>
+                      <div className="space-y-1.5">
+                        {knowledgeFiles.map((file, index) => (
+                          <div key={`${file.name}-${index}`} className="flex items-center gap-3 px-3 py-2 border border-white/10 bg-white/[0.02]">
+                            <FileText className="w-4 h-4 text-white/30 shrink-0" />
+                            <span className="flex-1 text-xs text-white/70 truncate">{file.name}</span>
+                            <span className="text-[10px] text-white/30 shrink-0">{formatBytes(file.size)}</span>
+                            <button type="button" onClick={() => removeKnowledgeFile(index)}
+                              className="p-1 text-white/30 hover:text-red-300 transition-colors shrink-0" title="Remove file">
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -597,7 +729,7 @@ export default function CreateAgentPage() {
             <div className="space-y-6">
               <div className="flex items-center gap-3 mb-6">
                 <Shield className="w-5 h-5 text-white/50" />
-                <h2 className="text-sm font-bold uppercase tracking-widest text-white">Review & Deploy</h2>
+                <h2 className="text-sm font-bold uppercase tracking-widest text-white">Review & Create</h2>
               </div>
               {(() => {
                 const checks = [
@@ -684,7 +816,7 @@ export default function CreateAgentPage() {
               Next <ArrowRight className="w-3.5 h-3.5" />
             </button>
           ) : (
-            <button onClick={handleCreate} disabled={creating || !name.trim() || !apiKey.trim() || !displayModel}
+            <button onClick={handleCreate} disabled={creating || !name.trim() || !apiKey.trim() || !displayModel || !keyValidated}
               className="flex items-center gap-2 px-6 py-2 bg-white text-black text-xs font-bold uppercase tracking-widest hover:bg-white/90 transition-colors disabled:opacity-30">
               {creating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
               {creating ? "Creating..." : "Create Agent"}

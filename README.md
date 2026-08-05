@@ -341,7 +341,7 @@ docker run -p 8790:8790 examshield-api
 |----------|----------|-------------|
 | `SUPABASE_URL` | ✅ | Supabase project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | ✅ | Service role key |
-| `NVIDIA_API_KEY` | ⚠️ | For AI service |
+| `KILO_API_KEY` | ⚠️ | For AI service (Kilo Gateway) |
 | `TELEGRAM_BOT_TOKEN` | ⚠️ | Telegram bot |
 | `TELEGRAM_WEBHOOK_SECRET` | ⚠️ | Webhook secret |
 | `TELEGRAM_CHAT_ID` | ⚠️ | Chat ID |

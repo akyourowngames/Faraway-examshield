@@ -373,9 +373,13 @@ function ExecutiveSummaryPanel({
   analyzing: boolean;
 }) {
   const textEvidence = isTextEvidence(evidence);
-  const leakConfirmed = forensicReport?.status === "investigation-complete" && forensicReport.finalConfidence > 80;
-  const confidence = forensicReport?.finalConfidence ?? attribution?.finalConfidence ?? evidence?.ocrConfidence ?? null;
-  const risk = forensicReport?.riskLevel ?? attribution?.status ?? evidence?.riskLevel ?? "unknown";
+  const analysisComplete = forensicReport?.status === "investigation-complete" || forensicReport?.status === "no-match";
+  const noMatch = forensicReport?.status === "no-match" || attribution?.status === "no-match";
+  const forensicConfidence = getForensicConfidence(forensicReport, attribution);
+  const leakConfirmed = forensicReport?.status === "investigation-complete"
+    && Boolean(forensicReport.paperIdentified)
+    && forensicReport.finalConfidence > 80;
+  const risk = noMatch ? "no-match" : forensicReport?.riskLevel ?? attribution?.status ?? evidence?.riskLevel ?? "unknown";
 
   if (!evidence) {
     return (
@@ -416,6 +420,10 @@ function ExecutiveSummaryPanel({
                 ? "Leak Confirmed"
                 : analyzing
                   ? "Analysis Running"
+                  : analysisComplete && noMatch
+                    ? "No Match Found"
+                    : analysisComplete
+                      ? "Analysis Complete"
                   : textEvidence && evidence.status === "completed"
                     ? evidence.telegramAlertSent
                       ? "Telegram Alert Sent"
@@ -428,18 +436,31 @@ function ExecutiveSummaryPanel({
           </p>
         </div>
 
-        <SummaryBlock label="Paper" value={forensicReport?.paperIdentified ?? attribution?.matchedPaperId ?? "Pending"} />
-        <SummaryBlock label="Source" value={forensicReport?.centerCode ?? attribution?.centerCode ?? "Pending"} />
-        <SummaryBlock label="Confidence" value={confidence === null ? "Pending" : `${confidence}%`} />
+        <SummaryBlock
+          label="Paper"
+          value={forensicReport?.paperIdentified ?? attribution?.matchedPaperId ?? (noMatch ? "No Match" : "Pending")}
+        />
+        <SummaryBlock
+          label="Source"
+          value={forensicReport?.centerCode ?? attribution?.centerCode ?? (noMatch ? "Unresolved" : "Pending")}
+        />
+        <SummaryBlock
+          label="Match Confidence"
+          value={forensicConfidence === null ? (noMatch ? "N/A" : "Pending") : `${forensicConfidence}%`}
+        />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 mt-5 pt-5 border-t border-white/10">
         <InfoBlock label="Risk" value={formatRiskLabel(risk)} />
-        <InfoBlock label="Watermark" value={watermark?.watermarkId ?? forensicReport?.watermarkId ?? "Pending"} />
+        <InfoBlock
+          label="Watermark"
+          value={watermark?.watermarkId ?? forensicReport?.watermarkId ?? (watermark ? "Not Detected" : "Pending")}
+        />
         <InfoBlock label="Channel" value={formatEvidenceSource(evidence.source)} />
+        <InfoBlock label="Comparison" value={formatComparison(forensicReport)} />
         <InfoBlock
           label="Authority Action"
-          value={leakConfirmed ? "Lock paper, isolate source, notify command." : "Continue monitoring."}
+          value={leakConfirmed ? "Lock paper, isolate source, notify command." : noMatch ? "No confirmed paper match." : "Continue monitoring."}
         />
       </div>
     </section>
@@ -511,7 +532,8 @@ function InvestigationIntelligenceGrid({
   forensicReport: ForensicReport | null;
   analyzing: boolean;
 }) {
-  const finalConfidence = forensicReport?.finalConfidence ?? attribution?.finalConfidence ?? null;
+  const finalConfidence = getForensicConfidence(forensicReport, attribution);
+  const noMatch = forensicReport?.status === "no-match" || attribution?.status === "no-match";
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
@@ -527,18 +549,18 @@ function InvestigationIntelligenceGrid({
       />
       <IntelligenceCard
         title="Watermark"
-        value={watermark?.watermarkId ?? "Pending"}
+        value={watermark?.watermarkId ?? (watermark ? "Not Detected" : "Pending")}
         detail={formatWatermarkStatus(watermark)}
       />
       <IntelligenceCard
         title="Attribution"
-        value={attribution?.matchedPaperId ?? "Pending"}
-        detail={attribution?.centerCode ?? "Source unresolved"}
+        value={attribution?.matchedPaperId ?? (noMatch ? "No Match" : "Pending")}
+        detail={attribution?.centerCode ?? (noMatch ? "No source identified" : "Source unresolved")}
       />
       <IntelligenceCard
         title="Forensic Report"
-        value={finalConfidence === null ? "Pending" : `${finalConfidence}%`}
-        detail={forensicReport?.riskLevel ? formatRiskLabel(forensicReport.riskLevel) : "Awaiting result"}
+        value={finalConfidence === null ? (noMatch ? "N/A" : "Pending") : `${finalConfidence}%`}
+        detail={forensicReport ? (noMatch ? "Analysis complete" : formatRiskLabel(forensicReport.riskLevel)) : "Awaiting result"}
       />
     </div>
   );
@@ -925,6 +947,9 @@ function AttributionPanel({
   }
 
   if (attribution.status === "no-match") {
+    const comparisonMessage = forensicReport?.referenceCount === 0
+      ? "Analysis completed, but no question papers are registered, so no paper comparison was run."
+      : "Analysis completed, but the extracted text did not match a registered question paper.";
     return (
       <div className="h-full min-h-[440px] border border-white/10 bg-black p-8 flex flex-col justify-center">
         <div className="text-xs uppercase tracking-[0.2em] text-white/45">Attribution Report</div>
@@ -932,7 +957,7 @@ function AttributionPanel({
           No Match Found
         </div>
         <p className="text-sm text-white/50 mt-4 max-w-xl">
-          OCR completed, but the extracted text did not confidently match a registered paper.
+          {comparisonMessage}
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-8">
           <InfoMetric
@@ -945,7 +970,7 @@ function AttributionPanel({
           />
           <InfoMetric
             label="Final"
-            value={formatNullablePercent(forensicReport?.finalConfidence ?? attribution.finalConfidence)}
+            value={formatForensicConfidence(forensicReport, attribution)}
           />
         </div>
       </div>
@@ -957,7 +982,7 @@ function AttributionPanel({
     : "Match Found";
   const riskLabel = forensicReport?.riskLevel ?? attribution.status;
   const watermarkId = watermark?.watermarkId ?? forensicReport?.watermarkId ?? attribution.matchedWatermarkId;
-  const finalConfidence = forensicReport?.finalConfidence ?? attribution.finalConfidence;
+  const finalConfidence = getForensicConfidence(forensicReport, attribution) ?? 0;
 
   return (
     <div className="h-full min-h-[500px] border border-white/10 bg-black p-6">
@@ -1182,6 +1207,41 @@ function ConfidenceRow({ label, value }: { label: string; value: string }) {
 
 function formatNullablePercent(value: number | null | undefined) {
   return value === null || value === undefined ? "Pending" : `${value}%`;
+}
+
+function getForensicConfidence(
+  report: ForensicReport | null,
+  attribution: AttributionRecord | null,
+) {
+  if (report?.status === "no-match" || attribution?.status === "no-match") {
+    return null;
+  }
+
+  return report?.finalConfidence ?? attribution?.finalConfidence ?? null;
+}
+
+function formatForensicConfidence(
+  report: ForensicReport | null,
+  attribution: AttributionRecord | null,
+) {
+  const confidence = getForensicConfidence(report, attribution);
+  return confidence === null ? "N/A" : formatNullablePercent(confidence);
+}
+
+function formatComparison(report: ForensicReport | null) {
+  if (!report) {
+    return "Pending";
+  }
+
+  if (report.comparisonStatus === "not-run" || report.referenceCount === 0) {
+    return "No question papers registered";
+  }
+
+  if (report.comparisonStatus === "matched") {
+    return report.comparisonSource ?? "Core question-paper registry";
+  }
+
+  return "Core question-paper registry searched";
 }
 
 function formatWatermarkStatus(watermark: WatermarkExtractionRecord | null) {

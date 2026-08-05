@@ -32,6 +32,7 @@ export type LLMProviderInfo = {
   id: LLMProvider;
   name: string;
   models: string[];
+  groupedModels?: Record<string, string[]> | null;
   requiresKey: boolean;
   requiresEndpoint: boolean;
 };
@@ -45,7 +46,8 @@ export type LLMConfig = {
 };
 
 export type TelegramConfig = {
-  botToken: string;
+  botToken?: string;
+  botTokenSet?: boolean;
   botUsername: string;
   botVerified: boolean;
   privacyModeDisabled: boolean;

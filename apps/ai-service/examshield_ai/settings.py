@@ -50,21 +50,25 @@ def load_settings() -> Settings:
     model = (
         os.environ.get("EXAMSHIELD_AI_MODEL")
         or os.environ.get("EXAMSHIELD_CHAT_MODEL")
+        or os.environ.get("KILO_MODEL")
+        or os.environ.get("KILO_CHAT_MODEL")
         or os.environ.get("NVIDIA_MODEL")
         or os.environ.get("NVIDIA_NIM_MODEL")
         or os.environ.get("NIM_MODEL")
         or os.environ.get("EXAMSHIELD_AI_DEFAULT_MODEL")
-        or "meta/llama-4-maverick-17b-128e-instruct"
+        or "tencent/hy3:free"
     ).strip()
     fallback_models = _split_csv(
-        os.environ.get("NVIDIA_NIM_FALLBACK_MODELS")
+        os.environ.get("KILO_FALLBACK_MODELS")
+        or os.environ.get("NVIDIA_NIM_FALLBACK_MODELS")
         or os.environ.get("NVIDIA_FALLBACK_MODELS")
         or os.environ.get("EXAMSHIELD_AI_FALLBACK_MODELS")
-        or "mistralai/ministral-14b-instruct-2512,deepseek-ai/deepseek-v4-flash"
+        or "tencent/hy3,kilo-auto/balanced,stepfun/step-3.7-flash:free"
     )
     planner_default = (
         os.environ.get("EXAMSHIELD_AI_PLANNER_DEFAULT_MODEL")
-        or "mistralai/ministral-14b-instruct-2512"
+        or os.environ.get("KILO_PLANNER_MODEL")
+        or "tencent/hy3:free"
     ).strip()
 
     return Settings(
@@ -74,7 +78,8 @@ def load_settings() -> Settings:
         upload_root=upload_root,
         registry_path=registry_path,
         api_key=(
-            os.environ.get("NVIDIA_API_KEY")
+            os.environ.get("KILO_API_KEY")
+            or os.environ.get("NVIDIA_API_KEY")
             or os.environ.get("NVIDIA_NIM_API_KEY")
             or os.environ.get("NIM_API_KEY")
             or ""
@@ -82,21 +87,23 @@ def load_settings() -> Settings:
         model=model,
         fallback_models=fallback_models,
         planner_model=(
-            os.environ.get("NVIDIA_NIM_PLANNER_MODEL")
+            os.environ.get("KILO_PLANNER_MODEL")
+            or os.environ.get("NVIDIA_NIM_PLANNER_MODEL")
             or os.environ.get("EXAMSHIELD_AI_PLANNER_MODEL")
             or os.environ.get("NVIDIA_PLANNER_MODEL")
             or os.environ.get("NIM_PLANNER_MODEL")
             or planner_default
         ).strip(),
         base_url=(
-            os.environ.get("NVIDIA_NIM_BASE_URL")
+            os.environ.get("KILO_BASE_URL")
+            or os.environ.get("NVIDIA_NIM_BASE_URL")
             or os.environ.get("NVIDIA_BASE_URL")
             or os.environ.get("NIM_BASE_URL")
-            or "https://integrate.api.nvidia.com/v1"
+            or "https://api.kilo.ai/api/gateway"
         ).rstrip("/"),
-        planner_timeout_seconds=float(os.environ.get("EXAMSHIELD_TOOL_PLANNER_TIMEOUT_SECONDS", "4")),
-        stream_timeout_seconds=float(os.environ.get("EXAMSHIELD_AI_STREAM_TIMEOUT_SECONDS", "45")),
-        chat_max_tokens=int(os.environ.get("EXAMSHIELD_AI_CHAT_MAX_TOKENS", "220")),
+        planner_timeout_seconds=float(os.environ.get("EXAMSHIELD_TOOL_PLANNER_TIMEOUT_SECONDS", "5")),
+        stream_timeout_seconds=float(os.environ.get("EXAMSHIELD_AI_STREAM_TIMEOUT_SECONDS", "25")),
+        chat_max_tokens=int(os.environ.get("EXAMSHIELD_AI_CHAT_MAX_TOKENS", "350")),
         planner_max_tokens=int(os.environ.get("EXAMSHIELD_AI_PLANNER_MAX_TOKENS", "120")),
         list_cache_ttl_seconds=float(os.environ.get("EXAMSHIELD_LIST_CACHE_TTL_SECONDS", "8")),
         supabase_timeout_seconds=float(os.environ.get("EXAMSHIELD_SUPABASE_TIMEOUT_SECONDS", "20")),
