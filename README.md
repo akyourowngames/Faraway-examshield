@@ -207,6 +207,23 @@ EXAMSHIELD is a **zero-trust, end-to-end secure examination platform** combining
 
 ---
 
+## 🤖 AI Service & Community Agents
+
+The `apps/ai-service` Python backend powers the in-app **EXAMSHIELD AI** assistant and the **community agent** system.
+
+- 💬 **Streaming chat** — `POST /chat` streams token-by-token answers (SSE) from the Kilo Gateway LLM (`tencent/hy3:free` by default).
+- 🤖 **Community agents** — each agent has its own system prompt, knowledge sources, response style, and citations. Test any agent live from the dashboard *Test Agent* panel (`POST /agents/{id}/test`).
+- 📱 **Per-agent Telegram bots** — a deployed agent with its own `botToken` is polled independently and replies **as that agent** in Telegram DMs, using the agent's own LLM provider + knowledge. The global EXAMSHIELD bot keeps answering as EXAMSHIELD AI.
+- 🔍 **RAG** — agent replies are grounded in their knowledge base (Supabase pgvector with a local-chunk fallback).
+
+| Capability | Endpoint | Notes |
+|------------|----------|-------|
+| Chat (stream) | `POST /chat` | SSE token stream |
+| Test agent | `POST /agents/{id}/test` | Dashboard "Test Agent" |
+| Agent Telegram | polled per `botToken` | Replies as the agent |
+
+---
+
 ## 🛠️ Technology Stack
 
 <div align="center">
@@ -297,18 +314,23 @@ npm run dev
 <summary><b>🐍 Backend Setup</b></summary>
 
 ```bash
-# Navigate to API directory
-cd apps/core
+# Navigate to the AI service directory
+cd apps/ai-service
+
+# Create a virtual environment (uv or venv)
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 
 # Install Python dependencies
 pip install -r requirements.txt
 
-# Set environment variables
+# Configure environment (see apps/ai-service/.env)
 export SUPABASE_URL=https://your-project.supabase.co
 export SUPABASE_SERVICE_ROLE_KEY=your-service-key
+export KILO_API_KEY=your-kilo-gateway-key
+export EXAMSHIELD_AI_MODEL=tencent/hy3:free
 
-# Run the API
-python apps/ai-service/service.py
+# Run the AI service (SSE chat + Telegram pollers)
+python run.py
 ```
 </details>
 
@@ -347,6 +369,9 @@ docker run -p 8790:8790 examshield-api
 | `TELEGRAM_CHAT_ID` | ⚠️ | Chat ID |
 | `EXAMSHIELD_AI_CORS_ORIGIN` | ✅ | Frontend URL |
 | `EXAMSHIELD_PUBLIC_URL` | ✅ | Backend URL |
+| `EXAMSHIELD_AI_MODEL` | ⚠️ | Chat model (Kilo Gateway, e.g. `tencent/hy3:free`) |
+| `EXAMSHIELD_AI_FALLBACK_MODELS` | ⚠️ | Comma-separated fallback models |
+| `EXAMSHIELD_AI_PLANNER_MODEL` | ⚠️ | Model used for tool planning |
 
 </details>
 
