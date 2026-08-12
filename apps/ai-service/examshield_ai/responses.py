@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .injection import SYSTEM_PROMPT_HARDENING, sanitize_input
 from .store import JsonObject
 
 
@@ -30,6 +31,7 @@ def conversation_messages(
         "Never invent IDs, counts, or case details you weren't given. Be human, be bold, be useful.\n\n"
         "Always complete your answer — never stop mid-sentence or mid-word. "
         "If a topic is large, summarize and offer to go deeper rather than cutting off."
+        + SYSTEM_PROMPT_HARDENING
     )
     operator_intro = _operator_intro(operator)
     if operator_intro:
@@ -37,7 +39,7 @@ def conversation_messages(
     return [
         {"role": "system", "content": system_prompt},
         *history_messages(history),
-        {"role": "user", "content": prompt},
+        {"role": "user", "content": sanitize_input(prompt)},
     ]
 
 
@@ -84,17 +86,17 @@ def grounded_messages(prompt: str, history: list[JsonObject], tool_context: str)
     return [
         {
             "role": "system",
-            "content": grounded_system_message(),
+            "content": grounded_system_message() + SYSTEM_PROMPT_HARDENING,
         },
         *history_messages(history),
         {
             "role": "user",
             "content": "\n".join(
                 [
-                    f"Investigator asked: {prompt}",
+                    f"Investigator asked: {sanitize_input(prompt)}",
                     "",
                     "Here is the live data returned by the tool:",
-                    tool_context,
+                    sanitize_input(tool_context),
                     "",
                     "Respond naturally based on this data. Answer the investigator's actual question."
                 ]

@@ -36,6 +36,8 @@ def tmp_settings(tmp_path: Path) -> Settings:
         chat_max_tokens=220,
         planner_max_tokens=120,
         list_cache_ttl_seconds=8.0,
+        read_cache_ttl_seconds=5.0,
+        cache_control_max_age=5,
         supabase_timeout_seconds=20.0,
         detect_threshold=7.0,
         cors_origin="*",

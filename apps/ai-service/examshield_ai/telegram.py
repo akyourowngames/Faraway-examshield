@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Callable
 from uuid import uuid4
 
 from .detect import is_suspicious, scan_text
+from .injection import SYSTEM_PROMPT_HARDENING, sanitize_input
 from .llm import KiloClient
 from .reports import generate_evidence_report, generate_summary_report, report_to_document_bytes
 from .settings import Settings
@@ -564,6 +565,7 @@ class TelegramWebhook:
                                 "Keep it under 800 characters. Be human, not robotic. "
                                 "Example style: 'Heads up team - just caught something suspicious in group -XXXXX. "
                                 "Someone posted: \"[message preview]\". Score is X/50. Looking into it.'"
+                                + SYSTEM_PROMPT_HARDENING
                             ),
                         },
                         {
@@ -642,11 +644,12 @@ class TelegramWebhook:
             "- Keep responses under 300 characters.\n"
             "- Use Telegram HTML: <b>, <i>, <code>.\n"
             "- Be natural and concise, not robotic."
+            + SYSTEM_PROMPT_HARDENING
         )
 
         user_prompt = (
             f"Data context:\n{data_context}\n\n"
-            f"User ({sender}) says: {text}"
+            f"User ({sender}) says: {sanitize_input(text)}"
         )
 
         try:
@@ -831,7 +834,7 @@ def _alert_context(
         "alertType": "LEAK DETECTED" if report.get("status") == "investigation-complete" else "SUSPICIOUS ACTIVITY",
         "group": chat_id,
         "sender": _extract_sender(message),
-        "messagePreview": (text or "")[:300],
+        "messagePreview": sanitize_input((text or "")[:300]),
         "evidence": {
             "id": evidence.get("evidenceId"),
             "filename": evidence.get("filename"),

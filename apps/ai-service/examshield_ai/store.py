@@ -48,12 +48,30 @@ class UploadedFile:
     data: bytes
 
 
+def _dir_mtime(directory: Path) -> "float | None":
+    """Max mtime of the ``.json`` files in a collection directory.
+
+    Returns ``None`` when the directory is missing or empty so callers can treat
+    "no data yet" and "data present" as distinct cache-key states.
+    """
+    try:
+        entries = list(directory.iterdir())
+    except (OSError, NotADirectoryError):
+        return None
+    mtimes = [
+        p.stat().st_mtime
+        for p in entries
+        if p.is_file() and p.suffix.lower() == ".json"
+    ]
+    return max(mtimes) if mtimes else None
+
+
 class EvidenceStore:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.root = settings.upload_root
         self.supabase_enabled = bool(settings.supabase_url and settings.supabase_service_role_key)
-        self._dir_cache: dict[str, tuple[float, list[JsonObject]]] = {}
+        self._dir_cache: dict[str, tuple[float, "float | None", list[JsonObject]]] = {}
         self._list_evidence_cache: tuple[float, JsonObject] | None = None
 
     def ensure_storage(self) -> None:
@@ -250,7 +268,7 @@ class EvidenceStore:
             if ttl > 0:
                 cached = self._dir_cache.get(name)
                 if cached and (now - cached[0]) < ttl:
-                    grouped[name] = cached[1]
+                    grouped[name] = cached[2]
                     continue
             missing.append(name)
         if not missing:
@@ -280,7 +298,7 @@ class EvidenceStore:
         if ttl > 0:
             stamp = time.monotonic()
             for name in missing:
-                self._dir_cache[name] = (stamp, grouped[name])
+                self._dir_cache[name] = (stamp, None, grouped[name])
         return grouped
 
     def get_active_job_for_evidence(self, evidence_id: str) -> JsonObject | None:
@@ -1463,13 +1481,34 @@ class EvidenceStore:
 
     def _read_json_dir(self, name: str) -> list[JsonObject]:
         ttl = self.settings.list_cache_ttl_seconds
-        if ttl > 0:
-            cached = self._dir_cache.get(name)
-            if cached and (time.monotonic() - cached[0]) < ttl:
-                return cached[1]
+        if self.supabase_enabled:
+            # Supabase is a single network call per collection; the existing TTL
+            # cache is enough to avoid hammering it on every list request.
+            if ttl > 0:
+                cached = self._dir_cache.get(name)
+                if cached and (time.monotonic() - cached[0]) < ttl:
+                    return cached[1]
+            records = self._read_json_dir_uncached(name)
+            if ttl > 0:
+                self._dir_cache[name] = (time.monotonic(), None, records)
+            return records
+
+        # Local fallback: scanning every JSON file in a collection is O(n) file
+        # reads per request. Cache by the collection directory's mtime so that,
+        # while the files are unchanged, repeated list calls skip the re-read
+        # entirely (not just within a TTL window). The TTL still bounds how long
+        # a stale in-memory copy can live if something edits files out-of-band.
+        directory = self.root / name
+        mtime = _dir_mtime(directory)
+        cached = self._dir_cache.get(name)
+        if (
+            cached is not None
+            and cached[1] == mtime
+            and (ttl <= 0 or (time.monotonic() - cached[0]) < ttl)
+        ):
+            return cached[2]
         records = self._read_json_dir_uncached(name)
-        if ttl > 0:
-            self._dir_cache[name] = (time.monotonic(), records)
+        self._dir_cache[name] = (time.monotonic(), mtime, records)
         return records
 
     def _read_json_dir_uncached(self, name: str) -> list[JsonObject]:
@@ -1488,7 +1527,11 @@ class EvidenceStore:
             ]
         directory = self.root / name
         records: list[JsonObject] = []
-        for path in directory.iterdir():
+        try:
+            entries = list(directory.iterdir())
+        except (OSError, NotADirectoryError):
+            return []
+        for path in entries:
             if not path.is_file() or path.suffix.lower() != ".json":
                 continue
             try:

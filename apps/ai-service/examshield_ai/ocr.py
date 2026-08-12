@@ -10,6 +10,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+from .ocr_cache import OcrResultCache
+
 logger = logging.getLogger(__name__)
 
 TESSERACT_CMD = os.environ.get("TESSERACT_CMD", "tesseract")
@@ -38,6 +40,13 @@ OCR_PSM_WORKERS = int(os.environ.get("EXAMSHIELD_OCR_PSM_WORKERS", str(len(OCR_P
 OCR_MODE = os.environ.get("EXAMSHIELD_OCR_MODE", "sequential").strip().lower()
 OCR_MIN_QUALITY = int(os.environ.get("EXAMSHIELD_OCR_MIN_QUALITY", "25"))
 OCR_FAST = _env_bool("EXAMSHIELD_OCR_FAST", "1")
+OCR_CACHE_MAX_ENTRIES = int(os.environ.get("EXAMSHIELD_OCR_CACHE_MAX_ENTRIES", "256"))
+OCR_CACHE_TTL_SECONDS = float(os.environ.get("EXAMSHIELD_OCR_CACHE_TTL_SECONDS", "3600"))
+
+# Identical image bytes produce identical OCR output, so cache completed results
+# by content hash to avoid re-paying for OCR (subprocess time / paid quota) on
+# retries or duplicate uploads.
+_OCR_RESULT_CACHE = OcrResultCache(max_entries=OCR_CACHE_MAX_ENTRIES, ttl_seconds=OCR_CACHE_TTL_SECONDS)
 
 
 def ocr_runtime_status() -> dict[str, Any]:
@@ -59,6 +68,14 @@ def ocr_runtime_status() -> dict[str, Any]:
 def analyze_image(image_bytes: bytes, suffix: str) -> dict[str, Any]:
     started = time.perf_counter()
     deadline = started + OCR_TOTAL_BUDGET_SECONDS
+
+    # Identical bytes -> identical result. Skip the whole OCR pipeline (and the
+    # time budget it would consume) when we already have a cached success.
+    cached = _OCR_RESULT_CACHE.get(image_bytes)
+    if cached is not None:
+        logger.info("OCR served from content-hash cache (%sms saved)", elapsed_ms(started))
+        return cached
+
     temp_path = prepare_ocr_image(image_bytes, suffix)
     errors: list[str] = []
 
@@ -102,7 +119,11 @@ def analyze_image(image_bytes: bytes, suffix: str) -> dict[str, Any]:
                         quality_score,
                         elapsed_ms(started),
                     )
-                    return completed_result(candidate, started, engine_name)
+                    result = completed_result(candidate, started, engine_name)
+                    # Cache the successful result by image content so duplicate
+                    # uploads / retries never re-run OCR on the same bytes.
+                    _OCR_RESULT_CACHE.put(image_bytes, result)
+                    return result
 
                 if raw_text:
                     logger.info(

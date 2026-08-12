@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from examshield_ai.ocr import (
     analyze_image,
     has_vowel,
@@ -13,6 +14,21 @@ from examshield_ai.ocr import (
     read_ocr_candidates_sequential,
     score_ocr_quality,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_ocr_result_cache():
+    """The OCR result cache is a process-global singleton keyed by image bytes.
+
+    Several tests call ``analyze_image(b"img", ...)`` with identical bytes, so a
+    cached result from one test would leak into the next and short-circuit its
+    mocked engine. Clear it around each test to keep them independent.
+    """
+    from examshield_ai.ocr import _OCR_RESULT_CACHE
+
+    _OCR_RESULT_CACHE.clear()
+    yield
+    _OCR_RESULT_CACHE.clear()
 
 
 class TestOcrHelpers:
