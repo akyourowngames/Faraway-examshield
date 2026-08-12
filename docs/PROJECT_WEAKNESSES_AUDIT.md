@@ -20,7 +20,7 @@
 | Security | **3.5** | Service-role-only trust, binary auth, default-open CORS. |
 | Scalability | **4.0** | `http.server` single process, worker pool capped at 2, Render free plan (spins down), no caching layer. |
 | Maintainability | **5.0** | Readable Python/TS, but hand-rolled HTTP routing, no migrations, magic numbers. (A Vitest frontend suite now exists, §15/§17.) |
-| Performance | **5.0** | OCR budget dominates latency; no response caching for read GETs; vector memory search has no time bound; blocking file I/O (O(n) per request); `ThreatMap` shipped in the initial dashboard bundle. Single-process Python + GIL is an infra ceiling (§5/§14). |
+| Performance | **5.0** | OCR budget dominates latency; no response caching for read GETs; vector memory search has no time bound; blocking file I/O (O(n) per request); `ThreatMap` shipped in the initial dashboard bundle. OCR worker pool is now bounded + load-shedding (§5); single-process Python + GIL remains an infra ceiling (§14). |
 | Documentation | **7.0** | Strong README + `docs/DEPLOYMENT.md` + `TELEGRAM_SETUP.md`; no API/OpenAPI spec; architecture doc separate. |
 | Code quality | **6.0** | Mostly consistent; notable smells (string-cast embeddings, naive redaction, duplicated config). |
 | Technical debt | **6.0** | High but tractable: RLS, migrations, encryption, RBAC, observability (CI resolved, §12). |
@@ -41,7 +41,8 @@
 * **Performance (5.0):** Chat pays a separate planner LLM call per turn (`ToolPlanner.plan`, ~4s)
   before answering; no response caching for read GETs; vector memory search has no time bound;
   blocking file I/O (O(n) per request); `ThreatMap` is shipped in the initial dashboard bundle
-  (§5/§14). Single-process Python + GIL is an infra/deployment ceiling (§5/§14).
+  (§5/§14). OCR worker pool is now bounded + load-shedding (§5); single-process Python + GIL remains an
+  infra/deployment ceiling (§14).
 * **Documentation (7.0):** README is thorough; deployment and Telegram docs are accurate; but no API
   contract, no ADR, no security model writeup beyond the architecture doc.
 
@@ -119,13 +120,19 @@
 
 ## 5. Performance Analysis
 
-* **Chat planner latency.** The audit noted each `/chat` ran `ToolPlanner.plan` (LLM call,
+* ~~**Chat planner latency.**~~ **Resolved:** Each `/chat` previously ran `ToolPlanner.plan` (LLM call,
   ~4s) before answering. The chat path now uses a zero-LLM `classify_turn_intent` heuristic to decide
   whether to attach tool schemas, so there is no separate planning round-trip; results are memoised so
   repeated prompts (e.g. the same greeting) are not re-classified. `ToolPlanner` remains only for the
   explicit `/plan` endpoint.
-* **Single-process Python + GIL.** Heavy OCR (OpenCV, Tesseract subprocess) and embeddings block the
-  event loop; `AnalysisWorkerPool(max_workers=2)` caps throughput at ~2 concurrent OCR jobs.
+* ~~**Single-process Python + GIL (OCR throughput).**~~ **Resolved (worker pool):** Heavy OCR (OpenCV,
+  Tesseract subprocess) and embeddings block the event loop, so `AnalysisWorkerPool(max_workers=2)` caps
+  throughput at ~2 concurrent OCR jobs — by design, to bound GIL contention. The pool is now configurable
+  (`EXAMSHIELD_OCR_WORKERS`) and enforces a bounded outstanding-job limit with load-shedding
+  (`EXAMSHIELD_OCR_MAX_PENDING`, default 100) plus a per-job timeout
+  (`EXAMSHIELD_ANALYSIS_JOB_TIMEOUT_SECONDS`); saturation returns `None` so HTTP handlers never block
+  (covered by `tests/test_workers.py`). The remaining single-process `http.server` + GIL ceiling is an
+  infra item tracked under §14/§17.
 
 ---
 
@@ -149,10 +156,6 @@
 
 ## 7. Frontend Weaknesses
 
-* **No form validation library.** Auth and agent forms rely on manual checks; no `zod`/`react-hook-form`/
-  `yup` present in `web/package.json`.
-* **No global state/query cache.** Data fetching is raw `fetch` in `agent-api.ts`/`analysis-client.ts`;
-  no React Query/SWR → duplicated fetches, no dedup, no optimistic UI.
 * **Accessibility (a11y):** **[INFERRED]** Heavy use of `lucide-react` icons, animation, and a black
   command-center theme suggests limited focus management / contrast checks; no a11y audit found.
 * **Loading & error states:** Each `/api/*` proxy can fail (502/503); the UI surfaces are **[UNVERIFIED]**

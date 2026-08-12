@@ -16,6 +16,10 @@ OcrRunner = Callable[[bytes, str], JsonObject]
 OnComplete = Callable[[JsonObject, Exception | None], None]
 
 DEFAULT_MAX_WORKERS = int(os.environ.get("EXAMSHIELD_OCR_WORKERS", "2"))
+# Max number of OCR jobs allowed to be outstanding (running + queued) at once.
+# Beyond this the pool load-sheds (submit returns None) instead of growing an
+# unbounded queue. None means unbounded (legacy behaviour).
+DEFAULT_MAX_PENDING = int(os.environ.get("EXAMSHIELD_OCR_MAX_PENDING", "100"))
 ANALYSIS_JOB_TIMEOUT_SECONDS = int(os.environ.get("EXAMSHIELD_ANALYSIS_JOB_TIMEOUT_SECONDS", "120"))
 
 
@@ -33,8 +37,13 @@ class AnalysisWorkerPool:
     never blocks HTTP responses and duplicate jobs are rejected.
     """
 
-    def __init__(self, max_workers: int = DEFAULT_MAX_WORKERS) -> None:
+    def __init__(
+        self,
+        max_workers: int = DEFAULT_MAX_WORKERS,
+        max_pending: int | None = DEFAULT_MAX_PENDING,
+    ) -> None:
         self._max_workers = max(1, max_workers)
+        self._max_pending = max_pending
         self._executor = ThreadPoolExecutor(
             max_workers=self._max_workers,
             thread_name_prefix="examshield-ocr",
@@ -54,6 +63,8 @@ class AnalysisWorkerPool:
         with self._lock:
             return {
                 "maxWorkers": self._max_workers,
+                "maxPending": self._max_pending,
+                "outstanding": len(self._active_jobs),
                 "activeJobs": len(self._active_jobs),
                 "activeEvidence": len(self._active_evidence),
                 "submitted": self._submitted,
@@ -81,6 +92,16 @@ class AnalysisWorkerPool:
             if task.job_id in self._active_jobs or task.evidence_id in self._active_evidence:
                 logger.info(
                     "Skipping duplicate OCR submission for evidence %s job %s",
+                    task.evidence_id,
+                    task.job_id,
+                )
+                return None
+            # Load-shed instead of growing an unbounded queue under overload.
+            cap = self._max_workers + (self._max_pending or 0)
+            if self._max_pending is not None and len(self._active_jobs) >= cap:
+                logger.warning(
+                    "OCR worker pool saturated (cap %d outstanding); load-shedding evidence %s job %s",
+                    cap,
                     task.evidence_id,
                     task.job_id,
                 )
