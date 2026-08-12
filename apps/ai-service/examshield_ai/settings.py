@@ -4,6 +4,14 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+# Single source of truth for default model/gateway configuration. Deploy config
+# (render.yaml) and the provider registry (llm_providers.py) reference these so a
+# change here stays authoritative — see tests/test_config_consistency.py.
+DEFAULT_MODEL = "stepfun/step-3.7-flash:free"
+DEFAULT_PLANNER_MODEL = "stepfun/step-3.7-flash:free"
+DEFAULT_BASE_URL = "https://api.kilo.ai/api/gateway"
+DEFAULT_FALLBACK_MODELS = "kilo-auto/efficient,deepseek-v4-flash-free,tencent/hy3:free"
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -38,6 +46,7 @@ class Settings:
     telegram_chat_id: str
     telegram_admin_chat_id: str
     master_key: str
+    supabase_backend_role_key: str = ""
     api_auth_secret: str = ""
     llm_daily_token_budget: int = 0
     llm_budget_window_seconds: int = 86_400
@@ -62,19 +71,19 @@ def load_settings() -> Settings:
         or os.environ.get("NVIDIA_NIM_MODEL")
         or os.environ.get("NIM_MODEL")
         or os.environ.get("EXAMSHIELD_AI_DEFAULT_MODEL")
-        or "stepfun/step-3.7-flash:free"
+        or DEFAULT_MODEL
     ).strip()
     fallback_models = _split_csv(
         os.environ.get("KILO_FALLBACK_MODELS")
         or os.environ.get("NVIDIA_NIM_FALLBACK_MODELS")
         or os.environ.get("NVIDIA_FALLBACK_MODELS")
         or os.environ.get("EXAMSHIELD_AI_FALLBACK_MODELS")
-        or "kilo-auto/efficient,deepseek-v4-flash-free,tencent/hy3:free"
+        or DEFAULT_FALLBACK_MODELS
     )
     planner_default = (
         os.environ.get("EXAMSHIELD_AI_PLANNER_DEFAULT_MODEL")
         or os.environ.get("KILO_PLANNER_MODEL")
-        or "stepfun/step-3.7-flash:free"
+        or DEFAULT_PLANNER_MODEL
     ).strip()
 
     return Settings(
@@ -105,7 +114,7 @@ def load_settings() -> Settings:
             or os.environ.get("NVIDIA_NIM_BASE_URL")
             or os.environ.get("NVIDIA_BASE_URL")
             or os.environ.get("NIM_BASE_URL")
-            or "https://api.kilo.ai/api/gateway"
+            or DEFAULT_BASE_URL
         ).rstrip("/"),
         planner_timeout_seconds=float(os.environ.get("EXAMSHIELD_TOOL_PLANNER_TIMEOUT_SECONDS", "5")),
         stream_timeout_seconds=float(os.environ.get("EXAMSHIELD_AI_STREAM_TIMEOUT_SECONDS", "25")),
@@ -132,6 +141,9 @@ def load_settings() -> Settings:
         telegram_chat_id=(os.environ.get("TELEGRAM_CHAT_ID") or "").strip(),
         telegram_admin_chat_id=(os.environ.get("TELEGRAM_ADMIN_CHAT_ID") or "").strip(),
         master_key=(os.environ.get("EXAMSHIELD_AI_MASTER_KEY") or "").strip(),
+        supabase_backend_role_key=(
+            os.environ.get("SUPABASE_BACKEND_ROLE_KEY") or ""
+        ).strip(),
         api_auth_secret=(os.environ.get("EXAMSHIELD_API_AUTH_SECRET") or "").strip(),
         llm_daily_token_budget=int(os.environ.get("EXAMSHIELD_LLM_DAILY_TOKEN_BUDGET", "0")),
         llm_budget_window_seconds=int(os.environ.get("EXAMSHIELD_LLM_BUDGET_WINDOW_SECONDS", "86400")),

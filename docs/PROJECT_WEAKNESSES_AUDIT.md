@@ -16,20 +16,22 @@
 | Dimension | Score (0–10) | Basis |
 |-----------|--------------|-------|
 | Overall project quality | **5.5** | Clean module boundaries in the backend; coherent frontend; but systemic security, authz, and ops gaps. |
-| Production readiness | **3.5** | No RLS policies, unauthenticated backend API, free-tier single-process backend (CI now gated, §12). |
-| Security | **3.5** | Service-role-only trust, binary auth, default-open CORS. |
+| Production readiness | **3.5** | RLS now enforced (§2.1), but unauthenticated backend API and free-tier single-process backend remain (CI now gated, §12). |
+| Security | **3.5** | `service_role` still used for system paths (dedicated `app_backend` role added, §2.1), binary auth, default-open CORS. |
 | Scalability | **4.0** | `http.server` single process, worker pool capped at 2, Render free plan (spins down), no caching layer. |
 | Maintainability | **5.0** | Readable Python/TS, but hand-rolled HTTP routing, no migrations, magic numbers. (A Vitest frontend suite now exists, §15/§17.) |
 | Performance | **5.0** | OCR budget dominates latency; no response caching for read GETs; vector memory search has no time bound; blocking file I/O (O(n) per request); `ThreatMap` shipped in the initial dashboard bundle. OCR worker pool is now bounded + load-shedding (§5); single-process Python + GIL remains an infra ceiling (§14). |
 | Documentation | **7.0** | Strong README + `docs/DEPLOYMENT.md` + `TELEGRAM_SETUP.md`; no API/OpenAPI spec; architecture doc separate. |
 | Code quality | **6.0** | Mostly consistent; notable smells (string-cast embeddings, naive redaction, duplicated config). |
-| Technical debt | **6.0** | High but tractable: RLS, migrations, encryption, RBAC, observability. |
+| Technical debt | **6.0** | High but tractable: RLS (resolved §2.1), migrations (added), encryption, RBAC, observability. |
 
 ### 1.2 How scores were determined
 
-* **Security (3.0):** Hard evidence — `supabase/schema.sql` enables RLS on every table but defines **no
-  policies**; the backend uses `service_role` (`store.py:1631`); `middleware.ts` protects only `/dashboard` and **not** `/api/*`;
-  `EXAMSHIELD_AI_CORS_ORIGIN` previously defaulted to `*`; it is now allow-list validated (`settings.py`).
+* **Security (3.0):** Hard evidence — `supabase/schema.sql` now defines least-privilege RLS policies + a
+  dedicated `app_backend` role (§2.1, resolved 2026-08-12); the backend still uses `service_role` for system
+  paths (`store.py` forwards `app_backend` when `SUPABASE_BACKEND_ROLE_KEY` is set); `middleware.ts` protects
+  only `/dashboard` and **not** `/api/*`; `EXAMSHIELD_AI_CORS_ORIGIN` previously defaulted to `*`; it is now
+  allow-list validated (`settings.py`).
 * **Scalability (4.0):** The API is `ThreadingHTTPServer` with `AnalysisWorkerPool(max_workers=2)`
   (`workers.py`), deployed on Render **free** plan (`render.yaml`), which spins down after inactivity.
 * **Production readiness (3.0):** CI now present (`.github/workflows/ci.yml`, §12); still no `supabase/migrations/`,
@@ -50,15 +52,34 @@
 
 ## 2. Critical Issues (Highest Priority)
 
-### 2.1 No Row-Level Security policies (Critical)
+### 2.1 No Row-Level Security policies (Critical) — ✅ RESOLVED (2026-08-12)
 * **Affected:** `supabase/schema.sql` (all tables).
-* **Root cause:** RLS is enabled but no `CREATE POLICY` statements exist; the design relies entirely on
-  the backend's `service_role` key.
-* **Impact:** Any process holding the service-role key can read/write **all** tenants' data — the single
-  largest blast-radius issue.
-* **Fix:** Define least-privilege RLS policies; rotate to a dedicated backend role; keep `service_role` out
-  of app code paths where possible.
-* **Effort:** M (1–2 days + testing).
+* **Root cause:** RLS was enabled but no `CREATE POLICY` statements existed; the design relied entirely on
+  the backend's `service_role` key, which bypasses RLS.
+* **Impact (historical):** Any process holding the service-role key could read/write **all** tenants' data —
+  the single largest blast-radius issue.
+* **Resolution (2026-08-12):**
+  - **Ownership model.** Added `owner_id uuid references auth.users(id)` to `community_agents` (defaults to
+    the caller on user-scoped inserts). Child agent tables — `agent_llm_configs`, `agent_telegram_configs`,
+    `agent_knowledge_sources`, `agent_knowledge_chunks`, `agent_conversations` — are scoped to the parent
+    agent's owner via `exists (select 1 from community_agents a where a.id = agent_id and a.owner_id = auth.uid())`.
+  - **Least-privilege policies.** In `supabase/schema.sql` (and the versioned
+    `supabase/migrations/20260812000000_rls_policies.sql`): owners get ALL on their own rows; **public**
+    agents are SELECT-able by `authenticated`/`anon` (marketplace discovery only); everything else is denied
+    by default. `anon`/`authenticated` are blocked from the backend-internal tables
+    (`examshield_documents`, `examshield_memory_items`, `examshield_memory_correlations`) and the private
+    storage buckets.
+  - **Dedicated backend role.** Created `app_backend` (NO BYPASSRLS) with least-privilege grants; the
+    backend-internal tables and private buckets are reachable only by `app_backend` (or `service_role`).
+    The backend opts in via `SUPABASE_BACKEND_ROLE_KEY` (`Settings.supabase_backend_role_key` →
+    `store._supabase_auth_key`); unset, it still falls back to `service_role`, so behaviour is unchanged.
+  - **Verification.** `supabase/tests/rls.sql` (standalone `psql` assertions) and DB-gated
+    `apps/ai-service/tests/test_rls.py` (skips without `EXAMSHIELD_TEST_DATABASE_URL`) assert cross-tenant
+    denial, owner CRUD, public read, and `app_backend` access.
+* **Remaining work:** `service_role` still bypasses RLS by design; fully retiring it from app code paths
+  requires the backend to forward per-user JWTs for user-scoped queries (tracked separately). Owner-scoped
+  folder access for the `agent-knowledge` storage bucket is a follow-up.
+* **Effort:** M (1–2 days + testing). → Done.
 
 ---
 
@@ -93,7 +114,7 @@
 
 | # | Issue | Severity | Files |
 |---|-------|----------|-------|
-| S1 | No RLS policies (service-role trust) | Critical | `schema.sql` |
+| S1 | RLS policies — ✅ Resolved (§2.1): owner-scoped + dedicated `app_backend` role | Critical | `schema.sql`, `supabase/migrations` |
 | S3 | Default-open CORS — now allow-list validated (was `*`) | Fixed | `settings.py`, `server.py` |
 | S4 | Binary auth only — no RBAC/roles | High | `middleware.ts`, `web/src` |
 | S5 | `middleware.ts` excludes `/api/*` from auth checks | Medium | `middleware.ts` matcher |
@@ -104,12 +125,6 @@
 | S10 | Telegram webhook secret optional (`TELEGRAM_WEBHOOK_SECRET` may be empty → `validate_secret` no-ops) | Medium | `telegram.py` |
 | S11 | Error messages can leak internals (e.g. `str(exc)` returned to client) | Low | `server.py` handlers |
 | S12 | No audit log of who accessed/modified evidence (activity JSON is event-based, not access-based) | Medium | `store.py` |
-
----
-
-## 5. Performance Analysis
-
----
 
 ---
 
@@ -170,7 +185,7 @@
 
 ## 9. Database Weaknesses
 
-* **No RLS policies** (§2.1, §4-S1) — the most serious DB issue.
+* **RLS policies** (§2.1, §4-S1) — ✅ Resolved 2026-08-12: owner-scoped policies + dedicated `app_backend` role.
 * **No foreign-key enforcement between core domain tables.** `examshield_documents` is a generic
   `(collection, document_key)` JSON bag; relationships (evidence↔report↔attribution↔alert↔memory) are
   enforced in **application code**, not the schema → referential integrity can drift.
@@ -254,10 +269,10 @@ shipping value.
 | ~100 users | Fine (single Postgres) | Fine (thread pool 2 OK) | OK | OK | Works |
 | ~1,000 | pgvector scans grow; no caching | Single process bottleneck; Render free spins down | OCR queue saturates at 2 concurrent | OK | Needs caching + worker autoscaling |
 | ~10,000 | JSONB bag + vector scans degrade; no sharding | One container = hard ceiling | NVIDIA/OCR.space quota/cost blows up | Storage egress grows | Requires queue, multiple workers, read replicas |
-| ~100,000 | Schema must move off JSONB bag to relational + proper indexing; RLS required | Needs load balancer + horizontal API | Needs GPU/batch OCR, cost controls | Needs CDN + lifecycle policies | Major re-architecture |
+| ~100,000 | Schema must move off JSONB bag to relational + proper indexing | Needs load balancer + horizontal API | Needs GPU/batch OCR, cost controls | Needs CDN + lifecycle policies | Major re-architecture |
 
-* **Database:** generic `examshield_documents` JSON bag and absence of RLS/caching are the top scaling
-  blockers.
+* **Database:** generic `examshield_documents` JSON bag and absence of caching are the top scaling
+  blockers (RLS is now enforced, §2.1).
 * **API:** `ThreadingHTTPServer` + `max_workers=2` + free-tier spin-down is the hard ceiling.
 * **OCR/AI:** Per-request paid external calls with no budget/queue → cost and latency explode.
 * **Caching:** None at any layer; every read hits Supabase.
@@ -299,7 +314,7 @@ shipping value.
 
 | Debt | Why it exists | Impact | Priority | Resolution |
 |------|--------------|--------|----------|------------|
-| No RLS policies | Designed for service-role-only | Huge blast radius | P0 | Add policies + dedicated role |
+| RLS policies | ✅ Resolved (§2.1): owner-scoped + dedicated `app_backend` role | Mitigated | P0 | Done |
 | No migrations | Manual schema.sql | Unversioned schema | P1 | supabase/migrations |
 | JSONB document bag | Rapid prototyping | Weak integrity/query | P2 | Relational tables |
 | Duplicate config | Convenience | Drift | P2 | Single source of truth |
@@ -313,7 +328,7 @@ shipping value.
 
 | Issue | Severity | Impact | Likelihood | Priority | Suggested Fix |
 |-------|----------|--------|-----------|----------|---------------|
-| No RLS policies | Critical | Data-wide exposure | Medium | P0 | Define least-privilege RLS |
+| RLS policies | ✅ Resolved (§2.1) | Mitigated | Medium | P0 | Done |
 | No CI | High | Regressions | High | P1 | GitHub Actions |
 | No RBAC | High | Unauthorized access | Medium | P1 | Roles/scopes |
 | Binary auth only | Medium | Privilege issues | Medium | P2 | RBAC |
@@ -329,7 +344,7 @@ shipping value.
 ## 19. Roadmap
 
 ### Immediate (Critical — weeks 0–2)
-* Add RLS policies + dedicated backend DB role (P0).
+* ~~Add RLS policies + dedicated backend DB role (P0).~~ ✅ Done — owner-scoped RLS policies + dedicated `app_backend` role (§2.1).
 * Authenticate the backend API (shared secret / Vercel-only network / mTLS) (P0).
 
 ### Short-term (1–2 months)
@@ -364,7 +379,7 @@ shipping value.
 * Modern, attractive frontend using current Next.js 16 / React 19.
 
 ### 20.2 Biggest weaknesses
-* **Security model is demo-grade:** no RLS, unauthenticated API, binary auth.
+* **Security model is demo-grade:** RLS now enforced (§2.1); unauthenticated API and binary auth remain.
 * **No CI, no migrations, no caching, no observability.**
 * **Scalability ceiling** from single-process Python + free tier + JSONB bag.
 * **Functional defect** in agent RAG embeddings — vectors are stored as real `vector(384)`
@@ -381,11 +396,11 @@ private network, but it must clear the P0 security items before any real deploym
 |----------|-----------|--------------|
 | Hackathon | ✅ Yes | Fast to demo, impressive flow. |
 | MVP / startup launch (trusted users) | ⚠️ Conditional | Viable behind auth gateway + fixed P0 items. |
-| Small production (≤1k users, internal) | ⚠️ Conditional | Needs RLS, auth, rate limits, caching. |
+| Small production (≤1k users, internal) | ⚠️ Conditional | RLS added (§2.1); still needs auth, rate limits, caching. |
 | Enterprise deployment | ❌ No | Requires RBAC, multi-tenancy, compliance, scale re-arch. |
 
 ### 20.5 Recommended next steps
-1. Close all **P0** security items (RLS, API auth) before any external exposure.
+1. Close all **P0** security items — RLS done (§2.1); API auth still outstanding — before any external exposure.
 2. Add **CI** + **migrations** to stop regressions and unversioned schema.
 3. Introduce a **caching + queue** layer to raise the scalability ceiling.
 4. Plan a phased move from the JSONB document bag to a relational schema with foreign keys.

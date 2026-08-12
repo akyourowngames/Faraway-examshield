@@ -256,3 +256,180 @@ as $$
   order by chunk.embedding <=> query_embedding asc
   limit match_count;
 $$;
+
+-- ─────────────────────────────────────────────────────────────────────
+-- Row-Level Security policies (fixes audit §2.1)
+--
+-- Ownership model: community agents are owned by the Supabase auth user,
+-- captured in `community_agents.owner_id` (FK to auth.users). Child agent
+-- tables inherit ownership through `community_agents`. The backend-internal
+-- tables (examshield_documents, examshield_memory_*) carry no per-user
+-- ownership — they are system data and are only reachable by the dedicated
+-- `app_backend` role (or the bypassing `service_role`). `anon`/`authenticated`
+-- are denied by default everywhere they are not explicitly granted.
+--
+-- All DDL here is idempotent (if not exists / drop policy if exists) so this
+-- file can be reapplied. The same content is mirrored in
+-- supabase/migrations/20260812000000_rls_policies.sql for existing projects.
+-- ─────────────────────────────────────────────────────────────────────
+
+-- Dedicated least-privilege backend role. It does NOT have BYPASSRLS, so the
+-- policies below actually constrain it. Its credential is a JWT whose `role`
+-- claim is "app_backend", signed by the project JWT secret — provision that
+-- out of band (see docs/PROJECT_WEAKNESSES_AUDIT.md §2.1). Never grant this
+-- role the service_role key.
+do $$
+begin
+  if not exists (select 1 from pg_roles where rolname = 'app_backend') then
+    create role app_backend with login noinherit;
+  end if;
+end $$;
+
+grant usage on schema public to app_backend;
+grant select, insert, update, delete on all tables in schema public to app_backend;
+grant usage, select on all sequences in schema public to app_backend;
+alter default privileges in schema public
+  grant select, insert, update, delete on tables to app_backend;
+alter default privileges in schema public
+  grant usage, select on sequences to app_backend;
+
+-- Ownership column for community agents (default to the caller for user-scoped
+-- inserts; null for service_role/system inserts — which still work because
+-- service_role bypasses RLS).
+alter table public.community_agents
+  add column if not exists owner_id uuid references auth.users(id) on delete cascade
+  default auth.uid();
+create index if not exists community_agents_owner_id_idx
+  on public.community_agents (owner_id);
+
+-- Helper so policies read cleanly.
+create or replace function public.is_app_backend() returns boolean
+language sql stable
+as $$
+  select coalesce(auth.jwt() ->> 'role', '') = 'app_backend'
+$$;
+
+-- Community agents ───────────────────────────────────────────────────────
+drop policy if exists community_agents_owner_all on public.community_agents;
+create policy community_agents_owner_all on public.community_agents
+  for all to authenticated
+  using (owner_id = auth.uid())
+  with check (owner_id = auth.uid());
+
+-- Public agents are discoverable by anyone (marketplace browsing); private
+-- agents are not. This is the only anon/authenticated grant on agent data.
+drop policy if exists community_agents_public_read on public.community_agents;
+create policy community_agents_public_read on public.community_agents
+  for select to authenticated, anon
+  using (visibility = 'public');
+
+drop policy if exists community_agents_backend on public.community_agents;
+create policy community_agents_backend on public.community_agents
+  for all to app_backend
+  using (true) with check (true);
+
+-- Agent child tables: ownership is inherited from the parent agent ─────────
+-- llm configs (hold provider secrets — owner only, no public read)
+drop policy if exists agent_llm_configs_owner on public.agent_llm_configs;
+create policy agent_llm_configs_owner on public.agent_llm_configs
+  for all to authenticated
+  using (exists (
+    select 1 from public.community_agents a
+    where a.id = agent_id and a.owner_id = auth.uid()))
+  with check (exists (
+    select 1 from public.community_agents a
+    where a.id = agent_id and a.owner_id = auth.uid()));
+
+drop policy if exists agent_llm_configs_backend on public.agent_llm_configs;
+create policy agent_llm_configs_backend on public.agent_llm_configs
+  for all to app_backend using (true) with check (true);
+
+-- telegram configs (hold bot tokens — owner only, no public read)
+drop policy if exists agent_telegram_configs_owner on public.agent_telegram_configs;
+create policy agent_telegram_configs_owner on public.agent_telegram_configs
+  for all to authenticated
+  using (exists (
+    select 1 from public.community_agents a
+    where a.id = agent_id and a.owner_id = auth.uid()))
+  with check (exists (
+    select 1 from public.community_agents a
+    where a.id = agent_id and a.owner_id = auth.uid()));
+
+drop policy if exists agent_telegram_configs_backend on public.agent_telegram_configs;
+create policy agent_telegram_configs_backend on public.agent_telegram_configs
+  for all to app_backend using (true) with check (true);
+
+-- knowledge sources (owner CRUD, no public read)
+drop policy if exists agent_knowledge_sources_owner on public.agent_knowledge_sources;
+create policy agent_knowledge_sources_owner on public.agent_knowledge_sources
+  for all to authenticated
+  using (exists (
+    select 1 from public.community_agents a
+    where a.id = agent_id and a.owner_id = auth.uid()))
+  with check (exists (
+    select 1 from public.community_agents a
+    where a.id = agent_id and a.owner_id = auth.uid()));
+
+drop policy if exists agent_knowledge_sources_backend on public.agent_knowledge_sources;
+create policy agent_knowledge_sources_backend on public.agent_knowledge_sources
+  for all to app_backend using (true) with check (true);
+
+-- knowledge chunks (owner CRUD, no public read)
+drop policy if exists agent_knowledge_chunks_owner on public.agent_knowledge_chunks;
+create policy agent_knowledge_chunks_owner on public.agent_knowledge_chunks
+  for all to authenticated
+  using (exists (
+    select 1 from public.community_agents a
+    where a.id = agent_id and a.owner_id = auth.uid()))
+  with check (exists (
+    select 1 from public.community_agents a
+    where a.id = agent_id and a.owner_id = auth.uid()));
+
+drop policy if exists agent_knowledge_chunks_backend on public.agent_knowledge_chunks;
+create policy agent_knowledge_chunks_backend on public.agent_knowledge_chunks
+  for all to app_backend using (true) with check (true);
+
+-- conversations (owner CRUD, no public read)
+drop policy if exists agent_conversations_owner on public.agent_conversations;
+create policy agent_conversations_owner on public.agent_conversations
+  for all to authenticated
+  using (exists (
+    select 1 from public.community_agents a
+    where a.id = agent_id and a.owner_id = auth.uid()))
+  with check (exists (
+    select 1 from public.community_agents a
+    where a.id = agent_id and a.owner_id = auth.uid()));
+
+drop policy if exists agent_conversations_backend on public.agent_conversations;
+create policy agent_conversations_backend on public.agent_conversations
+  for all to app_backend using (true) with check (true);
+
+-- Backend-internal tables: system role only (no per-user ownership) ────────
+drop policy if exists examshield_documents_backend on public.examshield_documents;
+create policy examshield_documents_backend on public.examshield_documents
+  for all to app_backend using (true) with check (true);
+
+drop policy if exists examshield_memory_items_backend on public.examshield_memory_items;
+create policy examshield_memory_items_backend on public.examshield_memory_items
+  for all to app_backend using (true) with check (true);
+
+drop policy if exists examshield_memory_correlations_backend on public.examshield_memory_correlations;
+create policy examshield_memory_correlations_backend on public.examshield_memory_correlations
+  for all to app_backend using (true) with check (true);
+
+-- Storage: the dedicated backend role may manage the private buckets;
+-- anon/authenticated remain denied by Supabase's default private-bucket
+-- policies. (Owner-scoped folder access for agent-knowledge is a follow-up.)
+alter table storage.objects enable row level security;
+
+drop policy if exists evidence_files_backend on storage.objects;
+create policy evidence_files_backend on storage.objects
+  for all to app_backend
+  using (bucket_id = 'evidence-files')
+  with check (bucket_id = 'evidence-files');
+
+drop policy if exists agent_knowledge_storage_backend on storage.objects;
+create policy agent_knowledge_storage_backend on storage.objects
+  for all to app_backend
+  using (bucket_id = 'agent-knowledge')
+  with check (bucket_id = 'agent-knowledge');
