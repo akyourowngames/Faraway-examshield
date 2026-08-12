@@ -2,17 +2,13 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from pathlib import Path
-from unittest.mock import patch
 
 from examshield_ai import ocr as ocr_mod
 from examshield_ai.memory import MemoryManager, _item_created_at_or_after
-from examshield_ai.ocr import _OCR_RESULT_CACHE, analyze_image
+from examshield_ai.ocr import analyze_image
 from examshield_ai.ocr_cache import OcrResultCache, _hash_bytes
 from examshield_ai.response_cache import ReadResponseCache, cached_get
-from examshield_ai.settings import Settings
 from examshield_ai.store import EvidenceStore
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # OCR result cache (audit §5 / §11.1: no caching of identical images)

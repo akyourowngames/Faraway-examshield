@@ -6,6 +6,5 @@ load_dotenv()
 
 from examshield_ai.server import main
 
-
 if __name__ == "__main__":
     main()

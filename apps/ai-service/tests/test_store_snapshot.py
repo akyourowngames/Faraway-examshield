@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from examshield_ai.store import EvidenceStore
-
 from tests.conftest import make_image_upload
 
 

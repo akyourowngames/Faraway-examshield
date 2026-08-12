@@ -7,32 +7,39 @@ import threading
 import time
 from cgi import FieldStorage
 from dataclasses import replace
-from io import BytesIO
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from .agent_telegram import AgentTelegramService
 from .chat import ChatSession
 from .detect import is_suspicious, scan_text
 from .events import sse_bytes
 from .llm import KiloClient
+from .llm_providers import ProviderConfig, list_providers, validate_api_key
+from .llm_providers import chat_completion as provider_chat_completion
 from .memory import MemoryManager
 from .ocr import SUPPORTED_TYPES, analyze_image, ocr_runtime_status
 from .operator import resolve_operator
 from .pipeline import EvidencePipeline
+from .planner import ToolPlanner
+from .rag import (
+    RAGConfig,
+    chunk_text,
+    extract_text_from_file,
+    ingest_knowledge_source,
+    search_agent_knowledge,
+)
 from .ratelimit import make_ocr_limiter, make_upload_limiter
 from .response_cache import ReadResponseCache, cached_get
-from .planner import ToolPlanner
-from .responses import conversation_messages, grounded_messages
 from .settings import Settings, load_settings
-from .store import EvidenceStore, UploadedFile, normalize_telegram_timestamp, AgentStore
-from .agent_telegram import AgentTelegramService
+from .store import AgentStore, EvidenceStore, UploadedFile, normalize_telegram_timestamp
 from .telegram import TelegramWebhook
 from .tools import ExamshieldToolRegistry
 from .workers import AnalysisTask, AnalysisWorkerPool
-from .llm_providers import list_providers, validate_api_key, ProviderConfig, chat_completion as provider_chat_completion
-from .rag import chunk_text, extract_text_from_file, ingest_knowledge_source, search_agent_knowledge, RAGConfig
+
 
 def resolve_cors_headers(settings: Settings, origin: str | None) -> dict[str, str]:
     """Resolve CORS response headers against an allow-list.
@@ -604,7 +611,6 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         url_override = str(payload.get("url") or "").strip()
         try:
             if url_override:
-                from .settings import Settings
                 self.telegram = TelegramWebhook(replace(self.settings, public_url=url_override))
             self.telegram.register()
             self._send_json({
@@ -670,7 +676,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
 
         session = ChatSession(client=self.client, registry=registry, write=write_event)
         try:
-            session.run(prompt, history, current_evidence_id, operator)
+            session.run(prompt, history, current_evidence_id, operator, tenant=self._client_ip())
         except Exception as exc:
             logger.error("Chat stream failed: %s", exc, exc_info=True)
             write_event({"type": "error", "message": str(exc) or "Chat failed."})
@@ -930,8 +936,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "Bot token is required."}, status=400)
                 return
 
-            import urllib.request
             import urllib.error
+            import urllib.request
             url = f"https://api.telegram.org/bot{token}/getMe"
             req = urllib.request.Request(url, method="GET")
             try:
@@ -978,8 +984,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
 
             self.agent_store.update_agent(agent_id, {"status": "deploying"})
 
-            import urllib.request
             import urllib.error
+            import urllib.request
             token = telegram_config["botToken"]
             url = f"https://api.telegram.org/bot{token}/getMe"
             req = urllib.request.Request(url, method="GET")
@@ -1459,7 +1465,11 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
 
     def _generate_report(self) -> None:
         """POST /reports/generate — Generate a Markdown report."""
-        from .reports import generate_evidence_report, generate_summary_report, report_to_document_bytes
+        from .reports import (
+            generate_evidence_report,
+            generate_summary_report,
+            report_to_document_bytes,
+        )
 
         try:
             payload = self._read_json()

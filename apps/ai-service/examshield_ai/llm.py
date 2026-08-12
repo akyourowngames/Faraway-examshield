@@ -5,19 +5,43 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
-from typing import Any
 
+from .budget import BudgetExceeded, make_token_budget
 from .settings import Settings
 from .store import JsonObject
 
-
 TokenWriter = Callable[[str], None]
+
+
+class GatewayError(RuntimeError):
+    """A non-2xx response from the Kilo/NVIDIA gateway, carrying the HTTP code."""
+
+    def __init__(self, status_code: int, message: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def _is_retryable(exc: Exception) -> bool:
+    """Decide whether a failed model attempt should fall through to the next model.
+
+    Audit §11.2 flags that the old code retried on *any* error, so a deterministic
+    4xx (e.g. a malformed request → 400) was pointlessly retried against every
+    fallback model. Client errors (4xx), other than 429 (rate limited, which may
+    clear on another model/region), are not retryable; only 5xx, network, timeout,
+    and 429 failures fall through to the next candidate.
+    """
+    if isinstance(exc, GatewayError):
+        code = exc.status_code
+        if 400 <= code < 500 and code != 429:
+            return False
+    return True
 
 
 class KiloClient:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self._unavailable_until = 0.0
+        self._budget = make_token_budget(settings)
 
     @property
     def configured(self) -> bool:
@@ -31,7 +55,9 @@ class KiloClient:
         tools: list[JsonObject] | None = None,
         max_tokens: int = 240,
         timeout: float | None = None,
+        tenant: str | None = None,
     ) -> JsonObject:
+        self._spend_budget(tenant, max_tokens)
         payload: JsonObject = {
             "model": model,
             "temperature": 0,
@@ -57,6 +83,7 @@ class KiloClient:
         tools: list[JsonObject] | None = None,
         on_tool_call: Callable[[int, str, str], None] | None = None,
         on_tool_delta: Callable[[int, str], None] | None = None,
+        tenant: str | None = None,
     ) -> bool:
         """Stream a chat completion, emitting text tokens and inline tool calls.
 
@@ -66,10 +93,11 @@ class KiloClient:
         call fragments are forwarded to ``on_tool_call`` (index/id/name) and
         ``on_tool_delta`` (streaming argument JSON) as they arrive.
         """
+        token_limit = max_tokens if max_tokens is not None else self.settings.chat_max_tokens
+        self._spend_budget(tenant, token_limit)
         if time.monotonic() < self._unavailable_until:
             raise RuntimeError("Kilo gateway is in a short retry cooldown after a failed request.")
         errors: list[str] = []
-        token_limit = max_tokens if max_tokens is not None else self.settings.chat_max_tokens
         per_model_timeout = timeout or self.settings.stream_timeout_seconds
         for candidate in self._candidate_models(model):
             payload: JsonObject = {
@@ -124,6 +152,10 @@ class KiloClient:
                         return True
                     errors.append(f"{candidate}: empty stream")
             except Exception as exc:
+                if not _is_retryable(exc):
+                    # Deterministic client error (e.g. 400) — retrying on the
+                    # next model cannot fix it and just wastes latency/budget.
+                    raise
                 errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
         self._unavailable_until = time.monotonic() + 10.0
         raise RuntimeError("Kilo gateway stream failed for all models: " + " | ".join(errors))
@@ -135,14 +167,29 @@ class KiloClient:
         messages: list[JsonObject],
         max_tokens: int = 260,
         timeout: float | None = None,
+        tenant: str | None = None,
     ) -> str:
         payload = self.chat_json(
             model=model,
             messages=messages,
             max_tokens=max_tokens,
             timeout=timeout or self.settings.stream_timeout_seconds,
+            tenant=tenant,
         )
         return str(payload.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+
+    def _spend_budget(self, tenant: str | None, tokens: int) -> None:
+        """Reserve ``tokens`` from the per-key budget; raise if exhausted.
+
+        ``tokens`` is already in token units (callers pass ``max_tokens``), so no
+        char→token estimate is needed here.
+        """
+        allowed, info = self._budget.spend(tenant or "global", tokens)
+        if not allowed:
+            raise BudgetExceeded(
+                f"Daily LLM token budget exhausted for this client "
+                f"({info.get('remaining', 0)} tokens remaining). Try again later."
+            )
 
     def _request_json(self, payload: JsonObject, timeout: float) -> JsonObject:
         request = self._request(payload)
@@ -151,7 +198,7 @@ class KiloClient:
                 raw = response.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as exc:
             details = exc.read().decode("utf-8", errors="replace")[:240]
-            raise RuntimeError(f"Kilo gateway returned {exc.code}: {details}") from exc
+            raise GatewayError(exc.code, f"Kilo gateway returned {exc.code}: {details}") from exc
         parsed = json.loads(raw)
         return parsed if isinstance(parsed, dict) else {}
 
@@ -168,6 +215,10 @@ class KiloClient:
                 self._unavailable_until = 0.0
                 return response
             except Exception as exc:
+                if not _is_retryable(exc):
+                    # Deterministic client error (e.g. 400) — retrying on the
+                    # next model cannot fix it and only wastes latency/budget.
+                    raise
                 errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
         self._unavailable_until = time.monotonic() + 10.0
         raise RuntimeError("Kilo gateway chat request failed for all configured models: " + " | ".join(errors))

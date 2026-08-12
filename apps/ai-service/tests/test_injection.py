@@ -1,18 +1,11 @@
 """Tests for the prompt-injection detection and sanitization module (§4.1)."""
 from __future__ import annotations
 
-import os
-
-import pytest
-
 from examshield_ai.injection import (
     SYSTEM_PROMPT_HARDENING,
-    _DETECTION_ENABLED,
-    _SANITIZE_ENABLED,
     detect_injection,
     sanitize_input,
 )
-
 
 # ── detect_injection ────────────────────────────────────────────────────
 

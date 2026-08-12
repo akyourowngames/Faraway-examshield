@@ -11,14 +11,13 @@ from __future__ import annotations
 
 import statistics
 import time
+from types import SimpleNamespace
 
 from examshield_ai.chat import ChatSession
 from examshield_ai.turn_policy import (
     classify_turn_intent,
     clear_turn_intent_cache,
 )
-from types import SimpleNamespace
-
 
 GREETINGS = ["hi", "hello", "hey there", "thanks!", "goodbye", "how are you?"]
 DATA = [

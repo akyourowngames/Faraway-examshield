@@ -7,7 +7,6 @@ from .llm import KiloClient
 from .store import JsonObject
 from .tools import ExamshieldToolRegistry
 
-
 ROUTER_PROMPT = """You are EXAMSHIELD AI's tool router. Your ONLY job is to decide if the investigator needs live EXAMSHIELD data.
 
 Return a tool call ONLY when the investigator explicitly asks for live data:

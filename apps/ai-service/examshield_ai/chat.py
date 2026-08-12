@@ -6,6 +6,8 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from .budget import BudgetExceeded
+from .hallucination import verify_citations
 from .llm import KiloClient
 from .responses import conversation_messages
 from .store import JsonObject
@@ -40,6 +42,7 @@ class ChatSession:
         history: list[JsonObject],
         current_evidence_id: str | None,
         operator: JsonObject | None = None,
+        tenant: str | None = None,
     ) -> None:
         started = time.monotonic()
         self.operator = operator
@@ -68,7 +71,7 @@ class ChatSession:
         messages = list(conversation_messages(prompt, history, operator))
         tool_schemas = self.registry.schemas() if use_tools else []
 
-        self._run_loop(prompt, messages, tool_schemas, current_evidence_id, started)
+        self._run_loop(prompt, messages, tool_schemas, current_evidence_id, started, tenant)
 
     def _run_loop(
         self,
@@ -77,10 +80,13 @@ class ChatSession:
         tool_schemas: list[JsonObject],
         current_evidence_id: str | None,
         started: float,
+        tenant: str | None = None,
     ) -> None:
         evidence_id = self._resolve_evidence_id(prompt, current_evidence_id)
         last_content = ""
+        self._last_tool_context = ""
         first_token_at: float | None = None
+        answer_parts: list[str] = []
 
         for _iteration in range(MAX_TOOL_ITERATIONS):
             emitted_text = False
@@ -89,6 +95,7 @@ class ChatSession:
             def on_token(token: str) -> None:
                 nonlocal emitted_text, first_token_at
                 emitted_text = True
+                answer_parts.append(token)
                 if first_token_at is None:
                     first_token_at = time.monotonic()
                 self.write({"type": "token", "token": token})
@@ -113,6 +120,7 @@ class ChatSession:
                     on_tool_delta=on_tool_delta,
                     tools=tool_schemas or None,
                     max_tokens=self.client.settings.chat_max_tokens,
+                    tenant=tenant,
                 )
             except Exception as exc:
                 self._handle_stream_error(exc, emitted_text, last_content, started, first_token_at)
@@ -125,6 +133,8 @@ class ChatSession:
                 continue
 
             # No tool call — this is the final answer.
+            answer = "".join(answer_parts)
+            self._maybe_warn_unverified(answer, self._last_tool_context)
             self._write_meta(started, first_token_at)
             self.write({"type": "done", "latencyMs": self._latency_ms(started)})
             return
@@ -172,10 +182,12 @@ class ChatSession:
             result = execution.result
             self.write({"type": "tool", "tool": result.get("tool") or name, "result": result})
             last_summary = self._tool_fallback_text(result)
+            tool_content = json.dumps(result, ensure_ascii=False)
+            self._last_tool_context = tool_content
             messages.append({
                 "role": "tool",
                 "tool_call_id": call["id"],
-                "content": json.dumps(result, ensure_ascii=False),
+                "content": tool_content,
             })
 
         return last_summary
@@ -189,7 +201,9 @@ class ChatSession:
         first_token_at: float | None = None,
     ) -> None:
         error_name = type(exc).__name__
-        if "timeout" in str(exc).lower() or "Timeout" in error_name:
+        if isinstance(exc, BudgetExceeded):
+            self.write({"type": "stage", "message": str(exc)})
+        elif "timeout" in str(exc).lower() or "Timeout" in error_name:
             self.write({"type": "stage", "message": "Language model timed out — try again in a few seconds."})
         elif "cooldown" in str(exc).lower():
             self.write({"type": "stage", "message": "Language model cooling down from previous error — try again shortly."})
@@ -220,6 +234,25 @@ class ChatSession:
         if first_token_at is not None:
             meta["ttftMs"] = int((first_token_at - started) * 1000)
         self.write(meta)
+
+    def _maybe_warn_unverified(self, answer: str, context: str) -> None:
+        """Audit §11.2: warn when the answer quotes figures absent from the source data.
+
+        The model is told not to fabricate, but nothing previously *verified* the
+        cited numbers against the tool result. We run a cheap post-hoc check and,
+        when ungrounded figures are detected, surface a non-blocking warning so the
+        operator can double-check before acting on the numbers.
+        """
+        report = verify_citations(answer, context)
+        if report.get("context_present") and not report.get("grounded"):
+            unverified = ", ".join(report.get("unverified", [])[:5])
+            self.write({
+                "type": "warning",
+                "message": (
+                    "⚠️ Some numbers in this answer were not found in the data I retrieved "
+                    f"({unverified}). Verify them before relying on them."
+                ),
+            })
 
     @staticmethod
     def _resolve_evidence_id(prompt: str, current_evidence_id: str | None) -> str | None:
