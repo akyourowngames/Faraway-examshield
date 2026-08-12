@@ -40,11 +40,17 @@ jobs:
         run: pytest -q
 
   frontend:
-    name: Frontend (web) — lint & build
+    name: Frontend (web) — lint, test & build
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: web
+    # Placeholder public Supabase values. They are NEXT_PUBLIC_*/anon-only (non-sensitive)
+    # and only exist so `next build` static prerender of the client components succeeds;
+    # real values are injected by the deployment environment at runtime.
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder-anon-key-for-ci-build
     steps:
       - uses: actions/checkout@v4
 
@@ -60,6 +66,9 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      - name: Test
+        run: npm run test
 
       - name: Build
         run: npm run build

@@ -19,7 +19,7 @@
 | Production readiness | **3.5** | No RLS policies, unauthenticated backend API, free-tier single-process backend (CI now gated, §12). |
 | Security | **3.5** | Service-role-only trust, binary auth, default-open CORS. |
 | Scalability | **4.0** | `http.server` single process, worker pool capped at 2, Render free plan (spins down), no caching layer. |
-| Maintainability | **5.0** | Readable Python/TS, but hand-rolled HTTP routing, no migrations, no frontend tests, magic numbers. |
+| Maintainability | **5.0** | Readable Python/TS, but hand-rolled HTTP routing, no migrations, magic numbers. (A Vitest frontend suite now exists, §15/§17.) |
 | Performance | **5.0** | OCR budget dominates latency; no response caching for read GETs; vector memory search has no time bound; blocking file I/O (O(n) per request); `ThreatMap` shipped in the initial dashboard bundle. Single-process Python + GIL is an infra ceiling (§5/§14). |
 | Documentation | **7.0** | Strong README + `docs/DEPLOYMENT.md` + `TELEGRAM_SETUP.md`; no API/OpenAPI spec; architecture doc separate. |
 | Code quality | **6.0** | Mostly consistent; notable smells (string-cast embeddings, naive redaction, duplicated config). |
@@ -35,8 +35,9 @@
 * **Production readiness (3.0):** CI now present (`.github/workflows/ci.yml`, §12); still no `supabase/migrations/`,
   no health-probe beyond `/health`.
 * **Maintainability (5.0):** Backend is modular (`server.py`, `store.py`, `ocr.py`, `pipeline.py`,
-  `tools.py`, `memory.py`, …) but uses the standard library HTTP server with manual routing; frontend has
-  **no test suite** (no `web/tests`, no vitest/jest config found).
+  `tools.py`, `memory.py`, …) but uses the standard library HTTP server with manual routing; frontend now
+  has a Vitest suite (component tests for `login` + pure formatting/util tests, run in CI via
+  `npm run test`).
 * **Performance (5.0):** Chat pays a separate planner LLM call per turn (`ToolPlanner.plan`, ~4s)
   before answering; no response caching for read GETs; vector memory search has no time bound;
   blocking file I/O (O(n) per request); `ThreatMap` is shipped in the initial dashboard bundle
@@ -130,12 +131,6 @@
 
 ## 6. Code Quality Review
 
-* **Magic numbers / hardcoded values:** `detect_threshold=7`, severity cutoffs `25/15/7` (`detect.py`),
-  `qualityScore>=25` (`ocr.py`), chat tokens `220/120`, `max_upload_bytes=12MB`, `port 8790`. Many live in
-  `settings.py` (good) but severities in `detect.py` are scattered constants.
-* **Long functions:** `server.py` handlers and `store.py` methods (e.g. `run_analysis_job`,
-  `run_attribution_for_evidence`) are large and branch-heavy; `tools.py` `with_context`/`answer_context`
-  logic is intricate.
 * **Duplicated config:** NVIDIA base URL, model names, and fallback lists are repeated across `settings.py`,
   `llm.py`, `planner.py`, `render.yaml`, and README — a change in one place can silently diverge.
 * **Type safety (frontend OK, backend weak):** TypeScript is strict-ish (`web/tsconfig.json`); the Python
@@ -237,7 +232,8 @@
 
 * **No CI/CD.** ~~No `.github/` workflows (verified).~~ **Resolved:** `.github/workflows/ci.yml` now runs on
   `push`/`pull_request` to `main` with two gated jobs — backend (`apps/ai-service`: `ruff check` + `pytest`)
-  and frontend (`web`: `npm run lint` + `next build`). README badges now reflect a real pipeline.
+  and frontend (`web`: `npm run lint` + `npm run test` [Vitest component/util tests] + `next build`).
+  README badges now reflect a real pipeline.
 * **Dockerfile:** Sensible (`python:3.12-slim`), but `COPY . .` copies the *entire* repo (including `node_modules`
   if present, large `apps/api/uploads`, `.git`) into the image; `.dockerignore` mitigates some but not all.
   Build context is large.
@@ -295,8 +291,9 @@ shipping value.
 
 ## 15. Maintainability Issues
 
-* **No frontend tests** — zero coverage for React components/route handlers (no test runner configured in
-  `web/package.json`).
+* ~~**No frontend tests**~~ **Resolved:** a Vitest suite now covers a React component
+  (`web/src/app/login/page.test.tsx`) and pure formatting/utils (`web/src/lib/evidence-format.test.ts`),
+  wired into CI as the frontend `npm run test` step (§12).
 * **Backend tests exist** (`apps/ai-service/tests/`: `test_analysis_flow`, `test_ocr`, `test_ocrspace`,
   `test_store_snapshot`, `test_telegram_pipeline`, `test_workers`, `conftest`) — good, but they are
   integration-style and depend on local filesystem/network; **[UNVERIFIED]** whether they run in CI (no CI).
@@ -304,7 +301,7 @@ shipping value.
 * **Duplicated model/fallback config** across `settings.py`, `render.yaml`, `llm.py`, `planner.py`.
 * **Large modules:** `server.py` (~1440 lines), `store.py` (~1900 lines), `tools.py`, `memory.py` — each is
   a "god module" with many responsibilities.
-* **Magic numbers** scattered (§6).
+* **Magic numbers** — resolved: centralized into `settings.py` env vars and named `ocr.py`/`detect.py` constants (§6).
 * **Documentation gaps:** No API reference, no ADR, no threat model, no runbook for incident response.
 
 ---
@@ -334,7 +331,7 @@ shipping value.
 | Unauthenticated API | Assumed network trust | Data exposure | P0 | Add auth/gateway |
 | No CI | Time/scope | Regressions ship | P1 | **Resolved** — GitHub Actions lint/test/build gate (`.github/workflows/ci.yml`) |
 | No migrations | Manual schema.sql | Unversioned schema | P1 | supabase/migrations |
-| No frontend tests | Time/scope | UI regressions | P2 | Vitest + component tests |
+| No frontend tests | Resolved — Vitest suite + CI test gate (§15, `.github/workflows/ci.yml`) | Covered | P2 | Done |
 | JSONB document bag | Rapid prototyping | Weak integrity/query | P2 | Relational tables |
 | Duplicate config | Convenience | Drift | P2 | Single source of truth |
 | Stub modules in tree | Experimentation | Confusion | P3 | Move to separate repos/optional |
@@ -368,7 +365,7 @@ shipping value.
 * Authenticate the backend API (shared secret / Vercel-only network / mTLS) (P0).
 
 ### Short-term (1–2 months)
-* ~~Stand up CI (lint + backend pytest + frontend tests + `next build`).~~ **Done** — `.github/workflows/ci.yml` gates `main` on `ruff` + `pytest` (backend) and `lint` + `next build` (frontend).
+* ~~Stand up CI (lint + backend pytest + frontend tests + `next build`).~~ **Done** — `.github/workflows/ci.yml` gates `main` on `ruff` + `pytest` (backend) and `lint` + `npm run test` (Vitest) + `next build` (frontend).
 * Migrate schema to versioned `supabase/migrations/`.
 * Add RBAC + per-agent ownership; protect `/api/*` in middleware.
 * Add security headers (CSP/HSTS) and global error/loading boundaries.
@@ -405,7 +402,7 @@ shipping value.
 * **Scalability ceiling** from single-process Python + free tier + JSONB bag.
 * **Functional defect** in agent RAG embeddings — vectors are stored as real `vector(384)`
   values rather than strings; a missing runtime dependency (`fitz`) is also declared in `requirements.txt`.
-* **Maintainability debt:** god modules, duplicate config, no frontend tests, deprecated stdlib usage.
+* **Maintainability debt:** god modules, duplicate config, deprecated stdlib usage. (Frontend now has a Vitest suite, §15.)
 
 ### 20.3 Production readiness
 **Not production-ready as-is (readiness 3/10).** Suitable for a pilot/demo with trusted operators on a
