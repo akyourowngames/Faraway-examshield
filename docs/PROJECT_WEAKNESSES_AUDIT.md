@@ -231,19 +231,6 @@
 * **Token storage:** Cookies managed by Supabase SSR; acceptable, but no `SameSite`/secure overrides
   configured in app code (relies on Supabase defaults).
 
-## 11. AI & OCR Weaknesses
-
-### 11.1 OCR
-* **Accuracy depends on print quality & language.** Tesseract `--oem 1 --psm 6,4` with `eng` only; no
-  Indic-script OCR (relevant for Indian exam leaks in regional languages).
-* **Quality heuristic is heuristic.** `score_ocr_quality` derives a 0–100 score from word/vowel ratios and
-  penalties; it can pass noisy text or reject valid short text. `OCR_MIN_QUALITY=25` is low.
-* **No deskew/denoise pre-processing** beyond downscale; skewed/photographed papers may OCR poorly.
-* **Chain ordering & cost.** `ocrspace,tesseract` tries the *paid* cloud first; each OCR.space call costs
-  quota. No caching of OCR results for identical images (by hash).
-* **Timeout handling:** Tesseract subprocess uses `timeout=call_timeout`; a hang terminates the attempt but
-  the whole 120s budget can be consumed.
-
 ---
 
 ## 12. DevOps Weaknesses

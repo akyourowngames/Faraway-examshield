@@ -61,7 +61,7 @@ class TestParallelPsm:
         image_path = tmp_path / "sample.jpg"
         image_path.write_bytes(b"fake-image")
 
-        def fake_candidate(path: Path, psm: str) -> dict:
+        def fake_candidate(path: Path, psm: str, **kwargs) -> dict:
             return {
                 "status": "completed",
                 "psm": psm,
@@ -81,7 +81,7 @@ class TestParallelPsm:
         image_path = tmp_path / "sample.jpg"
         image_path.write_bytes(b"fake-image")
 
-        def fake_candidate(path: Path, psm: str) -> dict:
+        def fake_candidate(path: Path, psm: str, **kwargs) -> dict:
             if psm == "4":
                 raise RuntimeError("boom")
             return {
@@ -107,7 +107,7 @@ class TestSequentialPsm:
         image_path.write_bytes(b"fake-image")
         calls: list[str] = []
 
-        def fake_candidate(path: Path, psm: str) -> dict:
+        def fake_candidate(path: Path, psm: str, **kwargs) -> dict:
             calls.append(psm)
             return {
                 "status": "completed",

@@ -40,7 +40,7 @@ def test_ocr_analyze_image_serves_identical_bytes_from_cache(monkeypatch):
     monkeypatch.setattr(ocr_mod, "OCR_CHAIN", ("tesseract",))
     calls = {"n": 0}
 
-    def fake_candidates(path, *, deadline=None):
+    def fake_candidates(path, *, deadline=None, **kwargs):
         calls["n"] += 1
         return [{
             "status": "completed",

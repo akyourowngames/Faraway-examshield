@@ -29,7 +29,7 @@ def _env_bool(name: str, default: str = "1") -> bool:
     return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
-OCR_CHAIN = _split_csv(os.environ.get("EXAMSHIELD_OCR_CHAIN", ""), "ocrspace,tesseract")
+OCR_CHAIN = _split_csv(os.environ.get("EXAMSHIELD_OCR_CHAIN", ""), "tesseract,ocrspace")
 OCR_PSMS = _split_csv(os.environ.get("EXAMSHIELD_OCR_PSMS", ""), "6,4")
 OCR_TIMEOUT_SECONDS = int(os.environ.get("EXAMSHIELD_OCR_TIMEOUT", "45"))
 OCR_TOTAL_BUDGET_SECONDS = int(os.environ.get("EXAMSHIELD_OCR_TOTAL_BUDGET_SECONDS", "120"))
@@ -39,6 +39,8 @@ OCR_PSM_WORKERS = int(os.environ.get("EXAMSHIELD_OCR_PSM_WORKERS", str(len(OCR_P
 OCR_MODE = os.environ.get("EXAMSHIELD_OCR_MODE", "sequential").strip().lower()
 OCR_MIN_QUALITY = int(os.environ.get("EXAMSHIELD_OCR_MIN_QUALITY", "25"))
 OCR_FAST = _env_bool("EXAMSHIELD_OCR_FAST", "1")
+OCR_LANGUAGES = (os.environ.get("EXAMSHIELD_OCR_LANGUAGES", "eng") or "eng").strip()
+OCR_PREPROCESS = _env_bool("EXAMSHIELD_OCR_PREPROCESS", "1")
 OCR_CACHE_MAX_ENTRIES = int(os.environ.get("EXAMSHIELD_OCR_CACHE_MAX_ENTRIES", "256"))
 OCR_CACHE_TTL_SECONDS = float(os.environ.get("EXAMSHIELD_OCR_CACHE_TTL_SECONDS", "3600"))
 
@@ -54,6 +56,9 @@ def ocr_runtime_status() -> dict[str, Any]:
     return {
         "chain": list(OCR_CHAIN),
         "totalBudgetSeconds": OCR_TOTAL_BUDGET_SECONDS,
+        "languages": OCR_LANGUAGES,
+        "preprocess": OCR_PREPROCESS,
+        "minQuality": OCR_MIN_QUALITY,
         "tesseract": {
             "psms": list(OCR_PSMS),
             "mode": OCR_MODE,
@@ -165,8 +170,10 @@ def completed_result(candidate: dict[str, Any], started: float, engine_name: str
     }
 
 
-def run_tesseract_best_candidate(image_path: Path, *, deadline: float | None) -> dict[str, Any]:
-    candidates = read_ocr_candidates(image_path, deadline=deadline)
+def run_tesseract_best_candidate(
+    image_path: Path, *, deadline: float | None, languages: str = OCR_LANGUAGES
+) -> dict[str, Any]:
+    candidates = read_ocr_candidates(image_path, deadline=deadline, languages=languages)
     passed = [candidate for candidate in candidates if candidate.get("status") == "completed"]
     if not passed:
         failed = [candidate for candidate in candidates if candidate.get("status") == "failed"]
@@ -195,8 +202,14 @@ def write_temp_image(image_bytes: bytes, suffix: str) -> Path:
 
 
 def prepare_ocr_image(image_bytes: bytes, suffix: str) -> Path:
-    """Downscale large Telegram photos so CPU OCR stays within timeout budgets."""
-    if OCR_MAX_DIMENSION <= 0:
+    """Downscale large Telegram photos so CPU OCR stays within timeout budgets.
+
+    When ``EXAMSHIELD_OCR_PREPROCESS`` is on (default), the image is also
+    denoised, binarised, and deskewed before downscaling — this directly targets
+    audit §11.1's "no deskew/denoise pre-processing" gap for photographed /
+    skewed exam papers.
+    """
+    if OCR_MAX_DIMENSION <= 0 and not OCR_PREPROCESS:
         return write_temp_image(image_bytes, suffix)
 
     try:
@@ -207,34 +220,89 @@ def prepare_ocr_image(image_bytes: bytes, suffix: str) -> Path:
         if decoded is None:
             return write_temp_image(image_bytes, suffix)
 
+        if OCR_PREPROCESS:
+            decoded = _preprocess_for_ocr(decoded)
+
         height, width = decoded.shape[:2]
         longest = max(height, width)
-        if longest <= OCR_MAX_DIMENSION:
-            return write_temp_image(image_bytes, suffix)
-
-        scale = OCR_MAX_DIMENSION / longest
-        resized = cv2.resize(
-            decoded,
-            (max(1, int(width * scale)), max(1, int(height * scale))),
-            interpolation=cv2.INTER_AREA,
-        )
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-        try:
-            if not cv2.imwrite(temp_file.name, resized):
-                return write_temp_image(image_bytes, suffix)
+        if OCR_MAX_DIMENSION > 0 and longest > OCR_MAX_DIMENSION:
+            scale = OCR_MAX_DIMENSION / longest
+            decoded = cv2.resize(
+                decoded,
+                (max(1, int(width * scale)), max(1, int(height * scale))),
+                interpolation=cv2.INTER_AREA,
+            )
             logger.info(
                 "Downscaled OCR image from %sx%s to %sx%s",
                 width,
                 height,
-                resized.shape[1],
-                resized.shape[0],
+                decoded.shape[1],
+                decoded.shape[0],
             )
+
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+        try:
+            if not cv2.imwrite(temp_file.name, decoded):
+                return write_temp_image(image_bytes, suffix)
             return Path(temp_file.name)
         finally:
             temp_file.close()
     except Exception as exc:
         logger.warning("OCR image preprocess skipped: %s", exc)
         return write_temp_image(image_bytes, suffix)
+
+
+def _preprocess_for_ocr(frame: Any) -> Any:
+    """Grayscale denoise + adaptive-binarise + conservative deskew.
+
+    Returns the (possibly) improved BGR frame. Any failure falls back to the
+    original frame so OCR is never blocked by preprocessing.
+    """
+    try:
+        import cv2
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        # Median blur removes salt-and-pepper noise from phone photos.
+        denoised = cv2.medianBlur(gray, 3)
+        deskewed = _deskew(denoised)
+        # Adaptive threshold binarises printed text, killing background gradients.
+        binary = cv2.adaptiveThreshold(
+            deskewed, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 10
+        )
+        return cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
+    except Exception as exc:
+        logger.warning("OCR preprocess step failed, using raw frame: %s", exc)
+        return frame
+
+
+def _deskew(gray: Any) -> Any:
+    """Rotate the image to undo small skew (±15°) detected from text bounding box.
+
+    Conservative: returns the input unchanged when no reliable orientation is
+    found or the skew is negligible / extreme, so we never distort good scans.
+    """
+    try:
+        import cv2
+        import numpy as np
+
+        thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
+        coords = np.column_stack(np.where(thresh > 0))
+        if coords.shape[0] < 25:
+            return gray
+        rect = cv2.minAreaRect(coords)
+        angle = rect[-1]
+        if angle < -45:
+            angle = 90 + angle
+        if abs(angle) < 0.5 or abs(angle) > 15:
+            return gray
+        height, width = gray.shape[:2]
+        center = (width // 2, height // 2)
+        matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+        return cv2.warpAffine(
+            gray, matrix, (width, height), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE
+        )
+    except Exception:
+        return gray
 
 
 def remaining_timeout(deadline: float | None, fallback: int = OCR_TIMEOUT_SECONDS) -> int:
@@ -260,16 +328,19 @@ def run_tesseract(
     )
 
 
-def read_ocr_candidates(image_path: Path, *, deadline: float | None = None) -> list[dict[str, Any]]:
+def read_ocr_candidates(
+    image_path: Path, *, deadline: float | None = None, languages: str = OCR_LANGUAGES
+) -> list[dict[str, Any]]:
     if OCR_MODE == "parallel":
-        return read_ocr_candidates_parallel(image_path, deadline=deadline)
-    return read_ocr_candidates_sequential(image_path, deadline=deadline)
+        return read_ocr_candidates_parallel(image_path, deadline=deadline, languages=languages)
+    return read_ocr_candidates_sequential(image_path, deadline=deadline, languages=languages)
 
 
 def read_ocr_candidates_sequential(
     image_path: Path,
     *,
     deadline: float | None = None,
+    languages: str = OCR_LANGUAGES,
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for psm in OCR_PSMS:
@@ -288,9 +359,9 @@ def read_ocr_candidates_sequential(
         timeout = remaining_timeout(deadline)
         try:
             candidate = (
-                read_ocr_candidate(image_path, psm, timeout=timeout)
+                read_ocr_candidate(image_path, psm, timeout=timeout, languages=languages)
                 if deadline is not None
-                else read_ocr_candidate(image_path, psm)
+                else read_ocr_candidate(image_path, psm, languages=languages)
             )
         except subprocess.TimeoutExpired:
             candidate = {
@@ -327,6 +398,7 @@ def read_ocr_candidates_parallel(
     image_path: Path,
     *,
     deadline: float | None = None,
+    languages: str = OCR_LANGUAGES,
 ) -> list[dict[str, Any]]:
     workers = max(1, min(OCR_PSM_WORKERS, len(OCR_PSMS)))
     candidates: list[dict[str, Any]] = []
@@ -335,9 +407,9 @@ def read_ocr_candidates_parallel(
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ocr-psm") as executor:
         futures = {
             (
-                executor.submit(read_ocr_candidate, image_path, psm, timeout=timeout)
+                executor.submit(read_ocr_candidate, image_path, psm, timeout=timeout, languages=languages)
                 if deadline is not None
-                else executor.submit(read_ocr_candidate, image_path, psm)
+                else executor.submit(read_ocr_candidate, image_path, psm, languages=languages)
             ): psm
             for psm in OCR_PSMS
         }
@@ -373,11 +445,12 @@ def read_ocr_candidate(
     psm: str,
     *,
     timeout: int | None = None,
+    languages: str = OCR_LANGUAGES,
 ) -> dict[str, Any]:
     call_timeout = timeout or OCR_TIMEOUT_SECONDS
     text_run = run_tesseract(
         image_path,
-        ["stdout", "-l", "eng", "--oem", "1", "--psm", psm],
+        ["stdout", "-l", languages, "--oem", "1", "--psm", psm],
         timeout=call_timeout,
     )
     if text_run.returncode != 0:
@@ -422,7 +495,7 @@ def read_ocr_candidate(
             **quality_report,
         }
 
-    word_confidences, tsv_words = read_word_confidences(image_path, psm, timeout=call_timeout)
+    word_confidences, tsv_words = read_word_confidences(image_path, psm, timeout=call_timeout, languages=languages)
     merged_words = tsv_words or words
     confidence = (
         round(sum(word_confidences) / len(word_confidences))
@@ -453,10 +526,11 @@ def read_word_confidences(
     psm: str,
     *,
     timeout: int | None = None,
+    languages: str = OCR_LANGUAGES,
 ) -> tuple[list[float], list[str]]:
     tsv_run = run_tesseract(
         image_path,
-        ["stdout", "-l", "eng", "--oem", "1", "--psm", psm, "tsv"],
+        ["stdout", "-l", languages, "--oem", "1", "--psm", psm, "tsv"],
         timeout=timeout or OCR_TIMEOUT_SECONDS,
     )
     if tsv_run.returncode != 0:
