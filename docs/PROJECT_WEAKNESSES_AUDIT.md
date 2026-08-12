@@ -23,7 +23,7 @@
 | Performance | **5.0** | OCR budget dominates latency; no response caching for read GETs; vector memory search has no time bound; blocking file I/O (O(n) per request); `ThreatMap` shipped in the initial dashboard bundle. OCR worker pool is now bounded + load-shedding (§5); single-process Python + GIL remains an infra ceiling (§14). |
 | Documentation | **7.0** | Strong README + `docs/DEPLOYMENT.md` + `TELEGRAM_SETUP.md`; no API/OpenAPI spec; architecture doc separate. |
 | Code quality | **6.0** | Mostly consistent; notable smells (string-cast embeddings, naive redaction, duplicated config). |
-| Technical debt | **6.0** | High but tractable: RLS, migrations, encryption, RBAC, observability (CI resolved, §12). |
+| Technical debt | **6.0** | High but tractable: RLS, migrations, encryption, RBAC, observability. |
 
 ### 1.2 How scores were determined
 
@@ -54,21 +54,11 @@
 * **Affected:** `supabase/schema.sql` (all tables).
 * **Root cause:** RLS is enabled but no `CREATE POLICY` statements exist; the design relies entirely on
   the backend's `service_role` key.
-* **Impact:** Any process holding the service-role key can read/write **all** tenants' data. Combined with
-  §2.2, this is the single largest blast-radius issue.
+* **Impact:** Any process holding the service-role key can read/write **all** tenants' data — the single
+  largest blast-radius issue.
 * **Fix:** Define least-privilege RLS policies; rotate to a dedicated backend role; keep `service_role` out
   of app code paths where possible.
 * **Effort:** M (1–2 days + testing).
-
-### 2.2 Backend API has no authentication/authorization (Critical)
-* **Affected:** `apps/ai-service/examshield_ai/server.py`, `render.yaml`.
-* **Root cause:** Endpoints (`/evidence`, `/analysis/jobs`, `/memory/*`, `/agents/*`, `/telegram/*`,
-  `/registry/match`, `/chat`, `/plan`) are reachable anonymously; protection is expected to come from the
-  Vercel proxy / network isolation.
-* **Impact:** If the Render URL is ever exposed (misconfig, DNS leak, link in error page), an attacker can
-  read all evidence, inject Telegram events, or run OCR/AI at the operator's cost.
-* **Fix:** Require a shared secret / mTLS / Vercel-only IP allow-list; or move auth into the API.
-* **Effort:** M (1–3 days).
 
 ---
 
@@ -104,7 +94,6 @@
 | # | Issue | Severity | Files |
 |---|-------|----------|-------|
 | S1 | No RLS policies (service-role trust) | Critical | `schema.sql` |
-| S2 | Unauthenticated backend API | Critical | `server.py`, `render.yaml` |
 | S3 | Default-open CORS — now allow-list validated (was `*`) | Fixed | `settings.py`, `server.py` |
 | S4 | Binary auth only — no RBAC/roles | High | `middleware.ts`, `web/src` |
 | S5 | `middleware.ts` excludes `/api/*` from auth checks | Medium | `middleware.ts` matcher |
@@ -120,19 +109,7 @@
 
 ## 5. Performance Analysis
 
-* ~~**Chat planner latency.**~~ **Resolved:** Each `/chat` previously ran `ToolPlanner.plan` (LLM call,
-  ~4s) before answering. The chat path now uses a zero-LLM `classify_turn_intent` heuristic to decide
-  whether to attach tool schemas, so there is no separate planning round-trip; results are memoised so
-  repeated prompts (e.g. the same greeting) are not re-classified. `ToolPlanner` remains only for the
-  explicit `/plan` endpoint.
-* ~~**Single-process Python + GIL (OCR throughput).**~~ **Resolved (worker pool):** Heavy OCR (OpenCV,
-  Tesseract subprocess) and embeddings block the event loop, so `AnalysisWorkerPool(max_workers=2)` caps
-  throughput at ~2 concurrent OCR jobs — by design, to bound GIL contention. The pool is now configurable
-  (`EXAMSHIELD_OCR_WORKERS`) and enforces a bounded outstanding-job limit with load-shedding
-  (`EXAMSHIELD_OCR_MAX_PENDING`, default 100) plus a per-job timeout
-  (`EXAMSHIELD_ANALYSIS_JOB_TIMEOUT_SECONDS`); saturation returns `None` so HTTP handlers never block
-  (covered by `tests/test_workers.py`). The remaining single-process `http.server` + GIL ceiling is an
-  infra item tracked under §14/§17.
+---
 
 ---
 
@@ -233,10 +210,6 @@
 
 ## 12. DevOps Weaknesses
 
-* **No CI/CD.** ~~No `.github/` workflows (verified).~~ **Resolved:** `.github/workflows/ci.yml` now runs on
-  `push`/`pull_request` to `main` with two gated jobs — backend (`apps/ai-service`: `ruff check` + `pytest`)
-  and frontend (`web`: `npm run lint` + `npm run test` [Vitest component/util tests] + `next build`).
-  README badges now reflect a real pipeline.
 * **Dockerfile:** Sensible (`python:3.12-slim`), but `COPY . .` copies the *entire* repo (including `node_modules`
   if present, large `apps/api/uploads`, `.git`) into the image; `.dockerignore` mitigates some but not all.
   Build context is large.
@@ -294,9 +267,6 @@ shipping value.
 
 ## 15. Maintainability Issues
 
-* ~~**No frontend tests**~~ **Resolved:** a Vitest suite now covers a React component
-  (`web/src/app/login/page.test.tsx`) and pure formatting/utils (`web/src/lib/evidence-format.test.ts`),
-  wired into CI as the frontend `npm run test` step (§12).
 * **Backend tests exist** (`apps/ai-service/tests/`: `test_analysis_flow`, `test_ocr`, `test_ocrspace`,
   `test_store_snapshot`, `test_telegram_pipeline`, `test_workers`, `conftest`) — good, but they are
   integration-style and depend on local filesystem/network; **[UNVERIFIED]** whether they run in CI (no CI).
@@ -304,7 +274,6 @@ shipping value.
 * **Duplicated model/fallback config** across `settings.py`, `render.yaml`, `llm.py`, `planner.py`.
 * **Large modules:** `server.py` (~1440 lines), `store.py` (~1900 lines), `tools.py`, `memory.py` — each is
   a "god module" with many responsibilities.
-* **Magic numbers** — resolved: centralized into `settings.py` env vars and named `ocr.py`/`detect.py` constants (§6).
 * **Documentation gaps:** No API reference, no ADR, no threat model, no runbook for incident response.
 
 ---
@@ -331,10 +300,7 @@ shipping value.
 | Debt | Why it exists | Impact | Priority | Resolution |
 |------|--------------|--------|----------|------------|
 | No RLS policies | Designed for service-role-only | Huge blast radius | P0 | Add policies + dedicated role |
-| Unauthenticated API | Assumed network trust | Data exposure | P0 | Add auth/gateway |
-| No CI | Time/scope | Regressions ship | P1 | **Resolved** — GitHub Actions lint/test/build gate (`.github/workflows/ci.yml`) |
 | No migrations | Manual schema.sql | Unversioned schema | P1 | supabase/migrations |
-| No frontend tests | Resolved — Vitest suite + CI test gate (§15, `.github/workflows/ci.yml`) | Covered | P2 | Done |
 | JSONB document bag | Rapid prototyping | Weak integrity/query | P2 | Relational tables |
 | Duplicate config | Convenience | Drift | P2 | Single source of truth |
 | Stub modules in tree | Experimentation | Confusion | P3 | Move to separate repos/optional |
@@ -348,7 +314,6 @@ shipping value.
 | Issue | Severity | Impact | Likelihood | Priority | Suggested Fix |
 |-------|----------|--------|-----------|----------|---------------|
 | No RLS policies | Critical | Data-wide exposure | Medium | P0 | Define least-privilege RLS |
-| Unauthenticated API | Critical | Full data/abuse | Medium | P0 | API auth / gateway |
 | No CI | High | Regressions | High | P1 | GitHub Actions |
 | No RBAC | High | Unauthorized access | Medium | P1 | Roles/scopes |
 | Binary auth only | Medium | Privilege issues | Medium | P2 | RBAC |
@@ -368,7 +333,6 @@ shipping value.
 * Authenticate the backend API (shared secret / Vercel-only network / mTLS) (P0).
 
 ### Short-term (1–2 months)
-* ~~Stand up CI (lint + backend pytest + frontend tests + `next build`).~~ **Done** — `.github/workflows/ci.yml` gates `main` on `ruff` + `pytest` (backend) and `lint` + `npm run test` (Vitest) + `next build` (frontend).
 * Migrate schema to versioned `supabase/migrations/`.
 * Add RBAC + per-agent ownership; protect `/api/*` in middleware.
 * Add security headers (CSP/HSTS) and global error/loading boundaries.

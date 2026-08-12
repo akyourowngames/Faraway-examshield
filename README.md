@@ -138,6 +138,7 @@ npm install --legacy-peer-deps
 #   NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
 #   NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 #   EXAMSHIELD_API_URL=http://127.0.0.1:8790
+#   EXAMSHIELD_BACKEND_API_KEY=...   # must match backend EXAMSHIELD_API_AUTH_SECRET
 
 npm run dev
 ```
@@ -161,6 +162,7 @@ python service.py   # http://127.0.0.1:8790
 | `SUPABASE_SERVICE_ROLE_KEY` | yes* | Supabase service-role key |
 | `KILO_API_KEY` | yes* | Kilo Gateway API key (AI chat) |
 | `EXAMSHIELD_AI_CORS_ORIGIN` | yes* | Frontend URL allowed by CORS |
+| `EXAMSHIELD_API_AUTH_SECRET` | yes*† | Shared secret protecting the backend API (audit §2.2); the frontend proxy sends it as `X-Examshield-Api-Key` |
 | `EXAMSHIELD_PUBLIC_URL` | no | Public backend URL (Telegram webhook) |
 | `TELEGRAM_BOT_TOKEN` | no | Telegram bot token |
 | `TELEGRAM_WEBHOOK_SECRET` | no | Telegram webhook secret |
@@ -170,6 +172,7 @@ python service.py   # http://127.0.0.1:8790
 
 \* Required for production (Supabase-backed) deployments; without them the backend runs in offline mode.
 † Required only when storing agent LLM keys. Generate with `python -c "from examshield_ai.secrets_crypto import generate_master_key; print(generate_master_key())"`.
+‡ Required for production to authenticate the backend API (audit §2.2). When unset the API is reachable anonymously with a startup warning. The frontend must set `EXAMSHIELD_BACKEND_API_KEY` to the same value.
 
 The full variable list (OCR chain, timeouts, planner models, rate limits, token budget, etc.) is in [`render.yaml`](render.yaml). See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for setup details.
 
