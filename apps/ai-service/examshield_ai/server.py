@@ -21,6 +21,8 @@ from .memory import MemoryManager
 from .ocr import SUPPORTED_TYPES, analyze_image, ocr_runtime_status
 from .operator import resolve_operator
 from .pipeline import EvidencePipeline
+from .ratelimit import make_ocr_limiter, make_upload_limiter
+from .response_cache import ReadResponseCache, cached_get
 from .planner import ToolPlanner
 from .responses import conversation_messages, grounded_messages
 from .settings import Settings, load_settings
@@ -117,21 +119,33 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             self._send_json({"tools": self.registry.schemas()})
             return
         if path == "/evidence":
-            self._send_json(self.store.list_evidence())
+            self._send_json(cached_get(self._get_cache, self.path, self.store.list_evidence))
             return
         if len(parts) == 2 and parts[0] == "evidence":
             bundle = self.store.get_bundle(parts[1])
             self._send_json(bundle if bundle else {"error": "Evidence not found."}, status=200 if bundle else 404)
             return
         if path == "/alerts":
-            self._send_json({"alerts": self.store.list_evidence()["alerts"]})
+            self._send_json(
+                cached_get(
+                    self._get_cache,
+                    self.path,
+                    lambda: {"alerts": self.store.list_evidence()["alerts"]},
+                )
+            )
             return
         if len(parts) == 2 and parts[0] == "memory":
             self._get_memory(parts[1])
             return
         # Monitored Telegram groups
         if path == "/telegram/groups":
-            self._send_json({"groups": self.store.list_monitored_groups()})
+            self._send_json(
+                cached_get(
+                    self._get_cache,
+                    self.path,
+                    lambda: {"groups": self.store.list_monitored_groups()},
+                )
+            )
             return
         if path == "/telegram/status":
             self._get_telegram_status()
@@ -154,7 +168,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             return
         # Community Agents
         if path == "/llm/providers":
-            self._send_json({"providers": list_providers()})
+            self._send_json(cached_get(self._get_cache, self.path, lambda: {"providers": list_providers()}))
             return
         if path == "/llm/validate":
             self._validate_llm_key()
@@ -287,6 +301,10 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         self._send_json({"error": "Not found"}, status=404)
 
     def _run_ocr(self) -> None:
+        # ── Rate limit ──
+        if not self._rate_limit_check(self._ocr_limiter, "OCR"):
+            return
+
         content_type = (self.headers.get("Content-Type") or "").split(";")[0].lower()
         suffix = SUPPORTED_TYPES.get(content_type)
         if not suffix:
@@ -308,10 +326,29 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             self._send_json({"status": "failed", "error": "Image payload is required."}, status=400)
             return
 
+        # ── Size enforcement ──
+        max_bytes = self.settings.max_upload_bytes
+        if max_bytes > 0 and content_length > max_bytes:
+            self._send_json(
+                {"status": "failed", "error": f"Image too large. Maximum is {max_bytes} bytes."},
+                status=413,
+            )
+            return
+
         image_bytes = self.rfile.read(content_length)
+
+        # ── Magic-byte validation ──
+        magic_err = self._validate_image_magic(image_bytes, content_type)
+        if magic_err:
+            self._send_json({"status": "failed", "error": magic_err}, status=400)
+            return
+
         self._send_json(analyze_image(image_bytes, suffix))
 
     def _upload_evidence(self) -> None:
+        # ── Rate limit ──
+        if not self._rate_limit_check(self._upload_limiter, "upload"):
+            return
         try:
             uploaded = self._read_multipart_file("file")
             created = self.store.create_evidence(uploaded)
@@ -582,7 +619,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
     def _get_telegram_status(self) -> None:
         try:
             info = self.telegram._api("getWebhookInfo", {})
-            self._send_json({
+            payload = {
                 "configured": self.telegram.configured,
                 "publicUrl": self.settings.public_url or "NOT SET",
                 "botTokenSet": bool(self.settings.telegram_bot_token),
@@ -591,9 +628,13 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 "pendingUpdateCount": info.get("pending_update_count", 0),
                 "lastErrorDate": info.get("last_error_date"),
                 "lastErrorMessage": info.get("last_error_message"),
-            })
+            }
         except Exception as exc:
             self._send_json({"error": str(exc) or "Failed to get Telegram status."}, status=400)
+            return
+        # The Telegram API call is the expensive part; cache the assembled status
+        # for read_cache_ttl_seconds so dashboard polling doesn't hit Telegram each time.
+        self._send_json(cached_get(self._get_cache, self.path, lambda: payload))
 
     def _run_chat(self) -> None:
         payload = self._read_json()
@@ -684,7 +725,18 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 return
             threshold = float(payload.get("threshold") or payload.get("matchThreshold") or 0.76)
             match_count = int(payload.get("matchCount") or payload.get("limit") or 8)
-            self._send_json(self.memory.search(query, threshold=threshold, match_count=match_count))
+            created_after = (
+                str(payload.get("createdAfter") or payload.get("minCreatedAt") or payload.get("since") or "").strip()
+                or None
+            )
+            self._send_json(
+                self.memory.search(
+                    query,
+                    threshold=threshold,
+                    match_count=match_count,
+                    created_after=created_after,
+                )
+            )
         except Exception as exc:
             self._send_json({"error": str(exc) or "Memory search failed."}, status=400)
 
@@ -724,7 +776,11 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             for param in (parsed.query or "").split("&"):
                 if param.startswith("status="):
                     status = param.split("=", 1)[1] or None
-            agents = self.agent_store.list_agents(status=status)
+            agents = cached_get(
+                self._get_cache,
+                self.path,
+                lambda: self.agent_store.list_agents(status=status),
+            )
             self._send_json({"agents": agents, "total": len(agents)})
         except Exception as exc:
             self._send_json({"error": str(exc) or "Failed to list agents."}, status=400)
@@ -1160,6 +1216,39 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send_json({"error": str(exc) or "Failed to list conversations."}, status=400)
 
+    # ── Rate limiting / abuse helpers ───────────────────────────────────
+
+    def _client_ip(self) -> str:
+        """Extract client IP, respecting X-Forwarded-For (first entry)."""
+        xff = (self.headers.get("X-Forwarded-For") or "").strip()
+        if xff:
+            return xff.split(",")[0].strip()
+        return self.client_address[0]
+
+    def _rate_limit_check(self, limiter, label: str) -> bool:
+        """Check rate limit; send 429 if exceeded. Returns True if allowed."""
+        if limiter.max_requests <= 0:
+            return True
+        allowed, info = limiter.allow(self._client_ip())
+        if not allowed:
+            self._send_json(
+                {"error": f"Rate limit exceeded for {label}. Retry after {info['retry_after']:.0f}s."},
+                status=429,
+            )
+            return False
+        return True
+
+    @staticmethod
+    def _validate_image_magic(data: bytes, content_type: str) -> str | None:
+        """Check magic bytes match declared content-type. Returns error or None."""
+        if not data:
+            return "Empty file payload."
+        if content_type == "image/jpeg" and data[:2] != b"\xff\xd8":
+            return "Content-Type says JPEG but file does not start with JPEG magic bytes."
+        if content_type == "image/png" and data[:8] != b"\x89PNG\r\n\x1a\n":
+            return "Content-Type says PNG but file does not start with PNG magic bytes."
+        return None
+
     def _read_json(self) -> dict[str, Any]:
         try:
             length = int(self.headers.get("Content-Length") or "0")
@@ -1186,6 +1275,10 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length") or "0")
         except ValueError:
             length = 0
+        # ── Size enforcement ──
+        max_bytes = self.settings.max_upload_bytes
+        if max_bytes > 0 and length > max_bytes:
+            raise ValueError(f"Payload too large ({length} bytes). Maximum is {max_bytes}.")
         body = self.rfile.read(length)
         content_type = self.headers.get("Content-Type") or ""
         form = FieldStorage(
@@ -1217,6 +1310,14 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             self.send_response(status)
             self._cors_headers()
             self.send_header("Content-Type", "application/json")
+            # Read endpoints are safe for browsers/CDNs to cache briefly, which
+            # keeps the dashboard's polling from re-fetching unchanged data on
+            # every tick. /health stays no-cache so it always reflects liveness.
+            if self.command == "GET" and urlparse(self.path).path != "/health":
+                self.send_header(
+                    "Cache-Control",
+                    f"public, max-age={self.settings.cache_control_max_age}",
+                )
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -1255,7 +1356,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
 
     def _list_registry_papers(self) -> None:
         try:
-            papers = self.store.read_registry()
+            papers = cached_get(self._get_cache, self.path, self.store.read_registry)
             self._send_json({"papers": papers, "total": len(papers)})
         except Exception as exc:
             self._send_json({"error": str(exc) or "Failed to list papers."}, status=400)
@@ -1272,7 +1373,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
 
     def _get_registry_stats(self) -> None:
         try:
-            papers = self.store.read_registry()
+            papers = cached_get(self._get_cache, self.path, self.store.read_registry)
             total = len(papers)
             protected = sum(1 for p in papers if p.get("protected", True))
             compromised = sum(1 for p in papers if p.get("status") == "compromised")
@@ -1524,6 +1625,9 @@ def build_handler(settings: Settings):
     ConfiguredExamshieldAiHandler.pipeline = pipeline
     ConfiguredExamshieldAiHandler.memory = pipeline.memory
     ConfiguredExamshieldAiHandler.agent_store = AgentStore(store)
+    ConfiguredExamshieldAiHandler._get_cache = ReadResponseCache(settings.read_cache_ttl_seconds)
+    ConfiguredExamshieldAiHandler._ocr_limiter = make_ocr_limiter()
+    ConfiguredExamshieldAiHandler._upload_limiter = make_upload_limiter()
     return ConfiguredExamshieldAiHandler
 
 

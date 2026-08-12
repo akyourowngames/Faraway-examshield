@@ -22,6 +22,8 @@ class Settings:
     chat_max_tokens: int
     planner_max_tokens: int
     list_cache_ttl_seconds: float
+    read_cache_ttl_seconds: float
+    cache_control_max_age: int
     supabase_timeout_seconds: float
     detect_threshold: float
     cors_origin: str
@@ -107,6 +109,8 @@ def load_settings() -> Settings:
         chat_max_tokens=int(os.environ.get("EXAMSHIELD_AI_CHAT_MAX_TOKENS", "1024")),
         planner_max_tokens=int(os.environ.get("EXAMSHIELD_AI_PLANNER_MAX_TOKENS", "120")),
         list_cache_ttl_seconds=float(os.environ.get("EXAMSHIELD_LIST_CACHE_TTL_SECONDS", "8")),
+        read_cache_ttl_seconds=float(os.environ.get("EXAMSHIELD_READ_CACHE_TTL_SECONDS", "5")),
+        cache_control_max_age=int(os.environ.get("EXAMSHIELD_CACHE_CONTROL_MAX_AGE", "5")),
         supabase_timeout_seconds=float(os.environ.get("EXAMSHIELD_SUPABASE_TIMEOUT_SECONDS", "20")),
         detect_threshold=float(os.environ.get("EXAMSHIELD_DETECT_THRESHOLD", "7")),
         cors_origin=os.environ.get("EXAMSHIELD_AI_CORS_ORIGIN", ""),

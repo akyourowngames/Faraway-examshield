@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable
 
+from .injection import sanitize_input
 from .memory import MemoryManager
 from .reports import generate_evidence_report, generate_summary_report
 from .store import EvidenceStore, JsonObject, is_today
@@ -779,11 +780,23 @@ def answer_context(result: JsonObject) -> str:
     }
     sections = []
     for section in result.get("sections", []):
+        rows = section.get("rows", [])
+        # Sanitize string values in rows — they may contain OCR/evidence text
+        # that was ingested from external sources (Telegram, uploads).
+        safe_rows = []
+        for row in rows:
+            if isinstance(row, dict):
+                safe_rows.append({
+                    k: sanitize_input(v) if isinstance(v, str) else v
+                    for k, v in row.items()
+                })
+            else:
+                safe_rows.append(row)
         sections.append(
             {
-                "title": section.get("title"),
+                "title": sanitize_input(str(section.get("title") or "")),
                 "rowsAreSamplesNotTotals": True,
-                "rows": section.get("rows", []),
+                "rows": safe_rows,
             }
         )
     answer_rules = [
@@ -805,7 +818,7 @@ def answer_context(result: JsonObject) -> str:
     context = {
         "tool": result.get("tool"),
         "title": result.get("title"),
-        "summary": result.get("summary"),
+        "summary": sanitize_input(str(result.get("summary") or "")),
         "threatPosture": result.get("threatPosture"),
         "openAlerts": result.get("openAlerts"),
         "registryThreatCount": result.get("registryThreatCount"),

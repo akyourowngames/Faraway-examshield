@@ -17,6 +17,21 @@ from examshield_ai.ocr import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_ocr_result_cache():
+    """The OCR result cache is a process-global singleton keyed by image bytes.
+
+    Several tests call ``analyze_image(b"img", ...)`` with identical bytes, so a
+    cached result from one test would leak into the next and short-circuit its
+    mocked engine. Clear it around each test to keep them independent.
+    """
+    from examshield_ai.ocr import _OCR_RESULT_CACHE
+
+    _OCR_RESULT_CACHE.clear()
+    yield
+    _OCR_RESULT_CACHE.clear()
+
+
 class TestOcrHelpers:
     def test_normalize_text_collapses_whitespace(self):
         assert normalize_text("  hello   world \n\n foo ") == "hello world\nfoo"

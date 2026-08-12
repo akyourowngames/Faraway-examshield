@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { motion } from "framer-motion";
 import { Activity, ShieldAlert, Server, AlertTriangle, FileUp } from "lucide-react";
 import {
@@ -7,8 +8,22 @@ import {
   formatEvidenceStatus,
   formatEvidenceTime,
 } from "@/lib/evidence-format";
-import { ThreatMap } from "@/components/sections/ThreatMap";
 import { useEvidenceFeed } from "@/lib/use-evidence-feed";
+
+// Code-split the threat map (framer-motion + @svg-maps/india) out of the initial
+// dashboard bundle. It is client-only and renders below-the-fold, so it is an
+// ideal lazy-load target (audit §5: frontend bundle).
+const ThreatMap = dynamic(
+  () => import("@/components/sections/ThreatMap").then((m) => m.ThreatMap),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full w-full items-center justify-center text-xs font-mono uppercase tracking-[0.2em] text-white/30">
+        Loading threat map…
+      </div>
+    ),
+  },
+);
 
 
 const containerVariants = {

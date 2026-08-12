@@ -70,7 +70,8 @@ create or replace function public.match_examshield_memory (
   query_embedding extensions.vector(384),
   match_threshold double precision default 0.76,
   match_count int default 10,
-  exclude_source_ref text default null
+  exclude_source_ref text default null,
+  min_created_at timestamptz default null
 )
 returns table (
   id uuid,
@@ -103,6 +104,7 @@ as $$
   where item.embedding is not null
     and item.status = 'active'
     and (exclude_source_ref is null or item.source_ref <> exclude_source_ref)
+    and (min_created_at is null or item.created_at >= min_created_at)
     and 1 - (item.embedding <=> query_embedding) >= match_threshold
   order by item.embedding <=> query_embedding asc
   limit match_count;
