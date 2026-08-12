@@ -44,6 +44,20 @@ OCR_PREPROCESS = _env_bool("EXAMSHIELD_OCR_PREPROCESS", "1")
 OCR_CACHE_MAX_ENTRIES = int(os.environ.get("EXAMSHIELD_OCR_CACHE_MAX_ENTRIES", "256"))
 OCR_CACHE_TTL_SECONDS = float(os.environ.get("EXAMSHIELD_OCR_CACHE_TTL_SECONDS", "3600"))
 
+# ── Image-processing tuning constants (named so they are not scattered) ──
+OCR_ADAPTIVE_BLOCK_SIZE = 11   # adaptiveThreshold block size for binarisation
+OCR_ADAPTIVE_C = 10            # adaptiveThreshold constant subtracted from the window mean
+OCR_DESKEW_MIN_COORDS = 25     # min foreground pixels before skew estimation is trusted
+OCR_DESKEW_ANGLE_FLOOR = 0.5   # skew below this (deg) is treated as already straight
+OCR_DESKEW_ANGLE_CEIL = 15.0   # skew above this (deg) is treated as extreme / left as-is
+OCR_QUALITY_CLAMP_MIN = 30     # lower bound for the clamped quality score
+OCR_QUALITY_CLAMP_MAX = 92     # upper bound for the clamped quality score
+OCR_QUALITY_MIN_WORD_LEN = 3   # min token length counted as a meaningful word
+OCR_QUALITY_KEYBOARD_PENALTY = 25  # penalty when too few alphabetic chars (likely noise)
+OCR_QUALITY_MIN_UNIQUE_CHARS = 2   # unique-char count at/under which a token is noise
+OCR_QUALITY_MIN_TOKEN_LEN = 4      # min length for a token to be treated as a real word
+OCR_QUALITY_SHORT_LINE_MAX_LEN = 4 # line length at/under which it counts as a "short line"
+
 # Identical image bytes produce identical OCR output, so cache completed results
 # by content hash to avoid re-paying for OCR (subprocess time / paid quota) on
 # retries or duplicate uploads.
@@ -267,7 +281,8 @@ def _preprocess_for_ocr(frame: Any) -> Any:
         deskewed = _deskew(denoised)
         # Adaptive threshold binarises printed text, killing background gradients.
         binary = cv2.adaptiveThreshold(
-            deskewed, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 10
+            deskewed, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY,
+            OCR_ADAPTIVE_BLOCK_SIZE, OCR_ADAPTIVE_C,
         )
         return cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
     except Exception as exc:
@@ -287,13 +302,13 @@ def _deskew(gray: Any) -> Any:
 
         thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
         coords = np.column_stack(np.where(thresh > 0))
-        if coords.shape[0] < 25:
+        if coords.shape[0] < OCR_DESKEW_MIN_COORDS:
             return gray
         rect = cv2.minAreaRect(coords)
         angle = rect[-1]
         if angle < -45:
             angle = 90 + angle
-        if abs(angle) < 0.5 or abs(angle) > 15:
+        if abs(angle) < OCR_DESKEW_ANGLE_FLOOR or abs(angle) > OCR_DESKEW_ANGLE_CEIL:
             return gray
         height, width = gray.shape[:2]
         center = (width // 2, height // 2)
@@ -518,7 +533,7 @@ def estimate_confidence_from_text(raw_text: str, words: list[str]) -> int:
     if not raw_text:
         return 0
     provisional = score_ocr_quality(raw_text, 70, words)
-    return max(30, min(92, int(provisional["qualityScore"])))
+    return max(OCR_QUALITY_CLAMP_MIN, min(OCR_QUALITY_CLAMP_MAX, int(provisional["qualityScore"])))
 
 
 def read_word_confidences(
@@ -570,7 +585,7 @@ def score_ocr_quality(text: str, confidence: int, words: list[str]) -> dict[str,
     meaningful_words = [
         word
         for word in normalized_words
-        if len(word) >= 3 and has_vowel(word) and not is_keyboard_noise(word)
+        if len(word) >= OCR_QUALITY_MIN_WORD_LEN and has_vowel(word) and not is_keyboard_noise(word)
     ]
     lines = [line for line in text.splitlines() if line.strip()]
     printable_chars = [char for char in text if not char.isspace()]
@@ -579,7 +594,7 @@ def score_ocr_quality(text: str, confidence: int, words: list[str]) -> dict[str,
     alpha_count = sum(1 for char in text if char.isalpha())
     punctuation_count = sum(1 for char in printable_chars if not char.isalnum())
     punctuation_ratio = punctuation_count / len(printable_chars) if printable_chars else 0
-    short_line_ratio = sum(1 for line in lines if len(line.strip()) <= 4) / len(lines) if lines else 1
+    short_line_ratio = sum(1 for line in lines if len(line.strip()) <= OCR_QUALITY_SHORT_LINE_MAX_LEN) / len(lines) if lines else 1
     word_count = len([word for word in normalized_words if word])
     meaningful_ratio = len(meaningful_words) / word_count if word_count else 0
     language_score = min(100, meaningful_ratio * 100)
@@ -590,7 +605,7 @@ def score_ocr_quality(text: str, confidence: int, words: list[str]) -> dict[str,
     if short_line_ratio > 0.55:
         penalties += 18
     if alpha_count < 12:
-        penalties += 25
+        penalties += OCR_QUALITY_KEYBOARD_PENALTY
     if word_count < 4:
         penalties += 22
     if confidence < 35:
@@ -627,10 +642,10 @@ def is_keyboard_noise(value: str) -> bool:
     if len(value) <= 2:
         return True
     unique = len(set(value))
-    if unique <= 2 and len(value) >= 4:
+    if unique <= OCR_QUALITY_MIN_UNIQUE_CHARS and len(value) >= OCR_QUALITY_MIN_TOKEN_LEN:
         return True
     consonants = set("bcdfghjklmnpqrstvwxyz")
-    return len(value) >= 4 and all(char in consonants for char in value.lower())
+    return len(value) >= OCR_QUALITY_MIN_TOKEN_LEN and all(char in consonants for char in value.lower())
 
 
 def normalize_text(value: str) -> str:

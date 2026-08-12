@@ -15,6 +15,14 @@ def _severity_thresholds() -> tuple[float, float, float]:
     medium = float(os.environ.get("EXAMSHIELD_DETECT_MEDIUM_SCORE", "7"))
     return critical, high, medium
 
+
+# ── Detection scoring / parsing constants (named so they are not scattered) ──
+DETECTION_PATTERN_WEIGHT = 7      # default weight for cheat "request/share answers" patterns
+TELEGRAM_MESSAGE_WEIGHT = 7       # URL weight when the matched domain is a Telegram link
+GENERIC_MESSAGE_WEIGHT = 8        # URL weight for other suspicious (non-shortener) domains
+DETECTION_HTTP_PREFIX_LEN = 7     # length of "http://" stripped when normalising URLs
+DETECTION_HTTPS_PREFIX_LEN = 8    # length of "https://" stripped when normalising URLs
+
 # Keyword patterns: (pattern, weight, category, description)
 # weight: 1-10 impact on score
 # category: leak|cheat|shady|general
@@ -24,8 +32,8 @@ KEYWORD_PATTERNS: list[tuple[str, int, str, str]] = [
     (r"\bquestion\s*paper\s+(leaked?|pdf)\b", 9, "leak", "Question paper leak"),
     (r"\b(exam|paper)\s*(leaked?|hacked|compromised)\b", 9, "leak", "Exam compromise"),
     (r"\bleaked\s*(paper|answer|solution|key)\b", 8, "leak", "Leaked content"),
-    (r"\bsend\s+(me\s+)?(the\s+)?(answer|solution|paper|key)\b", 7, "cheat", "Requesting answers"),
-    (r"\bshare\s+(the\s+)?(answer|solution|paper|key)\b", 7, "cheat", "Sharing answers"),
+    (r"\bsend\s+(me\s+)?(the\s+)?(answer|solution|paper|key)\b", DETECTION_PATTERN_WEIGHT, "cheat", "Requesting answers"),
+    (r"\bshare\s+(the\s+)?(answer|solution|paper|key)\b", DETECTION_PATTERN_WEIGHT, "cheat", "Sharing answers"),
     (r"\bcheating\b", 6, "cheat", "Mention of cheating"),
     (r"\b(copy|spread)\s+(me\s+)?(the\s+)?(answer|solution|paper|key)\b", 6, "cheat", "Copying/cheating"),
     (r"\b(private|secret)\s*(group|channel)\b", 5, "shady", "Secret group mention"),
@@ -150,7 +158,7 @@ def extract_urls(text: str) -> list[dict[str, Any]]:
             if domain in domains or any(d in url.lower() for d in domains):
                 category = cat
                 weight = 5 if cat == "shortener" else (
-                    7 if cat == "telegram" else 8
+                    TELEGRAM_MESSAGE_WEIGHT if cat == "telegram" else GENERIC_MESSAGE_WEIGHT
                 )
                 break
 
@@ -191,9 +199,9 @@ def _extract_domain(url: str) -> str:
     """Extract domain from URL string."""
     cleaned = url.lower().strip()
     if cleaned.startswith("http://"):
-        cleaned = cleaned[7:]
+        cleaned = cleaned[DETECTION_HTTP_PREFIX_LEN:]
     elif cleaned.startswith("https://"):
-        cleaned = cleaned[8:]
+        cleaned = cleaned[DETECTION_HTTPS_PREFIX_LEN:]
     if cleaned.startswith("www."):
         cleaned = cleaned[4:]
     return cleaned.split("/")[0].split(":")[0]

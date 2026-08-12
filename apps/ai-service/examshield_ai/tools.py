@@ -771,12 +771,40 @@ def threat_posture_summary(
 
 
 def answer_context(result: JsonObject) -> str:
-    metrics = {
+    metrics = _build_answer_metrics(result)
+    context = {
+        "tool": result.get("tool"),
+        "title": result.get("title"),
+        "summary": sanitize_input(str(result.get("summary") or "")),
+        "threatPosture": result.get("threatPosture"),
+        "openAlerts": result.get("openAlerts"),
+        "registryThreatCount": result.get("registryThreatCount"),
+        "compromisedPaperCount": result.get("compromisedPaperCount"),
+        "metrics": metrics,
+        "metricsToMention": [
+            {"label": label, "value": value}
+            for label, value in metrics.items()
+        ],
+        "currentInvestigation": result.get("currentInvestigation"),
+        "sections": _build_answer_sections(result),
+        "evidenceIds": result.get("evidenceIds", []),
+        "generatedAt": result.get("generatedAt"),
+        "answerRules": _build_answer_rules(result),
+    }
+    return json.dumps(context, indent=2, ensure_ascii=False)[:7000]
+
+
+def _build_answer_metrics(result: JsonObject) -> dict[str, str]:
+    return {
         str(item.get("label")): str(item.get("value"))
         for item in result.get("metrics", [])
         if item.get("label") is not None
     }
-    sections = []
+
+
+def _build_answer_sections(result: JsonObject) -> list[JsonObject]:
+    """Sanitize external OCR/evidence text in section rows before it reaches the model."""
+    sections: list[JsonObject] = []
     for section in result.get("sections", []):
         rows = section.get("rows", [])
         # Sanitize string values in rows — they may contain OCR/evidence text
@@ -797,7 +825,11 @@ def answer_context(result: JsonObject) -> str:
                 "rows": safe_rows,
             }
         )
-    answer_rules = [
+    return sections
+
+
+def _build_answer_rules(result: JsonObject) -> list[str]:
+    rules = [
         "Use metrics for all totals and counts.",
         "Do not count section rows to create totals.",
         "Do not change a row severity; copy only the severity shown in that row.",
@@ -805,7 +837,7 @@ def answer_context(result: JsonObject) -> str:
         "Do not discuss these answer rules in the reply.",
     ]
     if result.get("tool") == "listThreats":
-        answer_rules.extend(
+        rules.extend(
             [
                 "Open forensic alerts and registry threats are different signals.",
                 "If threatPosture is elevated, do not say the threat level is stable.",
@@ -813,26 +845,7 @@ def answer_context(result: JsonObject) -> str:
                 "Lead with summary and threatPosture, then mention compromised papers from sections.",
             ]
         )
-    context = {
-        "tool": result.get("tool"),
-        "title": result.get("title"),
-        "summary": sanitize_input(str(result.get("summary") or "")),
-        "threatPosture": result.get("threatPosture"),
-        "openAlerts": result.get("openAlerts"),
-        "registryThreatCount": result.get("registryThreatCount"),
-        "compromisedPaperCount": result.get("compromisedPaperCount"),
-        "metrics": metrics,
-        "metricsToMention": [
-            {"label": label, "value": value}
-            for label, value in metrics.items()
-        ],
-        "currentInvestigation": result.get("currentInvestigation"),
-        "sections": sections,
-        "evidenceIds": result.get("evidenceIds", []),
-        "generatedAt": result.get("generatedAt"),
-        "answerRules": answer_rules,
-    }
-    return json.dumps(context, indent=2, ensure_ascii=False)[:7000]
+    return rules
 
 
 def current_investigation(data: JsonObject) -> JsonObject:

@@ -599,15 +599,7 @@ class EvidenceStore:
                 logger.error(f"OCR failed for evidence {evidence_id}: {error_msg}")
                 raise RuntimeError(error_msg)
             logger.info(f"OCR completed for evidence {evidence_id}, confidence: {ocr_result.get('confidence')}")
-            completed = self.complete_analysis_job(
-                job_id,
-                {
-                    "text": str(ocr_result.get("text") or ""),
-                    "confidence": int(ocr_result.get("confidence") or 0),
-                    "processingTimeMs": int(ocr_result.get("processingTimeMs") or 0),
-                },
-            )
-            timeline.extend(completed["activity"])
+            completed = self._persist_ocr_result(job_id, ocr_result, timeline)
             attribution = self.run_attribution_for_evidence(
                 str(completed["evidence"]["evidenceId"]),
                 str(completed["evidence"].get("ocrText") or ""),
@@ -615,18 +607,7 @@ class EvidenceStore:
             )
             timeline.extend(attribution["activity"])
             report = attribution["forensicReport"]
-            completed_event = self.record_activity(
-                {
-                    "type": "analysis-completed",
-                    "title": "Analysis Completed",
-                    "evidenceId": completed["evidence"]["evidenceId"],
-                    "jobId": job_id,
-                    "timestamp": add_milliseconds(str(report["timestamp"]), 4),
-                    "detail": f"{report['finalConfidence']}% final confidence"
-                    if report["status"] == "investigation-complete"
-                    else "No registry match",
-                }
-            )
+            completed_event = self._compose_analysis_completed_event(completed["evidence"], job_id, report)
             timeline.append(completed_event)
             alert = self.create_critical_alert_if_needed(report, attribution["attribution"])
             if alert["activity"]:
@@ -652,6 +633,42 @@ class EvidenceStore:
                 "job": failed["job"],
                 "activity": [*timeline, *failed["activity"]],
             }
+
+    def _persist_ocr_result(
+        self,
+        job_id: str,
+        ocr_result: JsonObject,
+        timeline: list[JsonObject],
+    ) -> JsonObject:
+        completed = self.complete_analysis_job(
+            job_id,
+            {
+                "text": str(ocr_result.get("text") or ""),
+                "confidence": int(ocr_result.get("confidence") or 0),
+                "processingTimeMs": int(ocr_result.get("processingTimeMs") or 0),
+            },
+        )
+        timeline.extend(completed["activity"])
+        return completed
+
+    def _compose_analysis_completed_event(
+        self,
+        evidence: JsonObject,
+        job_id: str,
+        report: JsonObject,
+    ) -> JsonObject:
+        return self.record_activity(
+            {
+                "type": "analysis-completed",
+                "title": "Analysis Completed",
+                "evidenceId": evidence["evidenceId"],
+                "jobId": job_id,
+                "timestamp": add_milliseconds(str(report["timestamp"]), 4),
+                "detail": f"{report['finalConfidence']}% final confidence"
+                if report["status"] == "investigation-complete"
+                else "No registry match",
+            }
+        )
 
     def mark_analysis_job_processing(self, job_id: str) -> JsonObject:
         job = self._read_json_file("jobs", f"{job_id}.json")
@@ -1047,80 +1064,102 @@ class EvidenceStore:
             }
 
         if not match:
-            attribution = {
-                "attributionId": prefixed_id("ATTR", evidence_id),
-                "evidenceId": evidence_id,
-                "matchedPaperId": None,
-                "matchedExam": None,
-                "matchedSet": None,
-                "confidence": 0,
-                "centerCode": None,
-                "printerId": None,
-                "batchId": None,
-                "status": "no-match",
-                "matchedWatermarkId": None,
-                "centerName": None,
-                "city": None,
-                "state": None,
-                "ocrConfidence": ocr_confidence,
-                "watermarkConfidence": watermark["confidence"],
-                "finalConfidence": 0,
-                "comparisonStatus": "not-run" if not registry_records else "no-match",
-                "comparisonSource": "Core question-paper registry",
-                "referenceCount": len(registry_records),
-                "createdAt": attribution_created_at,
-            }
+            attribution = self._build_no_match_attribution(
+                evidence_id, ocr_confidence, watermark, registry_records, attribution_created_at
+            )
             self._write_json("attributions", f"{evidence_id}.json", attribution)
             report = self._write_report(
-                {
-                    "reportId": prefixed_id("FR", evidence_id),
-                    "evidenceId": evidence_id,
-                    "paperIdentified": None,
-                    "watermarkId": watermark["watermarkId"],
-                    "centerCode": None,
-                    "printerId": None,
-                    "batchId": None,
-                    "centerName": None,
-                    "city": None,
-                    "state": None,
-                    "riskLevel": None,
-                    "status": "no-match",
-                    "ocrConfidence": ocr_confidence,
-                    "watermarkConfidence": watermark["confidence"],
-                    "finalConfidence": 0,
-                    "comparisonStatus": "not-run" if not registry_records else "no-match",
-                    "comparisonSource": "Core question-paper registry",
-                    "referenceCount": len(registry_records),
-                    "timestamp": attribution_created_at,
-                    # Enriched fields
-                    "investigationTimeline": [
-                        {"step": "Watermark Extraction", "status": watermark["status"], "timestamp": watermark_extracted_at},
-                        {"step": "Registry Comparison", "status": "no-match" if registry_records else "not-run", "timestamp": attribution_created_at},
-                    ],
-                    "riskFactors": _build_risk_factors(None, watermark, ocr_confidence),
-                    "recommendationSummary": "No matched paper found. Continue monitoring for new evidence or re-scan with higher quality image.",
-                    "detectionDetails": {"ocrConfidence": ocr_confidence, "watermarkStatus": watermark["status"]},
-                    "geolocation": None,
-                }
+                self._build_no_match_report(
+                    evidence_id, watermark, ocr_confidence, registry_records,
+                    attribution_created_at, watermark_extracted_at,
+                )
             )
-            completed = self.record_activity(
-                {
-                    "type": "attribution-complete",
-                    "title": "Attribution Complete",
-                    "evidenceId": evidence_id,
-                    "timestamp": add_milliseconds(attribution_created_at, 1),
-                    "detail": "No registry match found" if ocr_text.strip() else "No OCR text available",
-                }
+            activity = self._build_attribution_activity(
+                evidence_id=evidence_id,
+                watermark=watermark,
+                watermark_activity=watermark_activity,
+                attribution_started=attribution_started,
+                attribution_created_at=attribution_created_at,
+                ocr_text=ocr_text,
             )
             return {
                 "attribution": attribution,
                 "watermark": watermark,
                 "forensicReport": report,
-                "activity": [*watermark_activity, attribution_started, completed],
+                "activity": activity,
             }
 
         final_confidence = final_confidence_score(ocr_confidence, match.get("confidence"), watermark.get("confidence"))
-        attribution = {
+        attribution = self._build_match_attribution(
+            evidence_id, match, ocr_confidence, watermark, final_confidence, registry_records, attribution_created_at
+        )
+        self._write_json("attributions", f"{evidence_id}.json", attribution)
+        report = self._write_report(
+            self._build_match_report(
+                evidence_id, match, watermark, ocr_confidence, final_confidence,
+                registry_records, attribution_created_at, watermark_extracted_at,
+            )
+        )
+        activity = self._build_attribution_activity(
+            evidence_id=evidence_id,
+            watermark=watermark,
+            watermark_activity=watermark_activity,
+            attribution_started=attribution_started,
+            attribution_created_at=attribution_created_at,
+            ocr_text=ocr_text,
+            match=match,
+            final_confidence=final_confidence,
+        )
+        return {
+            "attribution": attribution,
+            "watermark": watermark,
+            "forensicReport": report,
+            "activity": activity,
+        }
+
+    def _build_no_match_attribution(
+        self,
+        evidence_id: str,
+        ocr_confidence: int | None,
+        watermark: JsonObject,
+        registry_records: list[JsonObject],
+        created_at: str,
+    ) -> JsonObject:
+        return {
+            "attributionId": prefixed_id("ATTR", evidence_id),
+            "evidenceId": evidence_id,
+            "matchedPaperId": None,
+            "matchedExam": None,
+            "matchedSet": None,
+            "confidence": 0,
+            "centerCode": None,
+            "printerId": None,
+            "batchId": None,
+            "status": "no-match",
+            "matchedWatermarkId": None,
+            "centerName": None,
+            "city": None,
+            "state": None,
+            "ocrConfidence": ocr_confidence,
+            "watermarkConfidence": watermark["confidence"],
+            "finalConfidence": 0,
+            "comparisonStatus": "not-run" if not registry_records else "no-match",
+            "comparisonSource": "Core question-paper registry",
+            "referenceCount": len(registry_records),
+            "createdAt": created_at,
+        }
+
+    def _build_match_attribution(
+        self,
+        evidence_id: str,
+        match: JsonObject,
+        ocr_confidence: int | None,
+        watermark: JsonObject,
+        final_confidence: int,
+        registry_records: list[JsonObject],
+        created_at: str,
+    ) -> JsonObject:
+        return {
             "attributionId": prefixed_id("ATTR", evidence_id),
             "evidenceId": evidence_id,
             "matchedPaperId": match["matchedPaperId"],
@@ -1141,48 +1180,123 @@ class EvidenceStore:
             "comparisonStatus": "matched",
             "comparisonSource": "Core question-paper registry",
             "referenceCount": len(registry_records),
-            "createdAt": attribution_created_at,
+            "createdAt": created_at,
         }
-        self._write_json("attributions", f"{evidence_id}.json", attribution)
-        report = self._write_report(
-            {
-                "reportId": prefixed_id("FR", evidence_id),
-                "evidenceId": evidence_id,
-                "paperIdentified": match["matchedPaperId"],
-                "watermarkId": watermark["watermarkId"] or match["matchedWatermarkId"],
-                "centerCode": match["centerCode"],
-                "printerId": match["printerId"],
-                "batchId": match["batchId"],
-                "centerName": match.get("centerName"),
-                "city": match.get("city"),
-                "state": match.get("state"),
-                "riskLevel": "critical" if match["status"] == "compromised" else match["status"],
-                "status": "investigation-complete",
+
+    def _build_no_match_report(
+        self,
+        evidence_id: str,
+        watermark: JsonObject,
+        ocr_confidence: int | None,
+        registry_records: list[JsonObject],
+        created_at: str,
+        watermark_extracted_at: str,
+    ) -> JsonObject:
+        return {
+            "reportId": prefixed_id("FR", evidence_id),
+            "evidenceId": evidence_id,
+            "paperIdentified": None,
+            "watermarkId": watermark["watermarkId"],
+            "centerCode": None,
+            "printerId": None,
+            "batchId": None,
+            "centerName": None,
+            "city": None,
+            "state": None,
+            "riskLevel": None,
+            "status": "no-match",
+            "ocrConfidence": ocr_confidence,
+            "watermarkConfidence": watermark["confidence"],
+            "finalConfidence": 0,
+            "comparisonStatus": "not-run" if not registry_records else "no-match",
+            "comparisonSource": "Core question-paper registry",
+            "referenceCount": len(registry_records),
+            "timestamp": created_at,
+            # Enriched fields
+            "investigationTimeline": [
+                {"step": "Watermark Extraction", "status": watermark["status"], "timestamp": watermark_extracted_at},
+                {"step": "Registry Comparison", "status": "no-match" if registry_records else "not-run", "timestamp": created_at},
+            ],
+            "riskFactors": _build_risk_factors(None, watermark, ocr_confidence),
+            "recommendationSummary": "No matched paper found. Continue monitoring for new evidence or re-scan with higher quality image.",
+            "detectionDetails": {"ocrConfidence": ocr_confidence, "watermarkStatus": watermark["status"]},
+            "geolocation": None,
+        }
+
+    def _build_match_report(
+        self,
+        evidence_id: str,
+        match: JsonObject,
+        watermark: JsonObject,
+        ocr_confidence: int | None,
+        final_confidence: int,
+        registry_records: list[JsonObject],
+        created_at: str,
+        watermark_extracted_at: str,
+    ) -> JsonObject:
+        return {
+            "reportId": prefixed_id("FR", evidence_id),
+            "evidenceId": evidence_id,
+            "paperIdentified": match["matchedPaperId"],
+            "watermarkId": watermark["watermarkId"] or match["matchedWatermarkId"],
+            "centerCode": match["centerCode"],
+            "printerId": match["printerId"],
+            "batchId": match["batchId"],
+            "centerName": match.get("centerName"),
+            "city": match.get("city"),
+            "state": match.get("state"),
+            "riskLevel": "critical" if match["status"] == "compromised" else match["status"],
+            "status": "investigation-complete",
+            "ocrConfidence": ocr_confidence,
+            "watermarkConfidence": watermark["confidence"],
+            "finalConfidence": final_confidence,
+            "comparisonStatus": "matched",
+            "comparisonSource": "Core question-paper registry",
+            "referenceCount": len(registry_records),
+            "timestamp": created_at,
+            # Enriched fields
+            "investigationTimeline": [
+                {"step": "Watermark Extraction", "status": watermark["status"], "confidence": watermark["confidence"], "timestamp": watermark_extracted_at},
+                {"step": "Registry Match", "status": "matched", "confidence": match["confidence"], "paper": match["matchedPaperId"], "timestamp": created_at},
+                {"step": "Source Identification", "status": "identified", "center": match["centerCode"], "printer": match["printerId"], "batch": match["batchId"], "timestamp": add_milliseconds(created_at, 1)},
+                {"step": "Investigation Complete", "status": match["status"], "finalConfidence": final_confidence, "timestamp": add_milliseconds(created_at, 3)},
+            ],
+            "riskFactors": _build_risk_factors(match, watermark, ocr_confidence),
+            "recommendationSummary": _build_recommendation(match, final_confidence, watermark, ocr_confidence),
+            "detectionDetails": {
                 "ocrConfidence": ocr_confidence,
+                "paperMatchConfidence": match["confidence"],
                 "watermarkConfidence": watermark["confidence"],
-                "finalConfidence": final_confidence,
-                "comparisonStatus": "matched",
-                "comparisonSource": "Core question-paper registry",
-                "referenceCount": len(registry_records),
-                "timestamp": attribution_created_at,
-                # Enriched fields
-                "investigationTimeline": [
-                    {"step": "Watermark Extraction", "status": watermark["status"], "confidence": watermark["confidence"], "timestamp": watermark_extracted_at},
-                    {"step": "Registry Match", "status": "matched", "confidence": match["confidence"], "paper": match["matchedPaperId"], "timestamp": attribution_created_at},
-                    {"step": "Source Identification", "status": "identified", "center": match["centerCode"], "printer": match["printerId"], "batch": match["batchId"], "timestamp": add_milliseconds(attribution_created_at, 1)},
-                    {"step": "Investigation Complete", "status": match["status"], "finalConfidence": final_confidence, "timestamp": add_milliseconds(attribution_created_at, 3)},
-                ],
-                "riskFactors": _build_risk_factors(match, watermark, ocr_confidence),
-                "recommendationSummary": _build_recommendation(match, final_confidence, watermark, ocr_confidence),
-                "detectionDetails": {
-                    "ocrConfidence": ocr_confidence,
-                    "paperMatchConfidence": match["confidence"],
-                    "watermarkConfidence": watermark["confidence"],
-                    "watermarkId": watermark.get("watermarkId") or match.get("matchedWatermarkId"),
-                },
-                "geolocation": {"city": match.get("city"), "state": match.get("state")} if match.get("city") or match.get("state") else None,
-            }
-        )
+                "watermarkId": watermark.get("watermarkId") or match.get("matchedWatermarkId"),
+            },
+            "geolocation": {"city": match.get("city"), "state": match.get("state")} if match.get("city") or match.get("state") else None,
+        }
+
+    def _build_attribution_activity(
+        self,
+        *,
+        evidence_id: str,
+        watermark: JsonObject,
+        watermark_activity: list[JsonObject],
+        attribution_started: JsonObject,
+        attribution_created_at: str,
+        ocr_text: str,
+        match: JsonObject | None = None,
+        final_confidence: int | None = None,
+    ) -> list[JsonObject]:
+        activity: list[JsonObject] = [*watermark_activity, attribution_started]
+        if match is None:
+            completed = self.record_activity(
+                {
+                    "type": "attribution-complete",
+                    "title": "Attribution Complete",
+                    "evidenceId": evidence_id,
+                    "timestamp": add_milliseconds(attribution_created_at, 1),
+                    "detail": "No registry match found" if ocr_text.strip() else "No OCR text available",
+                }
+            )
+            activity.append(completed)
+            return activity
         matched = self.record_activity(
             {
                 "type": "paper-matched",
@@ -1219,19 +1333,8 @@ class EvidenceStore:
                 "detail": f"{final_confidence}% final confidence",
             }
         )
-        return {
-            "attribution": attribution,
-            "watermark": watermark,
-            "forensicReport": report,
-            "activity": [
-                *watermark_activity,
-                attribution_started,
-                matched,
-                source,
-                completed,
-                investigation_completed,
-            ],
-        }
+        activity.extend([matched, source, completed, investigation_completed])
+        return activity
 
     def create_critical_alert_if_needed(self, report: JsonObject | None, attribution: JsonObject | None) -> JsonObject:
         if not report or report.get("status") != "investigation-complete" or int(report.get("finalConfidence") or 0) <= 80:
