@@ -49,6 +49,7 @@ def tmp_settings(tmp_path: Path) -> Settings:
         telegram_webhook_secret="secret",
         telegram_chat_id="-100123",
         telegram_admin_chat_id="-100999",
+        master_key="",
     )
 
 

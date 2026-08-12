@@ -14,6 +14,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from .detect import get_alert_severity
+from .secrets_crypto import decrypt_secret, encrypt_secret
 from .settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -1982,6 +1983,7 @@ def _next_agent_id() -> str:
 class AgentStore:
     def __init__(self, evidence_store: EvidenceStore) -> None:
         self._store = evidence_store
+        self._master_key = evidence_store.settings.master_key or None
 
     def _ensure(self) -> None:
         for name in AGENT_COLLECTIONS:
@@ -2072,12 +2074,18 @@ class AgentStore:
             None,
         )
         now = utc_now()
+        raw_key = data.get("apiKey") or ""
+        api_key_encrypted = (
+            encrypt_secret(raw_key, self._master_key)
+            if raw_key
+            else (existing or {}).get("apiKeyEncrypted", "")
+        )
         config = {
             "id": existing["id"] if existing else f"LLM-{uuid4().hex[:8]}",
             "agentId": agent_id,
             "provider": data.get("provider", "openai"),
             "model": data.get("model", ""),
-            "apiKeyEncrypted": data.get("apiKey") or (existing or {}).get("apiKeyEncrypted", ""),
+            "apiKeyEncrypted": api_key_encrypted,
             "endpointUrl": data.get("endpointUrl", ""),
             "extraHeaders": data.get("extraHeaders", {}),
             "createdAt": existing["createdAt"] if existing else now,
@@ -2088,10 +2096,18 @@ class AgentStore:
         return config
 
     def get_llm_config(self, agent_id: str) -> JsonObject | None:
-        return next(
+        config = next(
             (c for c in self._store._read_json_dir("agent-llm-configs") if c.get("agentId") == agent_id),
             None,
         )
+        if not config:
+            return None
+        encrypted = config.get("apiKeyEncrypted", "")
+        if encrypted:
+            # Decrypt for internal use (provider calls). The plaintext is never
+            # returned to API clients — server.py strips this field from responses.
+            config = {**config, "apiKeyEncrypted": decrypt_secret(encrypted, self._master_key)}
+        return config
 
     def upsert_telegram_config(self, agent_id: str, data: JsonObject) -> JsonObject:
         self._ensure()

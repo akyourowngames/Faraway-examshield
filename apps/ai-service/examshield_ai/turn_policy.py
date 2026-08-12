@@ -1,23 +1,30 @@
 """Cheap, synchronous turn-intent classification for EXAMSHIELD AI.
 
-Adapted from Ares ``turn_policy.classify_turn_intent``. The whole point is
-speed: this runs with **zero** LLM calls so the chat route can decide whether
-a message needs live EXAMSHIELD tools before it ever hits the model. Ares
-proved that a pure-regex classifier is enough to pick conversation vs. tool
-routing for the common cases, which is what removes the slow separate
-planning pass.
+Adapted from Ares ``turn_policy.classify_turn_intent``. The classifier is
+intentionally tiny and runs with **zero** LLM calls.
 
-The classifier is intentionally conservative: when in doubt it routes to the
-model with tools attached rather than guessing. The model still does the final
-tool-selection via function calling — this classifier only narrows the
-decision so we avoid an extra round-trip and avoid sending every tool schema
-on every turn.
+Routing philosophy (borrowed from Ares "MODEL_ROUTED"):
+
+* Pure small-talk (hi / thanks / bye / …) returns ``CONVERSATION`` so we skip
+  tool schemas entirely and the model answers directly and cheaply.
+* **Everything else defaults to ``TOOL_REQUEST``** — we attach the full tool
+  schema set and let the model decide, via function calling, whether a live
+  EXAMSHIELD tool applies. This is what makes vague requests like "run a live
+  check for me" actually fire a tool, instead of being treated as plain chat
+  just because they don't contain a hard-coded keyword.
+
+We deliberately do NOT keyword-gate tool routing the way an earlier version
+did: keyword overlap is not authority, and gating on keywords meant natural
+language silently lost access to tools. EXAMSHIELD's tool set is read-only
+(list / get / attribution / search / report), so letting the model choose is
+safe — there is no destructive action to guard.
 """
 
 from __future__ import annotations
 
 import re
 from enum import Enum
+from functools import lru_cache
 from typing import Final
 
 
@@ -26,9 +33,8 @@ class TurnIntent(str, Enum):
     TOOL_REQUEST = "tool_request"
 
 
-# Casual, non-task chatter. Ares treats these as pure conversation; we still
-# send them to the LLM (per product decision) but with NO tool schemas attached
-# so the model answers directly and cheaply.
+# Casual, non-task chatter. Ares treats these as pure conversation; we send them
+# to the LLM with NO tool schemas attached so greetings stay fast.
 _CASUAL_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*(?:hi|hello|hey|hiya|yo|sup|thanks|thank\s+you|thx|okay|ok|cool|nice|"
     r"great|got\s+it|sounds\s+good|alright|bye|goodbye|welcome|sure|np|no\s+problem)"
@@ -36,85 +42,34 @@ _CASUAL_RE: Final[re.Pattern[str]] = re.compile(
     re.IGNORECASE,
 )
 
-# Keywords that strongly imply the investigator wants live EXAMSHIELD data.
-_TOOL_KEYWORDS: Final[tuple[str, ...]] = (
-    "evidence",
-    "upload",
-    "ocr",
-    "investigation",
-    "investigate",
-    "attribution",
-    "watermark",
-    "trace",
-    "source",
-    "threat",
-    "alert",
-    "compromised",
-    "leak",
-    "risk",
-    "paper",
-    "registry",
-    "neet",
-    "jee",
-    "center",
-    "report",
-    "briefing",
-    "summary",
-    "memory",
-    "correlation",
-    "pattern",
-    "match",
-)
 
-_TOOL_VERB_RE: Final[re.Pattern[str]] = re.compile(
-    r"\b(?:show|list|get|find|search|look\s+up|generate|create|view|display|"
-    r"what\s+are|what\s+is|how\s+many|tell\s+me\s+about|summar|analy[sz]e)\b",
-    re.IGNORECASE,
-)
-
-# Specific tool-trigger phrases that should always pull live data even without
-# an obvious verb.
-_TOOL_PHRASE_RE: Final[re.Pattern[str]] = re.compile(
-    r"\b(?:ev-\d+|generate\s+(?:a\s+)?report|daily\s+report|operational\s+summary|"
-    r"command\s+briefing|compromised\s+papers?|active\s+threats?|threat\s+posture|"
-    r"where\s+did|who\s+leaked|search\s+memory)\b",
-    re.IGNORECASE,
-)
-
-_EVIDENCE_ID_RE: Final[re.Pattern[str]] = re.compile(r"\bev-\d+\b", re.IGNORECASE)
-_PAPER_ID_RE: Final[re.Pattern[str]] = re.compile(r"\b[A-Z]{2,}-\d{4}-[A-Z0-9-]+\b")
-
-
+@lru_cache(maxsize=2048)
 def classify_turn_intent(text: str) -> TurnIntent:
     """Return whether this turn needs live EXAMSHIELD tools.
 
-    Pure regex — no LLM, sub-millisecond. Returns ``TOOL_REQUEST`` whenever the
-    message looks like it wants live data, otherwise ``CONVERSATION``.
+    Pure regex — no LLM, sub-millisecond. Returns ``CONVERSATION`` only for
+    empty input or pure small-talk; every other message returns
+    ``TOOL_REQUEST`` so the model can pick the right tool via function calling.
+
+    Results are memoised so repeated prompts are not re-classified. Use
+    ``clear_turn_intent_cache`` to reset it (e.g. in tests).
     """
     value = str(text or "").strip()
-    if not value:
+    if not value or _CASUAL_RE.fullmatch(value.casefold()):
         return TurnIntent.CONVERSATION
-    lowered = value.casefold()
-    if _TOOL_PHRASE_RE.search(value):
-        return TurnIntent.TOOL_REQUEST
-    if _EVIDENCE_ID_RE.search(value) or _PAPER_ID_RE.search(value):
-        return TurnIntent.TOOL_REQUEST
-    if any(keyword in lowered for keyword in _TOOL_KEYWORDS):
-        return TurnIntent.TOOL_REQUEST
-    if _TOOL_VERB_RE.search(value):
-        # A verb alone is not enough — but combined with data nouns it is.
-        if any(
-            noun in lowered
-            for noun in (
-                "evidence", "threat", "alert", "paper", "report", "memory",
-                "attribution", "compromised", "leak", "investigation", "center",
-                "watermark", "registry", "upload",
-            )
-        ):
-            return TurnIntent.TOOL_REQUEST
-    return TurnIntent.CONVERSATION
+    # Default: model decides. Attach tool schemas and let the model choose the
+    # right EXAMSHIELD tool via function calling (Ares "MODEL_ROUTED"). This is
+    # what makes vague requests like "run a live check" actually fire a tool
+    # instead of being treated as plain chat. Our tools are read-only, so no
+    # extra safety gate is needed.
+    return TurnIntent.TOOL_REQUEST
+
+
+def clear_turn_intent_cache() -> None:
+    """Reset the classification memoisation cache (primarily for tests)."""
+    classify_turn_intent.cache_clear()
 
 
 def is_casual_greeting(text: str) -> bool:
     """True for pure small-talk that never needs tools."""
-    return bool(_CASUAL_RE.fullmatch(str(text or "").strip()))
+    return bool(_CASUAL_RE.fullmatch(str(text or "").strip().casefold()))

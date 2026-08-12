@@ -19,6 +19,7 @@ from .events import sse_bytes
 from .llm import KiloClient
 from .memory import MemoryManager
 from .ocr import SUPPORTED_TYPES, analyze_image, ocr_runtime_status
+from .operator import resolve_operator
 from .pipeline import EvidencePipeline
 from .planner import ToolPlanner
 from .responses import conversation_messages, grounded_messages
@@ -30,6 +31,22 @@ from .tools import ExamshieldToolRegistry
 from .workers import AnalysisTask, AnalysisWorkerPool
 from .llm_providers import list_providers, validate_api_key, ProviderConfig, chat_completion as provider_chat_completion
 from .rag import chunk_text, extract_text_from_file, ingest_knowledge_source, search_agent_knowledge, RAGConfig
+
+def resolve_cors_headers(settings: Settings, origin: str | None) -> dict[str, str]:
+    """Resolve CORS response headers against an allow-list.
+
+    Replaces the old behaviour of blindly echoing `cors_origin` (which defaulted
+    to `*`). Now the request's `Origin` is only reflected when it is explicitly
+    present in the allow-list. `EXAMSHIELD_AI_CORS_ORIGIN` accepts a
+    comma/space-separated list of allowed origins; an explicit `*` opts back into
+    allow-all (discouraged). With an empty allow-list (the new default) no
+    `Access-Control-Allow-Origin` header is emitted.
+    """
+    allowed = [o.strip() for o in (settings.cors_origin or "").split(",") if o.strip()]
+    if origin and ("*" in allowed or origin in allowed):
+        return {"Access-Control-Allow-Origin": origin, "Vary": "Origin"}
+    return {}
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -589,6 +606,15 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         current_evidence_id = payload.get("currentEvidenceId")
         current_evidence_id = str(current_evidence_id) if current_evidence_id else None
 
+        # Resolve the operator (logged-in user) so the model can address them by
+        # name. Client-sent profile is preferred; the forwarded Supabase JWT is
+        # the fallback. A fresh per-request registry scopes the operator safely
+        # under the threaded server (the shared class registry stays operator-free
+        # for /tools and /plan).
+        operator = resolve_operator(payload, self.headers.get("Authorization"), self.settings)
+        registry = ExamshieldToolRegistry(self.store)
+        registry.operator = operator
+
         self.send_response(200)
         self._cors_headers()
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -601,9 +627,9 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             self.wfile.write(sse_bytes(event))
             self.wfile.flush()
 
-        session = ChatSession(client=self.client, registry=self.registry, write=write_event)
+        session = ChatSession(client=self.client, registry=registry, write=write_event)
         try:
-            session.run(prompt, history, current_evidence_id)
+            session.run(prompt, history, current_evidence_id, operator)
         except Exception as exc:
             logger.error("Chat stream failed: %s", exc, exc_info=True)
             write_event({"type": "error", "message": str(exc) or "Chat failed."})
@@ -1471,7 +1497,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _cors_headers(self) -> None:
-        self.send_header("Access-Control-Allow-Origin", self.settings.cors_origin)
+        for name, value in resolve_cors_headers(self.settings, self.headers.get("Origin")).items():
+            self.send_header(name, value)
         self.send_header("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
 

@@ -35,6 +35,7 @@ class Settings:
     telegram_webhook_secret: str
     telegram_chat_id: str
     telegram_admin_chat_id: str
+    master_key: str
 
 
 def load_settings() -> Settings:
@@ -56,19 +57,19 @@ def load_settings() -> Settings:
         or os.environ.get("NVIDIA_NIM_MODEL")
         or os.environ.get("NIM_MODEL")
         or os.environ.get("EXAMSHIELD_AI_DEFAULT_MODEL")
-        or "tencent/hy3:free"
+        or "stepfun/step-3.7-flash:free"
     ).strip()
     fallback_models = _split_csv(
         os.environ.get("KILO_FALLBACK_MODELS")
         or os.environ.get("NVIDIA_NIM_FALLBACK_MODELS")
         or os.environ.get("NVIDIA_FALLBACK_MODELS")
         or os.environ.get("EXAMSHIELD_AI_FALLBACK_MODELS")
-        or "tencent/hy3,kilo-auto/balanced,stepfun/step-3.7-flash:free"
+        or "kilo-auto/efficient,deepseek-v4-flash-free,tencent/hy3:free"
     )
     planner_default = (
         os.environ.get("EXAMSHIELD_AI_PLANNER_DEFAULT_MODEL")
         or os.environ.get("KILO_PLANNER_MODEL")
-        or "tencent/hy3:free"
+        or "stepfun/step-3.7-flash:free"
     ).strip()
 
     return Settings(
@@ -103,12 +104,12 @@ def load_settings() -> Settings:
         ).rstrip("/"),
         planner_timeout_seconds=float(os.environ.get("EXAMSHIELD_TOOL_PLANNER_TIMEOUT_SECONDS", "5")),
         stream_timeout_seconds=float(os.environ.get("EXAMSHIELD_AI_STREAM_TIMEOUT_SECONDS", "25")),
-        chat_max_tokens=int(os.environ.get("EXAMSHIELD_AI_CHAT_MAX_TOKENS", "350")),
+        chat_max_tokens=int(os.environ.get("EXAMSHIELD_AI_CHAT_MAX_TOKENS", "1024")),
         planner_max_tokens=int(os.environ.get("EXAMSHIELD_AI_PLANNER_MAX_TOKENS", "120")),
         list_cache_ttl_seconds=float(os.environ.get("EXAMSHIELD_LIST_CACHE_TTL_SECONDS", "8")),
         supabase_timeout_seconds=float(os.environ.get("EXAMSHIELD_SUPABASE_TIMEOUT_SECONDS", "20")),
         detect_threshold=float(os.environ.get("EXAMSHIELD_DETECT_THRESHOLD", "7")),
-        cors_origin=os.environ.get("EXAMSHIELD_AI_CORS_ORIGIN", "*"),
+        cors_origin=os.environ.get("EXAMSHIELD_AI_CORS_ORIGIN", ""),
         max_upload_bytes=int(os.environ.get("EXAMSHIELD_MAX_UPLOAD_BYTES", str(12 * 1024 * 1024))),
         supabase_url=(os.environ.get("SUPABASE_URL") or "").rstrip("/"),
         supabase_service_role_key=(
@@ -123,6 +124,7 @@ def load_settings() -> Settings:
         telegram_webhook_secret=(os.environ.get("TELEGRAM_WEBHOOK_SECRET") or "").strip(),
         telegram_chat_id=(os.environ.get("TELEGRAM_CHAT_ID") or "").strip(),
         telegram_admin_chat_id=(os.environ.get("TELEGRAM_ADMIN_CHAT_ID") or "").strip(),
+        master_key=(os.environ.get("EXAMSHIELD_AI_MASTER_KEY") or "").strip(),
     )
 
 

@@ -87,7 +87,6 @@ class KiloClient:
             try:
                 with urllib.request.urlopen(request, timeout=per_model_timeout) as response:
                     emitted = False
-                    reasoning_buffer: list[str] = []
                     for raw_line in response:
                         line = raw_line.decode("utf-8", errors="replace").strip()
                         if not line.startswith("data:"):
@@ -101,19 +100,17 @@ class KiloClient:
                             continue
                         choice = parsed.get("choices", [{}])[0]
                         delta = choice.get("delta", {})
-                        # Reasoning models (e.g. tencent/hy3 via Kilo) stream their
-                        # output in `reasoning`/`reasoning_content` and may leave
-                        # `content` empty until the final answer. Surface `content`
-                        # live as the answer; keep reasoning in reserve so a model
-                        # that never emits `content` still produces visible text
-                        # instead of an "empty stream" error.
+                        # Only `content` is ever shown to the user. Reasoning
+                        # models (e.g. tencent/hy3 via Kilo) stream their internal
+                        # monologue in `reasoning`/`reasoning_content`; we
+                        # deliberately ignore it so the model's thinking never
+                        # leaks into the chat transcript. Prefer a non-reasoning
+                        # model (see Settings) to avoid the thinking-phase latency
+                        # entirely — reasoning tokens here would just be wasted.
                         content_token = delta.get("content") or ""
-                        reasoning_token = delta.get("reasoning") or delta.get("reasoning_content") or ""
                         if content_token:
                             emitted = True
                             on_token(str(content_token))
-                        elif reasoning_token:
-                            reasoning_buffer.append(reasoning_token)
                         for tc in delta.get("tool_calls") or []:
                             emitted = True
                             index = int(tc.get("index", 0))
@@ -123,11 +120,6 @@ class KiloClient:
                             if on_tool_delta is not None and fn.get("arguments"):
                                 on_tool_delta(index, str(fn.get("arguments")))
                     if emitted:
-                        self._unavailable_until = 0.0
-                        return True
-                    # No `content` arrived — surface the buffered reasoning as the answer.
-                    if reasoning_buffer:
-                        on_token("".join(reasoning_buffer))
                         self._unavailable_until = 0.0
                         return True
                     errors.append(f"{candidate}: empty stream")
