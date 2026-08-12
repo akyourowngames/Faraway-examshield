@@ -22,6 +22,8 @@ services:
         sync: false
       - key: TELEGRAM_WEBHOOK_SECRET
         sync: false
+      - key: EXAMSHIELD_AI_MASTER_KEY
+        sync: false
       - key: TELEGRAM_CHAT_ID
         sync: false
       - key: TELEGRAM_ADMIN_CHAT_ID
@@ -61,9 +63,9 @@ services:
       - key: EXAMSHIELD_STALE_JOB_MAX_AGE_SECONDS
         value: "300"
       - key: EXAMSHIELD_AI_PLANNER_MODEL
-        value: tencent/hy3:free
+        value: stepfun/step-3.7-flash:free
       - key: EXAMSHIELD_AI_MODEL
-        value: tencent/hy3:free
+        value: stepfun/step-3.7-flash:free
       - key: EXAMSHIELD_TOOL_PLANNER_TIMEOUT_SECONDS
         value: "4"
       - key: EXAMSHIELD_AI_STREAM_TIMEOUT_SECONDS

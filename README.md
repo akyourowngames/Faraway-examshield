@@ -205,7 +205,7 @@ examshield/
 
 The `apps/ai-service` Python backend powers the in-app **EXAMSHIELD AI** assistant and the **community agent** system.
 
-- 💬 **Streaming chat** — `POST /chat` streams token-by-token answers (SSE) from the Kilo Gateway LLM (`tencent/hy3:free` by default).
+- 💬 **Streaming chat** — `POST /chat` streams token-by-token answers (SSE) from the Kilo Gateway LLM (`stepfun/step-3.7-flash:free`, a non-reasoning model, by default).
 - 🤖 **Community agents** — each agent has its own system prompt, knowledge sources, response style, and citations. Test any agent live from the dashboard *Test Agent* panel (`POST /agents/{id}/test`).
 - 📱 **Per-agent Telegram bots** — a deployed agent with its own `botToken` is polled independently and replies **as that agent** in Telegram DMs, using the agent's own LLM provider + knowledge. The global EXAMSHIELD bot keeps answering as EXAMSHIELD AI.
 - 🔍 **RAG** — agent replies are grounded in their knowledge base (Supabase pgvector with a local-chunk fallback).
@@ -320,7 +320,7 @@ pip install -r requirements.txt
 export SUPABASE_URL=https://your-project.supabase.co
 export SUPABASE_SERVICE_ROLE_KEY=your-service-key
 export KILO_API_KEY=your-kilo-gateway-key
-export EXAMSHIELD_AI_MODEL=tencent/hy3:free
+export EXAMSHIELD_AI_MODEL=stepfun/step-3.7-flash:free
 
 # Run the AI service (SSE chat + Telegram pollers)
 python run.py
@@ -393,10 +393,11 @@ CI runs on GitHub Actions (`.github/workflows/quality-gate.yml`) on every push/P
 | `KILO_API_KEY` | ⚠️ | For AI service (Kilo Gateway) |
 | `TELEGRAM_BOT_TOKEN` | ⚠️ | Telegram bot |
 | `TELEGRAM_WEBHOOK_SECRET` | ⚠️ | Webhook secret |
+| `EXAMSHIELD_AI_MASTER_KEY` | ✅ | Master key (Fernet) used to encrypt agent LLM API keys at rest. Generate with `python -c "from examshield_ai.secrets_crypto import generate_master_key; print(generate_master_key())"`. Must NOT be stored in the database. |
 | `TELEGRAM_CHAT_ID` | ⚠️ | Chat ID |
 | `EXAMSHIELD_AI_CORS_ORIGIN` | ✅ | Frontend URL |
 | `EXAMSHIELD_PUBLIC_URL` | ✅ | Backend URL |
-| `EXAMSHIELD_AI_MODEL` | ⚠️ | Chat model (Kilo Gateway, e.g. `tencent/hy3:free`) |
+| `EXAMSHIELD_AI_MODEL` | ⚠️ | Chat model (Kilo Gateway, e.g. `stepfun/step-3.7-flash:free`) |
 | `EXAMSHIELD_AI_FALLBACK_MODELS` | ⚠️ | Comma-separated fallback models |
 | `EXAMSHIELD_AI_PLANNER_MODEL` | ⚠️ | Model used for tool planning |
 

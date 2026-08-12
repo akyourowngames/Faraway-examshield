@@ -240,7 +240,7 @@ def ingest_knowledge_source(
             },
         }
         if embedding:
-            record["embedding"] = str(embedding)
+            record["embedding"] = embedding
 
         try:
             _supabase_request(

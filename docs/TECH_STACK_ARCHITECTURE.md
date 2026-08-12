@@ -884,8 +884,8 @@ embeddings (Edge fn). Accessed with the **service-role key** on the backend; ano
 
 ### 12.8 Others
 
-* **PyMuPDF (`fitz`)** — PDF text extraction in `rag.py` (imported at runtime; **[UNVERIFIED]** not in
-  `requirements.txt`, so it is an implicit/optional dependency).
+* **PyMuPDF (`fitz`)** — PDF text extraction in `rag.py` (imported at runtime, guarded; declared in
+  `requirements.txt` as `pymupdf>=1.23.0`, so it is an explicit dependency).
 * **OpenCV** — image preprocessing (`requirements.txt`).
 * **[STUB] apps/broadcast-agent** — references Telegram broadcast but ships only `.env.example`; no
   implementation in this repo.
@@ -921,8 +921,10 @@ Managed by `@supabase/ssr`; middleware refreshes them. No manual cookie signing 
 
 ### 13.6 CORS
 
-Backend sets `Access-Control-Allow-Origin` from `EXAMSHIELD_AI_CORS_ORIGIN` (default `*`, set to the
-Vercel URL in `render.yaml` as `sync:false`). In production this should be locked to the Vercel origin.
+Backend resolves `Access-Control-Allow-Origin` from `EXAMSHIELD_AI_CORS_ORIGIN`, which is now an
+allow-list (comma/space-separated origins) that defaults to empty (no CORS headers). The request `Origin`
+is reflected only when it matches an allowed entry; an explicit `*` re-enables allow-all (discouraged). In
+production this should be locked to the Vercel origin.
 
 ### 13.7 Security headers
 
@@ -940,8 +942,8 @@ Vercel URL in `render.yaml` as `sync:false`). In production this should be locke
 5. **`cors_origin` default `*`** — if misconfigured, cross-origin reads are possible.
 6. **Embedding stored as string in `agent_knowledge_chunks`** — works but is non-ideal for type safety.
 7. **No rate limiting / WAF** documented (README lists rate limiting as "Planned").
-8. **`fitz` not in `requirements.txt`** — RAG PDF ingestion may fail in a clean Render deploy unless
-   installed separately.
+8. **`fitz` (PyMuPDF) now in `requirements.txt`** (`pymupdf>=1.23.0`) — RAG PDF ingestion works in a clean
+   deploy.
 
 ## 14. Deployment Architecture
 
@@ -1054,7 +1056,7 @@ README badges reference GitHub Actions but no workflow file is committed here.
 | `EXAMSHIELD_LIST_CACHE_TTL_SECONDS` | `8` | No | List cache TTL |
 | `EXAMSHIELD_SUPABASE_TIMEOUT_SECONDS` | `20` | No | Supabase timeout |
 | `EXAMSHIELD_DETECT_THRESHOLD` | `7` | No | Suspicion threshold (0–50) |
-| `EXAMSHIELD_AI_CORS_ORIGIN` | `*` | No | CORS origin (set to Vercel in prod) |
+| `EXAMSHIELD_AI_CORS_ORIGIN` | `""` (empty — no CORS headers) | No | CORS allow-list (comma-separated origins); set to the Vercel origin in prod. An explicit `*` opts into allow-all. |
 | `EXAMSHIELD_MAX_UPLOAD_BYTES` | `12582912` (12 MB) | No | Max upload |
 | `SUPABASE_URL` | `""` | **Yes (prod)** | Supabase project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | `""` | **Yes (prod)** | Service-role key |
@@ -1281,7 +1283,7 @@ Next.js handles code-splitting, tree-shaking, and the production `.next` output 
 7. **Implement `apps/broadcast-agent`** — currently only `.env.example`; build the Telegram broadcast
    service.
 8. **Security headers & rate limiting** — add CSP/HSTS and API rate limiting (README lists as "Planned").
-9. **Pin `fitz` in requirements** — ensure PDF RAG works in clean deploys.
+9. **`fitz` (PyMuPDF) pinned in requirements** (`pymupdf>=1.23.0`) — PDF RAG works in clean deploys.
 10. **Observability** — add structured metrics/tracing (e.g. OpenTelemetry) and an external APM.
 11. **Caching/perf** — cache planner decisions and registry lookups; consider async worker framework.
 12. **Type safety for embeddings** — store `agent_knowledge_chunks.embedding` as a real vector rather than

@@ -67,7 +67,9 @@ def test_under_budget_session_streams_and_records_usage():
     budget = TokenBudget(per_request_limit=1_000, per_session_limit=5_000)
     session, events = make_session(client, budget=budget, session_id="s-2")
 
-    session.run("hello there", [], None)
+    # Pure small-talk: classified CONVERSATION by turn_policy, so no tool
+    # schemas are attached and the answer streams directly (no grounding).
+    session.run("hello!", [], None)
 
     usage = budget.usage("s-2")
     assert usage["requests"] == 1

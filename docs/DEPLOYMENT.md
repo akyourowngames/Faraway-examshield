@@ -44,7 +44,7 @@ This repo includes [`Dockerfile`](../Dockerfile) because OCR needs the Tesseract
 | `SUPABASE_URL` | Supabase project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase service-role key |
 | `KILO_API_KEY` | Kilo Gateway API key |
-| `EXAMSHIELD_AI_CORS_ORIGIN` | Your Vercel production URL, or `*` during setup |
+| `EXAMSHIELD_AI_CORS_ORIGIN` | Your Vercel production URL (comma-separate multiple origins if needed). Do **not** use `*` in production; an empty value sends no CORS headers. |
 
 Render supplies `PORT`. The server automatically binds to `0.0.0.0` and that port.
 

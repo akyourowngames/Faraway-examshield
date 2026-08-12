@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback, type ReactNode } from "react";
 import Link from "next/link";
 import { motion } from "framer-motion";
+import { createClient } from "@/lib/supabase/client";
 import {
   AlertTriangle,
   ArrowUpRight,
@@ -155,6 +156,27 @@ export default function ExamshieldAiPage() {
     setStreamingId(assistantId);
 
     try {
+      // Hand the operator's identity to the AI service so it can address the
+      // user by name. Mirrors how the Settings page reads the Supabase user.
+      // The proxy forwards the auth JWT as a server-side fallback if this is
+      // missing.
+      let operator: { name: string; email: string; role: string } | undefined;
+      try {
+        const supabase = createClient();
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        if (user) {
+          operator = {
+            name: (user.user_metadata?.full_name as string) ?? "",
+            email: user.email ?? "",
+            role: "Operator",
+          };
+        }
+      } catch {
+        operator = undefined;
+      }
+
       const historyPayload = messages.slice(-6).map((message) => ({
         role: message.role,
         content: message.content,
@@ -167,6 +189,7 @@ export default function ExamshieldAiPage() {
           prompt: trimmed,
           currentEvidenceId: currentInvestigation.evidenceId,
           messages: historyPayload,
+          ...(operator ? { operator } : {}),
         }),
       });
 

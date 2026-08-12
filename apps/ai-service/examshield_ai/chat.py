@@ -38,14 +38,20 @@ class ChatSession:
         self.write = write
         self.budget = budget
         self.session_id = session_id or "chat"
+        self.operator: JsonObject | None = None
 
     def run(
         self,
         prompt: str,
         history: list[JsonObject],
         current_evidence_id: str | None,
+        operator: JsonObject | None = None,
     ) -> None:
         started = time.monotonic()
+        self.operator = operator
+        # The registry is request-scoped for /chat, so scoping operator here is
+        # safe under the threaded server (no cross-request clobbering).
+        self.registry.operator = operator
         self.write({"type": "stage", "message": "Connecting to EXAMSHIELD intelligence..."})
 
         if not self.client.configured:
@@ -80,7 +86,7 @@ class ChatSession:
         intent = classify_turn_intent(prompt)
         use_tools = intent is TurnIntent.TOOL_REQUEST
 
-        messages = list(conversation_messages(prompt, history))
+        messages = list(conversation_messages(prompt, history, operator))
         tool_schemas = self.registry.schemas() if use_tools else []
 
         try:
@@ -101,15 +107,18 @@ class ChatSession:
         last_content = ""
         answer_parts: list[str] = []
         tool_contexts: list[str] = []
+        first_token_at: float | None = None
 
         for _iteration in range(MAX_TOOL_ITERATIONS):
             emitted_text = False
             tool_calls: dict[int, dict[str, str]] = {}
 
             def on_token(token: str) -> None:
-                nonlocal emitted_text
+                nonlocal emitted_text, first_token_at
                 emitted_text = True
                 answer_parts.append(token)
+                if first_token_at is None:
+                    first_token_at = time.monotonic()
                 self.write({"type": "token", "token": token})
 
             def on_tool_call(index: int, call_id: str, name: str) -> None:
@@ -134,7 +143,7 @@ class ChatSession:
                     max_tokens=self.client.settings.chat_max_tokens,
                 )
             except Exception as exc:
-                self._handle_stream_error(exc, emitted_text, last_content, started)
+                self._handle_stream_error(exc, emitted_text, last_content, started, first_token_at)
                 return
 
             # If the model selected a tool, execute it and continue the loop so
@@ -149,12 +158,12 @@ class ChatSession:
             if tool_contexts:
                 report = verify_answer("".join(answer_parts), tool_contexts)
                 self.write({"type": "grounding", **report.as_dict()})
-            self._write_meta(started)
+            self._write_meta(started, first_token_at)
             self.write({"type": "done", "latencyMs": self._latency_ms(started)})
             return
 
         # Exhausted iterations (tools kept firing) — emit a graceful close.
-        self._write_meta(started)
+        self._write_meta(started, first_token_at)
         self.write({"type": "done", "latencyMs": self._latency_ms(started)})
 
     def _execute_tool_calls(
@@ -216,6 +225,7 @@ class ChatSession:
         emitted_text: bool,
         last_content: str,
         started: float,
+        first_token_at: float | None = None,
     ) -> None:
         error_name = type(exc).__name__
         if "timeout" in str(exc).lower() or "Timeout" in error_name:
@@ -232,7 +242,7 @@ class ChatSession:
             )
             self._write_local_fallback(fallback, started)
         else:
-            self._write_meta(started)
+            self._write_meta(started, first_token_at)
             self.write({"type": "done", "latencyMs": self._latency_ms(started)})
 
     def _write_local_fallback(self, text: str, started: float) -> None:
@@ -240,8 +250,15 @@ class ChatSession:
         self.write({"type": "token", "token": text})
         self.write({"type": "done", "latencyMs": self._latency_ms(started)})
 
-    def _write_meta(self, started: float) -> None:
-        self.write({"type": "meta", "model": self.client.settings.model, "provider": "kilo-gateway"})
+    def _write_meta(self, started: float, first_token_at: float | None = None) -> None:
+        meta: JsonObject = {
+            "type": "meta",
+            "model": self.client.settings.model,
+            "provider": "kilo-gateway",
+        }
+        if first_token_at is not None:
+            meta["ttftMs"] = int((first_token_at - started) * 1000)
+        self.write(meta)
 
     @staticmethod
     def _resolve_evidence_id(prompt: str, current_evidence_id: str | None) -> str | None:

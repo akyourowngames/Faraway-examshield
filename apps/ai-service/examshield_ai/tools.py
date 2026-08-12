@@ -40,6 +40,11 @@ class ExamshieldToolRegistry:
     def __init__(self, store: EvidenceStore) -> None:
         self.store = store
         self.memory = MemoryManager(store)
+        # Per-request operator identity (name/email/role). Set by ChatSession for
+        # /chat; None elsewhere (e.g. /tools, /plan). When None, getUserProfile is
+        # hidden from the schema list so the model only sees it when a real
+        # operator context exists.
+        self.operator: JsonObject | None = None
         self._tools = {
             "listEvidence": ToolSpec(
                 name="listEvidence",
@@ -149,10 +154,26 @@ class ExamshieldToolRegistry:
                 ),
                 handler=self._generate_md_report,
             ),
+            "getUserProfile": ToolSpec(
+                name="getUserProfile",
+                description=(
+                    "Get the current operator's identity — their name, email, and role on the "
+                    "EXAMSHIELD platform. Use this when the user asks who they are, for their "
+                    "account details, or to confirm the person you are speaking with."
+                ),
+                parameters=schema({}),
+                handler=self._get_user_profile,
+            ),
         }
 
     def schemas(self) -> list[JsonObject]:
-        return [tool.schema() for tool in self._tools.values()]
+        # Hide getUserProfile unless a real operator context exists for this
+        # request, so the model only offers it when identity is actually known.
+        return [
+            tool.schema()
+            for name, tool in self._tools.items()
+            if name != "getUserProfile" or self.operator is not None
+        ]
 
     def names(self) -> list[str]:
         return sorted(self._tools)
@@ -631,6 +652,40 @@ class ExamshieldToolRegistry:
         )
         result["markdownReport"] = md
         result["filename"] = f"report-{evidence_id}.md" if evidence_id else "report-dashboard-summary.md"
+        return with_context(result)
+
+    def _get_user_profile(self, arguments: JsonObject) -> ToolExecution:
+        operator = self.operator if isinstance(self.operator, dict) else {}
+        name = str(operator.get("name") or "").strip()
+        email = str(operator.get("email") or "").strip()
+        role = str(operator.get("role") or "Operator").strip() or "Operator"
+
+        if not name and not email:
+            result = create_result(
+                tool="getUserProfile",
+                title="NO OPERATOR CONTEXT",
+                summary="No signed-in operator identity is available for this chat session.",
+                current_investigation=empty_investigation(),
+                metrics=[metric("Status", "No user context")],
+                sections=[],
+                evidence_ids=[],
+            )
+            return with_context(result)
+
+        display = name or email
+        result = create_result(
+            tool="getUserProfile",
+            title="OPERATOR PROFILE",
+            summary=f"Current operator: {display} ({role}).",
+            current_investigation=empty_investigation(),
+            metrics=[
+                metric("Name", name or "—"),
+                metric("Email", email or "—"),
+                metric("Role", role),
+            ],
+            sections=[],
+            evidence_ids=[],
+        )
         return with_context(result)
 
 

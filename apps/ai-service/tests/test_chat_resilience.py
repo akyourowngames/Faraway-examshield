@@ -7,25 +7,19 @@ from examshield_ai.chat import ChatSession
 
 class FakeRegistry:
     def schemas(self):
-        return []
+        return [{"type": "function", "function": {"name": "listEvidence"}}]
 
     def execute(self, name, arguments):
         return SimpleNamespace(
-            result={
-                "tool": name,
-                "summary": "No evidence was uploaded today.",
-                "metrics": [{"label": "Total Evidence", "value": 0}],
-            },
+            result={"tool": name, "summary": "No evidence was uploaded today.", "metrics": []},
             model_context="{}",
         )
 
 
 class FakeClient:
-    def __init__(self, *, configured: bool, fail_stream: bool = False, tool_call: bool = False) -> None:
+    def __init__(self, *, configured: bool, fail_stream: bool = False) -> None:
         self.configured = configured
         self.fail_stream = fail_stream
-        self.tool_call = tool_call
-        self.calls = 0
         self.settings = SimpleNamespace(
             planner_timeout_seconds=0.1,
             model="test-model",
@@ -33,14 +27,32 @@ class FakeClient:
         )
 
     def stream_chat(self, **kwargs):
-        self.calls += 1
         if self.fail_stream:
             raise RuntimeError("provider timed out")
-        if self.tool_call and self.calls == 1:
-            kwargs["on_tool_call"](0, "call_0", "listEvidence")
-            kwargs["on_tool_delta"](0, "{}")
-            return True
         kwargs["on_token"]("ok")
+        return True
+
+
+class ToolEmittingClient:
+    """Emits a `listEvidence` tool call on the first stream, then answers.
+
+    This exercises the deterministic routing path: a live-data command attaches
+    tool schemas and the model selects the tool inline (the behaviour that
+    replaced the old separate `ToolPlanner.plan` round-trip).
+    """
+
+    def __init__(self, *, configured: bool = True) -> None:
+        self.configured = configured
+        self.settings = SimpleNamespace(model="test-model", chat_max_tokens=64)
+        self.calls = 0
+
+    def stream_chat(self, **kwargs):
+        self.calls += 1
+        if self.calls == 1 and kwargs.get("tools"):
+            kwargs["on_tool_call"](0, "call_1", "listEvidence")
+            kwargs["on_tool_delta"](0, '{"filter": "recent"}')
+            return True
+        kwargs["on_token"]("answer")
         return True
 
 
@@ -68,15 +80,11 @@ def test_failed_stream_returns_visible_local_fallback():
 
 def test_live_data_commands_use_deterministic_tool_routing():
     events = []
-    session = ChatSession(
-        client=FakeClient(configured=True, tool_call=True),
-        registry=FakeRegistry(),
-        write=events.append,
-    )
+    session = ChatSession(client=ToolEmittingClient(), registry=FakeRegistry(), write=events.append)
 
     session.run("show evidence uploaded today", [], None)
 
     tool_event = next(event for event in events if event["type"] == "tool")
     assert tool_event["tool"] == "listEvidence"
-    assert "No evidence" in str(tool_event["result"].get("summary"))
+    assert "No evidence" in tool_event["result"].get("summary", "")
     assert events[-1]["type"] == "done"

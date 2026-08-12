@@ -478,7 +478,7 @@ Based on the current architecture (not invented features):
 | | |
 |---|---|
 | **Strengths** | Modular backend; dual OCR + quality gating; forensic watermark + registry; unified pgvector threat memory + correlation; schema-driven AI tool routing; multi-model/provider resilience; secret tiering; cookie auth + middleware protection; Telegram webhook-secret + silent group monitoring; RLS-enabled schema; graceful degradation; containerised deploy; backend tests; modern Next 16/React 19 frontend; typed data layer. |
-| **Weaknesses** | No RLS **policies** (service-role trust); unauthenticated backend API; plaintext agent keys; RAG embeddings stored as strings (functional bug); `fitz` missing from requirements; default `CORS=*`; no rate limiting; binary auth (no RBAC); single-process Python + free tier; JSONB document bag; no CI/migrations; no frontend tests; god modules. *(See PROJECT_WEAKNESSES_AUDIT.md for detail.)* |
+| **Weaknesses** | No RLS **policies** (service-role trust); unauthenticated backend API; plaintext agent keys; no rate limiting; binary auth (no RBAC); single-process Python + free tier; JSONB document bag; no CI/migrations; no frontend tests; god modules. *(RAG embeddings and `fitz`/CORS have been resolved; see PROJECT_WEAKNESSES_AUDIT.md for detail.)* |
 | **Opportunities** | Exam-integrity market; community-agent marketplace; multi-tenant SaaS; regional-language support; enterprise SOCs; GPU/batch OCR; partner integrations (LMS, government portals). |
 | **Threats** | Adversarial Telegram users (prompt injection, obfuscated leaks); OCR evasion (rotated/scanned watermarks); cost volatility of external AI/OCR APIs; supply-chain/dependency risk; competitors with deeper ML; regulatory handling of monitored communications. |
 
