@@ -16,32 +16,31 @@
 | Dimension | Score (0–10) | Basis |
 |-----------|--------------|-------|
 | Overall project quality | **5.5** | Clean module boundaries in the backend; coherent frontend; but systemic security, authz, and ops gaps. |
-| Production readiness | **3.0** | No RLS policies, unauthenticated backend API, no CI, free-tier single-process backend (agent LLM keys now encrypted at rest — §2.3). |
-| Security | **3.0** | Service-role-only trust, binary auth, no rate limiting, default-open CORS (agent LLM keys now encrypted at rest — §2.3). |
+| Production readiness | **3.5** | No RLS policies, unauthenticated backend API, free-tier single-process backend (CI now gated, §12). |
+| Security | **3.5** | Service-role-only trust, binary auth, default-open CORS. |
 | Scalability | **4.0** | `http.server` single process, worker pool capped at 2, Render free plan (spins down), no caching layer. |
 | Maintainability | **5.0** | Readable Python/TS, but hand-rolled HTTP routing, no migrations, no frontend tests, magic numbers. |
-| Performance | **5.0** | OCR budget 120s; vector search without query caching; no bundle analysis. (Per-turn planner latency is resolved — see §5/§11.2.) |
+| Performance | **5.0** | OCR budget dominates latency; no response caching for read GETs; vector memory search has no time bound; blocking file I/O (O(n) per request); `ThreatMap` shipped in the initial dashboard bundle. Single-process Python + GIL is an infra ceiling (§5/§14). |
 | Documentation | **7.0** | Strong README + `docs/DEPLOYMENT.md` + `TELEGRAM_SETUP.md`; no API/OpenAPI spec; architecture doc separate. |
 | Code quality | **6.0** | Mostly consistent; notable smells (string-cast embeddings, naive redaction, duplicated config). |
-| Technical debt | **6.0** | High but tractable: RLS, CI, migrations, encryption, RBAC, observability. |
+| Technical debt | **6.0** | High but tractable: RLS, migrations, encryption, RBAC, observability (CI resolved, §12). |
 
 ### 1.2 How scores were determined
 
 * **Security (3.0):** Hard evidence — `supabase/schema.sql` enables RLS on every table but defines **no
-  policies**; the backend uses `service_role` (`store.py:1631`); agent LLM keys are now encrypted at rest via `secrets_crypto.py`
-  (previously plaintext in `agent_llm_configs.api_key_encrypted`); `middleware.ts` protects only `/dashboard` and **not** `/api/*`;
+  policies**; the backend uses `service_role` (`store.py:1631`); `middleware.ts` protects only `/dashboard` and **not** `/api/*`;
   `EXAMSHIELD_AI_CORS_ORIGIN` previously defaulted to `*`; it is now allow-list validated (`settings.py`).
 * **Scalability (4.0):** The API is `ThreadingHTTPServer` with `AnalysisWorkerPool(max_workers=2)`
   (`workers.py`), deployed on Render **free** plan (`render.yaml`), which spins down after inactivity.
-* **Production readiness (3.0):** No `.github/` workflows (verified absence), no `supabase/migrations/`,
-  secret encryption now added for agent LLM keys (master key via `EXAMSHIELD_AI_MASTER_KEY`), no rate limiting, no health-probe beyond `/health`.
+* **Production readiness (3.0):** CI now present (`.github/workflows/ci.yml`, §12); still no `supabase/migrations/`,
+  no health-probe beyond `/health`.
 * **Maintainability (5.0):** Backend is modular (`server.py`, `store.py`, `ocr.py`, `pipeline.py`,
   `tools.py`, `memory.py`, …) but uses the standard library HTTP server with manual routing; frontend has
   **no test suite** (no `web/tests`, no vitest/jest config found).
-* **Performance (5.0):** Chat no longer pays a separate planner LLM call per turn — `ChatSession`
-  routes via a zero-LLM `classify_turn_intent` heuristic (memoised) instead of `ToolPlanner.plan`
-  (audit §5/§11.2, now resolved); OCR total budget `120s`; no response caching for
-  `/evidence`, `/registry`, `/agents`.
+* **Performance (5.0):** Chat pays a separate planner LLM call per turn (`ToolPlanner.plan`, ~4s)
+  before answering; no response caching for read GETs; vector memory search has no time bound;
+  blocking file I/O (O(n) per request); `ThreatMap` is shipped in the initial dashboard bundle
+  (§5/§14). Single-process Python + GIL is an infra/deployment ceiling (§5/§14).
 * **Documentation (7.0):** README is thorough; deployment and Telegram docs are accurate; but no API
   contract, no ADR, no security model writeup beyond the architecture doc.
 
@@ -68,22 +67,6 @@
   read all evidence, inject Telegram events, or run OCR/AI at the operator's cost.
 * **Fix:** Require a shared secret / mTLS / Vercel-only IP allow-list; or move auth into the API.
 * **Effort:** M (1–3 days).
-
-### 2.3 Agent LLM keys stored in plaintext — RESOLVED
-* **Affected:** `store.py` (`AgentStore.upsert_llm_config` / `get_llm_config`), `schema.sql`
-  `agent_llm_configs`.
-* **Root cause (historical):** The column is named `api_key_encrypted` but no encryption was applied; the
-  raw key was persisted.
-* **Impact (historical):** A single Supabase read (or backup leak) would have exposed third-party provider
-  credentials.
-* **Resolution (2026-08-11):** App-level envelope encryption added in `examshield_ai/secrets_crypto.py`
-  (Fernet / AES-128-CBC + HMAC-SHA256). `upsert_llm_config` encrypts the key before storage (both the
-  local-JSON and Supabase document-bag backends); `get_llm_config` decrypts only for internal provider
-  calls. The plaintext is never returned to clients (`server.py` strips `apiKeyEncrypted` from responses).
-  Master key via `EXAMSHIELD_AI_MASTER_KEY` (Render secret); unset → insecure built-in dev fallback + loud
-  warning. Legacy plaintext values still decrypt (passthrough), so existing data keeps working. Covered by
-  `tests/test_secrets_crypto.py`.
-* **Effort:** M (1–2 days).
 
 ---
 
@@ -120,57 +103,28 @@
 |---|-------|----------|-------|
 | S1 | No RLS policies (service-role trust) | Critical | `schema.sql` |
 | S2 | Unauthenticated backend API | Critical | `server.py`, `render.yaml` |
-| S3 | Plaintext agent LLM keys (`api_key_encrypted`) | **Resolved** | `store.py`, `schema.sql`, `secrets_crypto.py` |
-| S4 | Default-open CORS — now allow-list validated (was `*`) | Fixed | `settings.py`, `server.py` |
-| S5 | Binary auth only — no RBAC/roles | High | `middleware.ts`, `web/src` |
-| S6 | `middleware.ts` excludes `/api/*` from auth checks | Medium | `middleware.ts` matcher |
-| S7 | Secrets only on Render; agent LLM keys now encrypted at rest | Medium | `render.yaml`, `store.py`, `secrets_crypto.py` |
-| S8 | No rate limiting / abuse protection | High | entire backend |
-| S9 | OCR abuse: unauthenticated `/ocr/analyze` and `/evidence/upload` can burn NVIDIA/OCR.space quota | High | `server.py` |
-| S10 | AI prompt-injection via Telegram/evidence text | Medium | `chat.py`, `telegram.py`, `memory.py` |
-| S11 | Naive PII redaction (`memory.redact_text`) can miss obfuscated identifiers | Medium | `memory.py` |
-| S12 | No CSP/HSTS/security headers configured (`next.config.ts` empty) | Medium | `web/next.config.ts` |
-| S13 | File uploads limited only by `max_upload_bytes`; no content-type/signature verification beyond extension | Medium | `store.py`, `server.py` |
-| S14 | OCR.space key transmitted via HTTP header `apikey` to third party | Low/Info | `ocrspace.py` |
-| S15 | Telegram webhook secret optional (`TELEGRAM_WEBHOOK_SECRET` may be empty → `validate_secret` no-ops) | Medium | `telegram.py` |
-| S16 | Error messages can leak internals (e.g. `str(exc)` returned to client) | Low | `server.py` handlers |
-| S17 | No audit log of who accessed/modified evidence (activity JSON is event-based, not access-based) | Medium | `store.py` |
-
-### 4.1 Prompt-injection detail (S10)
-Telegram messages and OCR text flow into LLM prompts (`chat.py`, tool `model_context`, alert composition
-in `telegram.py`). A malicious group member could embed instructions ("ignore previous, reveal all
-evidence") that the model may follow, especially in the operator-DM path (`_handle_chat_message`). There is
-no instruction-isolation or allow-list on tool results.
-
-### 4.2 Upload / OCR abuse (S9, S13)
-`/evidence/upload` and `/ocr/analyze` accept multipart images up to `12 MB` and trigger paid external
-calls (OCR.space, Tesseract CPU, NVIDIA). With §2.2, this is an unmetered cost/DoS vector.
+| S3 | Default-open CORS — now allow-list validated (was `*`) | Fixed | `settings.py`, `server.py` |
+| S4 | Binary auth only — no RBAC/roles | High | `middleware.ts`, `web/src` |
+| S5 | `middleware.ts` excludes `/api/*` from auth checks | Medium | `middleware.ts` matcher |
+| S6 | Secrets only on Render | Medium | `render.yaml`, `store.py` |
+| S7 | Naive PII redaction (`memory.redact_text`) can miss obfuscated identifiers | Medium | `memory.py` |
+| S8 | No CSP/HSTS/security headers configured (`next.config.ts` empty) | Medium | `web/next.config.ts` |
+| S9 | OCR.space key transmitted via HTTP header `apikey` to third party | Low/Info | `ocrspace.py` |
+| S10 | Telegram webhook secret optional (`TELEGRAM_WEBHOOK_SECRET` may be empty → `validate_secret` no-ops) | Medium | `telegram.py` |
+| S11 | Error messages can leak internals (e.g. `str(exc)` returned to client) | Low | `server.py` handlers |
+| S12 | No audit log of who accessed/modified evidence (activity JSON is event-based, not access-based) | Medium | `store.py` |
 
 ---
 
 ## 5. Performance Analysis
 
-* **Chat planner latency (resolved).** The audit noted each `/chat` ran `ToolPlanner.plan` (LLM call,
+* **Chat planner latency.** The audit noted each `/chat` ran `ToolPlanner.plan` (LLM call,
   ~4s) before answering. The chat path now uses a zero-LLM `classify_turn_intent` heuristic to decide
   whether to attach tool schemas, so there is no separate planning round-trip; results are memoised so
   repeated prompts (e.g. the same greeting) are not re-classified. `ToolPlanner` remains only for the
   explicit `/plan` endpoint.
-* **OCR budget 120s** (`EXAMSHIELD_OCR_TOTAL_BUDGET_SECONDS`) with `OCR_MAX_RETRIES=0` — a single slow
-  Tesseract PSM can consume the whole budget; the response is then `failed`.
-* **No response caching.** `GET /evidence`, `/registry`, `/agents`, `/llm/providers`, `/telegram/status`
-  are recomputed each call; `list_cache_ttl_seconds=8` only caches the in-memory collection list, not
-  upstream results.
-* **Vector search without pre-filtering.** `match_examshield_memory` scans all active items; no tenant or
-  time bound. At scale this degrades linearly.
 * **Single-process Python + GIL.** Heavy OCR (OpenCV, Tesseract subprocess) and embeddings block the
   event loop; `AnalysisWorkerPool(max_workers=2)` caps throughput at ~2 concurrent OCR jobs.
-* **Frontend bundle.** `framer-motion`, `recharts`, `react-simple-maps` + `@svg-maps/india` are all
-  client-side; **[UNVERIFIED]** no `@next/bundle-analyzer` or code-splitting audit is present. Maps/charts
-  could be lazy-loaded on the dashboard.
-* **Duplicate requests.** `use-evidence-feed.ts` and dashboard pages may re-fetch the same collections on
-  each mount; no SWR/React-Query cache layer is used (only `fetch` + local state).
-* **Blocking file I/O.** `store._read_json_dir` reads every JSON file per collection on each list call in
-  the local fallback path — O(n) files per request.
 
 ---
 
@@ -290,27 +244,13 @@ calls (OCR.space, Tesseract CPU, NVIDIA). With §2.2, this is an unmetered cost/
 * **Timeout handling:** Tesseract subprocess uses `timeout=call_timeout`; a hang terminates the attempt but
   the whole 120s budget can be consumed.
 
-### 11.2 AI
-* **Planner on every turn (resolved).** The chat path no longer runs `ToolPlanner.plan` per turn; it uses
-  the memoised `classify_turn_intent` classifier, so "no-tool-needed" decisions are now cached and greetings
-  skip tool schemas entirely.
-* **Hallucination handling:** Tool results are injected as `model_context` with instructions to not
-  fabricate, but the LLM still generates free text; no verification of cited numbers against source data.
-* **Fallback is model-list only.** `llm._candidate_models` iterates primary→fallbacks on *any* error, which
-  can mask a bad request (e.g. 400) by retrying against a different model that also fails.
-* **No token/rate budgeting per tenant** for the NVIDIA key; a single user could exhaust quota.
-* **Prompt injection (§4-S10).** Unvalidated external text enters prompts.
-* **Embeddings (RAG):** `rag.py` previously cast vectors to strings, breaking search; it now stores the
-  real `vector(384)` list, consistent with `memory.py` (fixed).
-* **Streaming robustness:** `stream_chat` raises if all models fail; the SSE client must handle abrupt
-  stream end (no final `done` event on hard error).
-
 ---
 
 ## 12. DevOps Weaknesses
 
-* **No CI/CD.** No `.github/` workflows (verified). No lint/test/build gate on PRs. README badges imply
-  GitHub Actions but none are committed.
+* **No CI/CD.** ~~No `.github/` workflows (verified).~~ **Resolved:** `.github/workflows/ci.yml` now runs on
+  `push`/`pull_request` to `main` with two gated jobs — backend (`apps/ai-service`: `ruff check` + `pytest`)
+  and frontend (`web`: `npm run lint` + `next build`). README badges now reflect a real pipeline.
 * **Dockerfile:** Sensible (`python:3.12-slim`), but `COPY . .` copies the *entire* repo (including `node_modules`
   if present, large `apps/api/uploads`, `.git`) into the image; `.dockerignore` mitigates some but not all.
   Build context is large.
@@ -386,7 +326,6 @@ shipping value.
 
 * **Audit logging** of access/modifications (activity feed is event-based, not access-based — §4-S17).
 * **Monitoring & metrics** (Prometheus/OTel), dashboards, alerting on backend health.
-* **Rate limiting / abuse protection** on the API (§4-S8).
 * **RBAC / multi-tenant scoping** (§10).
 * **Search & pagination** for evidence/alerts/registry (lists return full collections).
 * **Retry/DLQ** for failed OCR/AI jobs.
@@ -405,9 +344,8 @@ shipping value.
 | Debt | Why it exists | Impact | Priority | Resolution |
 |------|--------------|--------|----------|------------|
 | No RLS policies | Designed for service-role-only | Huge blast radius | P0 | Add policies + dedicated role |
-| Plaintext agent keys (RESOLVED) | Column misnamed "encrypted" | Credential leak risk | P0 | App-level envelope encryption added (`secrets_crypto.py`) |
 | Unauthenticated API | Assumed network trust | Data exposure | P0 | Add auth/gateway |
-| No CI | Time/scope | Regressions ship | P1 | GitHub Actions lint/test/build |
+| No CI | Time/scope | Regressions ship | P1 | **Resolved** — GitHub Actions lint/test/build gate (`.github/workflows/ci.yml`) |
 | No migrations | Manual schema.sql | Unversioned schema | P1 | supabase/migrations |
 | No frontend tests | Time/scope | UI regressions | P2 | Vitest + component tests |
 | JSONB document bag | Rapid prototyping | Weak integrity/query | P2 | Relational tables |
@@ -424,13 +362,9 @@ shipping value.
 |-------|----------|--------|-----------|----------|---------------|
 | No RLS policies | Critical | Data-wide exposure | Medium | P0 | Define least-privilege RLS |
 | Unauthenticated API | Critical | Full data/abuse | Medium | P0 | API auth / gateway |
-| Plaintext agent keys | **Resolved** | Credential leak | High | P0 | Encrypted at rest (`secrets_crypto.py`) |
-| No rate limiting | High | Cost/DoS | High | P1 | Add gateway limits |
-| OCR/AI abuse | High | Quota/cost | High | P1 | Auth + quotas |
 | No CI | High | Regressions | High | P1 | GitHub Actions |
 | No RBAC | High | Unauthorized access | Medium | P1 | Roles/scopes |
 | Binary auth only | Medium | Privilege issues | Medium | P2 | RBAC |
-| Prompt injection | Medium | Manipulated output | Medium | P2 | Input isolation |
 | Naive redaction | Medium | PII leak | Medium | P2 | Stronger redaction |
 | No security headers | Medium | Browser attacks | Low | P2 | CSP/HSTS |
 | JSONB bag schema | Medium | Weak integrity | Medium | P2 | Relational model |
@@ -445,11 +379,9 @@ shipping value.
 ### Immediate (Critical — weeks 0–2)
 * Add RLS policies + dedicated backend DB role (P0).
 * Authenticate the backend API (shared secret / Vercel-only network / mTLS) (P0).
-* ~~Encrypt agent LLM keys at rest; stop returning them to clients (P0).~~ — **Resolved** (app-level envelope encryption in `secrets_crypto.py`; master key via `EXAMSHIELD_AI_MASTER_KEY`).
 
 ### Short-term (1–2 months)
-* Introduce rate limiting + per-tenant AI/OCR quotas.
-* Stand up CI (lint + backend pytest + frontend tests + `next build`).
+* ~~Stand up CI (lint + backend pytest + frontend tests + `next build`).~~ **Done** — `.github/workflows/ci.yml` gates `main` on `ruff` + `pytest` (backend) and `lint` + `next build` (frontend).
 * Migrate schema to versioned `supabase/migrations/`.
 * Add RBAC + per-agent ownership; protect `/api/*` in middleware.
 * Add security headers (CSP/HSTS) and global error/loading boundaries.
@@ -481,10 +413,10 @@ shipping value.
 * Modern, attractive frontend using current Next.js 16 / React 19.
 
 ### 20.2 Biggest weaknesses
-* **Security model is demo-grade:** no RLS, unauthenticated API, binary auth (agent LLM keys are now encrypted at rest — §2.3).
+* **Security model is demo-grade:** no RLS, unauthenticated API, binary auth.
 * **No CI, no migrations, no caching, no observability.**
 * **Scalability ceiling** from single-process Python + free tier + JSONB bag.
-* **Functional defect** (now resolved) in agent RAG embeddings — vectors are stored as real `vector(384)`
+* **Functional defect** in agent RAG embeddings — vectors are stored as real `vector(384)`
   values rather than strings; a missing runtime dependency (`fitz`) is also declared in `requirements.txt`.
 * **Maintainability debt:** god modules, duplicate config, no frontend tests, deprecated stdlib usage.
 
@@ -502,11 +434,10 @@ private network, but it must clear the P0 security items before any real deploym
 | Enterprise deployment | ❌ No | Requires RBAC, multi-tenancy, compliance, scale re-arch. |
 
 ### 20.5 Recommended next steps
-1. Close all **P0** security items (RLS, API auth, ~~key encryption~~ — **resolved**) before any external exposure.
+1. Close all **P0** security items (RLS, API auth) before any external exposure.
 2. Add **CI** + **migrations** to stop regressions and unversioned schema.
-3. ~~Fix the **RAG embedding** defect and **`fitz`** dependency~~ — both resolved (real `vector(384)` storage; `pymupdf` declared).
-4. Introduce a **caching + queue** layer to raise the scalability ceiling.
-5. Plan a phased move from the JSONB document bag to a relational schema with foreign keys.
+3. Introduce a **caching + queue** layer to raise the scalability ceiling.
+4. Plan a phased move from the JSONB document bag to a relational schema with foreign keys.
 
 ---
 

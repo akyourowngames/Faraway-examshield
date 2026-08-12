@@ -461,15 +461,9 @@ def _validate_opencode_key(config: ProviderConfig, provider_info: dict[str, Any]
         req = urllib.request.Request(validate_url, data=payload, headers=headers, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:
-                data = json.loads(resp.read().decode("utf-8", errors="replace"))
+                resp.read()
                 return {"valid": True, "model": model, "provider": config.provider}
         except urllib.error.HTTPError as exc:
-            error_body = ""
-            try:
-                error_body = exc.read().decode("utf-8", errors="replace")
-            except Exception:
-                pass
-
             if exc.code == 401:
                 return {"valid": False, "error": "Invalid API key. Get a Zen key from https://opencode.ai/auth (not the CLI key)."}
             if exc.code == 429:

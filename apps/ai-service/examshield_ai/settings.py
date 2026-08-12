@@ -38,6 +38,8 @@ class Settings:
     telegram_chat_id: str
     telegram_admin_chat_id: str
     master_key: str
+    llm_daily_token_budget: int = 0
+    llm_budget_window_seconds: int = 86_400
 
 
 def load_settings() -> Settings:
@@ -129,6 +131,8 @@ def load_settings() -> Settings:
         telegram_chat_id=(os.environ.get("TELEGRAM_CHAT_ID") or "").strip(),
         telegram_admin_chat_id=(os.environ.get("TELEGRAM_ADMIN_CHAT_ID") or "").strip(),
         master_key=(os.environ.get("EXAMSHIELD_AI_MASTER_KEY") or "").strip(),
+        llm_daily_token_budget=int(os.environ.get("EXAMSHIELD_LLM_DAILY_TOKEN_BUDGET", "0")),
+        llm_budget_window_seconds=int(os.environ.get("EXAMSHIELD_LLM_BUDGET_WINDOW_SECONDS", "86400")),
     )
 
 

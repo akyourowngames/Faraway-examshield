@@ -10,7 +10,6 @@ from .memory import MemoryManager
 from .reports import generate_evidence_report, generate_summary_report
 from .store import EvidenceStore, JsonObject, is_today
 
-
 ToolHandler = Callable[[JsonObject], "ToolExecution"]
 
 
@@ -439,7 +438,6 @@ class ExamshieldToolRegistry:
             item for item in data.get("memoryCorrelations", []) if item.get("status") == "open"
         ]
         critical_registry = len([item for item in registry_threats if item.get("riskLevel") == "critical"])
-        medium_registry = len([item for item in registry_threats if item.get("riskLevel") == "medium"])
         compromised_papers = [item for item in top_threats if item.get("status") == "compromised"]
         investigating_papers = [item for item in top_threats if item.get("status") == "investigating"]
         posture, summary = threat_posture_summary(
@@ -941,6 +939,25 @@ def format_status(value: Any) -> str:
 
 def format_source(value: Any) -> str:
     return "Manual Upload" if value == "manual-upload" else "Telegram"
+
+
+def format_similarity(value: Any) -> str:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    return f"{score * 100:.0f}%"
+
+
+def memory_preview(item: Any) -> str:
+    if not isinstance(item, dict):
+        return str(item or "—")
+    content = str(
+        item.get("content") or item.get("summary") or item.get("sourceRef") or item.get("note") or ""
+    ).strip()
+    if not content:
+        return str(item.get("memoryType") or item.get("sourceEvidenceId") or "—")
+    return content[:80] + ("…" if len(content) > 80 else "")
 
 
 def format_date_time(value: Any) -> str:
