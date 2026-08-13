@@ -16,6 +16,7 @@ from uuid import uuid4
 from .detect import get_alert_severity
 from .secrets_crypto import decrypt_secret, encrypt_secret
 from .settings import Settings
+from .watermark import build_token, decode_watermark, embed, parse_token
 
 logger = logging.getLogger(__name__)
 
@@ -1412,13 +1413,29 @@ class EvidenceStore:
 
     def extract_watermark(self, text: str) -> JsonObject:
         candidates = extract_watermark_candidates(text)
-        if not candidates:
-            return {"status": "not-detected", "watermarkId": None, "confidence": 0, "registryRecord": None}
-        watermark_id = candidates[0]
-        record = self.find_registry_record_by_watermark(watermark_id)
-        if not record:
-            return {"status": "invalid", "watermarkId": watermark_id, "confidence": 70, "registryRecord": None}
-        return {"status": "detected", "watermarkId": watermark_id, "confidence": 100, "registryRecord": record}
+        if candidates:
+            watermark_id = candidates[0]
+            record = self.find_registry_record_by_watermark(watermark_id)
+            if not record:
+                return {"status": "invalid", "watermarkId": watermark_id, "confidence": 70, "registryRecord": None}
+            return {"status": "detected", "watermarkId": watermark_id, "confidence": 100, "registryRecord": record}
+        # Invisible per-recipient watermark (preventive minting) — additive path.
+        for token in decode_watermark(text):
+            parsed = parse_token(token)
+            if not parsed:
+                continue
+            copy = self.find_copy_by_watermark(parsed["copyId"])
+            if copy:
+                return {
+                    "status": "detected",
+                    "watermarkId": parsed["copyId"],
+                    "confidence": 100,
+                    "registryRecord": copy,
+                    "copy": copy,
+                    "recipientRef": parsed["recipientRef"],
+                    "paperId": parsed["paperId"],
+                }
+        return {"status": "not-detected", "watermarkId": None, "confidence": 0, "registryRecord": None}
 
     def match_paper_from_ocr(self, text: str) -> JsonObject | None:
         query_tokens = tokenize(text)
@@ -1456,6 +1473,82 @@ class EvidenceStore:
     def find_registry_record_by_watermark(self, watermark_id: str) -> JsonObject | None:
         normalized = normalize_watermark_id(watermark_id)
         return next((record for record in self.read_registry() if record.get("watermarkId") == normalized), None)
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Issued watermark copies (preventive minting)
+    # ─────────────────────────────────────────────────────────────────────
+    def read_copies(self) -> list[JsonObject]:
+        if self.supabase_enabled:
+            document = self._read_document("registry", "copies") or {}
+            records = document.get("items")
+            return records if isinstance(records, list) else []
+        try:
+            self.settings.copies_path.parent.mkdir(parents=True, exist_ok=True)
+            raw = self.settings.copies_path.read_text(encoding="utf-8")
+            parsed = json.loads(raw)
+        except (OSError, json.JSONDecodeError):
+            return []
+        return parsed if isinstance(parsed, list) else []
+
+    def write_copies(self, records: list[JsonObject]) -> None:
+        if self.supabase_enabled:
+            self._write_document("registry", "copies", {"items": records})
+        else:
+            self.settings.copies_path.parent.mkdir(parents=True, exist_ok=True)
+            self.settings.copies_path.write_text(json.dumps(records, indent=2), encoding="utf-8")
+
+    def find_copy_by_watermark(self, watermark_id: str) -> JsonObject | None:
+        return next((c for c in self.read_copies() if c.get("copyId") == watermark_id), None)
+
+    def mint_copies(self, paper_id: str, recipients: list[JsonObject], source_text: str) -> list[JsonObject]:
+        """Mint a uniquely watermarked copy of ``source_text`` per recipient.
+
+        Each copy gets an invisible, tamper-evident watermark (zero-width Unicode)
+        embedding ``copyId|paperId|recipientRef|checksum`` and a matching record in
+        the issued-copies collection. Returns the watermarked text + receipts.
+        """
+        paper = self.get_registry_paper(paper_id)
+        if not paper:
+            raise LookupError(f"Paper {paper_id} not found.")
+        if not source_text or not source_text.strip():
+            raise ValueError("sourceText is required to mint watermarked copies.")
+        existing = self.read_copies()
+        prior_seqs = [int(c.get("copyId", "CPY-0").split("-")[-1] or 0) for c in existing if str(c.get("copyId", "")).startswith("CPY-")]
+        next_seq = (max(prior_seqs) + 1) if prior_seqs else 1
+        results: list[JsonObject] = []
+        for recipient in recipients:
+            ref = str(recipient.get("ref") or "").strip()
+            if not ref:
+                continue
+            copy_id = f"CPY-{next_seq:04d}"
+            next_seq += 1
+            token = build_token(copy_id, paper_id, ref)
+            watermarked = embed(source_text, token)
+            issued_to = str(recipient.get("issuedTo") or "").strip()
+            channel = str(recipient.get("channel") or "digital").strip()
+            record = {
+                "copyId": copy_id,
+                "watermarkId": copy_id,
+                "paperId": paper_id,
+                "recipientRef": ref,
+                "issuedTo": issued_to,
+                "channel": channel,
+                "mintedAt": utc_now(),
+                "status": "issued",
+            }
+            existing.append(record)
+            results.append({
+                "copyId": copy_id,
+                "paperId": paper_id,
+                "recipientRef": ref,
+                "issuedTo": issued_to,
+                "channel": channel,
+                "watermarkedText": watermarked,
+                "mintedAt": record["mintedAt"],
+                "status": "issued",
+            })
+        self.write_copies(existing)
+        return results
 
     def read_registry(self) -> list[JsonObject]:
         self.ensure_registry_seed()

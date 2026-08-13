@@ -6,13 +6,10 @@ import logging
 import os
 import threading
 import time
-from cgi import FieldStorage
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from io import BytesIO
-from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from .agent_telegram import AgentTelegramService
 from .chat import ChatSession
@@ -22,6 +19,12 @@ from .llm import KiloClient
 from .llm_providers import ProviderConfig, list_providers, validate_api_key
 from .llm_providers import chat_completion as provider_chat_completion
 from .memory import MemoryManager
+from .multipart_parse import parse_multipart
+from .normalize import (
+    normalize_api_key,
+    normalize_current_evidence_id,
+    normalize_evidence_id,
+)
 from .ocr import SUPPORTED_TYPES, analyze_image, ocr_runtime_status
 from .operator import resolve_operator
 from .pipeline import EvidencePipeline
@@ -38,6 +41,7 @@ from .response_cache import ReadResponseCache, cached_get
 from .settings import Settings, load_settings
 from .store import AgentStore, EvidenceStore, UploadedFile, normalize_telegram_timestamp
 from .telegram import TelegramWebhook
+from .watermark import decode_watermark, parse_token
 from .tools import ExamshieldToolRegistry
 from .workers import AnalysisTask, AnalysisWorkerPool
 
@@ -234,6 +238,10 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         if path == "/registry/stats":
             self._get_registry_stats()
             return
+        # Issued watermark copies (preventive minting)
+        if path == "/watermark/copies":
+            self._list_watermark_copies()
+            return
         if len(parts) == 2 and parts[0] == "registry":
             self._get_registry_paper(parts[1])
             return
@@ -277,6 +285,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         self._send_json({"error": "Not found"}, status=404)
 
     def do_POST(self) -> None:
+        if self._reject_oversized_request():
+            return
         path = urlparse(self.path).path
         if not self._authorize_request():
             return
@@ -336,6 +346,13 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             return
         if path == "/registry/match":
             self._match_evidence_to_registry()
+            return
+        # Issued watermark copies (preventive minting)
+        if path == "/watermark/mint":
+            self._mint_watermark()
+            return
+        if path == "/watermark/decode":
+            self._decode_watermark()
             return
 
         if path == "/plan":
@@ -1359,28 +1376,34 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             raise ValueError(f"Payload too large ({length} bytes). Maximum is {max_bytes}.")
         body = self.rfile.read(length)
         content_type = self.headers.get("Content-Type") or ""
-        form = FieldStorage(
-            fp=BytesIO(body),
-            environ={
-                "REQUEST_METHOD": "POST",
-                "CONTENT_TYPE": content_type,
-                "CONTENT_LENGTH": str(length),
-            },
-            keep_blank_values=True,
-        )
-        values: dict[str, str | UploadedFile] = {}
-        for key in form.keys():
-            field = form[key]
-            item = field[0] if isinstance(field, list) else field
-            if item.filename:
-                values[key] = UploadedFile(
-                    filename=Path(item.filename).name,
-                    content_type=item.type or "application/octet-stream",
-                    data=item.file.read(),
-                )
-            else:
-                values[key] = str(item.value)
-        return values
+        return parse_multipart(body, content_type)
+
+    def _body_exceeds_server_cap(self) -> bool:
+        """Server-level request body cap (audit §8 — Backend Weaknesses).
+
+        Returns True when the declared ``Content-Length`` exceeds
+        ``settings.max_request_body_bytes``. A missing/invalid length is
+        treated as zero and never rejected here (the endpoint still validates
+        the bytes it actually reads).
+        """
+        cap = self.settings.max_request_body_bytes
+        if cap <= 0:
+            return False
+        try:
+            length = int(self.headers.get("Content-Length") or "0")
+        except ValueError:
+            length = 0
+        return length > cap
+
+    def _reject_oversized_request(self) -> bool:
+        """If the request body exceeds the server cap, send 413 and return True."""
+        if self._body_exceeds_server_cap():
+            self._send_json(
+                {"status": "failed", "error": "Payload too large for this endpoint."},
+                status=413,
+            )
+            return True
+        return False
 
     def _send_json(self, payload: dict[str, Any], status: int = 200) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -1422,6 +1445,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         self._send_json({"error": "Not found"}, status=404)
 
     def do_PUT(self) -> None:
+        if self._reject_oversized_request():
+            return
         path = urlparse(self.path).path
         if not self._authorize_request():
             return
@@ -1538,6 +1563,68 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             self._send_json({"matches": matches, "total": len(matches)})
         except Exception as exc:
             self._send_json({"error": str(exc)}, status=400)
+
+    def _mint_watermark(self) -> None:
+        """POST /watermark/mint — issue uniquely watermarked copies per recipient."""
+        try:
+            data = self._read_json()
+            paper_id = str(data.get("paperId", "")).strip()
+            source_text = str(data.get("sourceText", ""))
+            recipients = [r for r in (data.get("recipients") or []) if isinstance(r, dict)]
+            if not paper_id:
+                self._send_json({"error": "paperId is required."}, status=400)
+                return
+            if not recipients:
+                self._send_json({"error": "recipients (list) is required."}, status=400)
+                return
+            copies = self.store.mint_copies(paper_id, recipients, source_text)
+            self._send_json(
+                {"paperId": paper_id, "copies": copies, "count": len(copies), "message": "Watermarked copies issued."},
+                status=201,
+            )
+        except LookupError as exc:
+            self._send_json({"error": str(exc)}, status=404)
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Failed to mint watermark."), status=400)
+
+    def _decode_watermark(self) -> None:
+        """POST /watermark/decode — recover the issuing recipient from leaked text."""
+        try:
+            data = self._read_json()
+            text = str(data.get("text") or data.get("ocrText") or "")
+            if not text.strip():
+                self._send_json({"error": "text is required."}, status=400)
+                return
+            matches = []
+            for token in decode_watermark(text):
+                parsed = parse_token(token)
+                if not parsed:
+                    continue
+                copy = self.store.find_copy_by_watermark(parsed["copyId"])
+                matches.append({
+                    "token": token,
+                    "copyId": parsed["copyId"],
+                    "paperId": parsed["paperId"],
+                    "recipientRef": parsed["recipientRef"],
+                    "copy": copy,
+                })
+            self._send_json({"matches": matches, "total": len(matches), "detected": bool(matches)})
+        except Exception:
+            self._send_json(_error_payload("Failed to decode watermark."), status=400)
+
+    def _list_watermark_copies(self) -> None:
+        """GET /watermark/copies?paperId= — list issued watermark copies."""
+        try:
+            qs = parse_qs(urlparse(self.path).query)
+            paper_id = (qs.get("paperId") or [None])[0]
+            copies = self.store.read_copies()
+            if paper_id:
+                copies = [c for c in copies if c.get("paperId") == paper_id]
+            self._send_json({"copies": copies, "total": len(copies)})
+        except Exception:
+            self._send_json(_error_payload("Failed to list copies."), status=400)
 
     def _generate_report(self) -> None:
         """POST /reports/generate — Generate a Markdown report."""
@@ -1714,6 +1801,17 @@ def build_handler(settings: Settings):
     ConfiguredExamshieldAiHandler._get_cache = ReadResponseCache(settings.read_cache_ttl_seconds)
     ConfiguredExamshieldAiHandler._ocr_limiter = make_ocr_limiter()
     ConfiguredExamshieldAiHandler._upload_limiter = make_upload_limiter()
+    # ── Production hardening (audit §8 — Backend Weaknesses) ──
+    # Slow-client / idle socket timeout, applied by BaseHTTPRequestHandler.setup()
+    # via self.connection.settimeout(self.timeout). A client that trickles bytes
+    # is cut off rather than pinning a worker thread indefinitely.
+    ConfiguredExamshieldAiHandler.timeout = settings.request_timeout_seconds
+    # Keep-alive tuning: HTTP/1.1 persistent connections when enabled, otherwise
+    # close after each request (HTTP/1.0) to bound connection lifetime on a
+    # single-process server.
+    ConfiguredExamshieldAiHandler.protocol_version = (
+        "HTTP/1.1" if settings.keep_alive_enabled else "HTTP/1.0"
+    )
     return ConfiguredExamshieldAiHandler
 
 

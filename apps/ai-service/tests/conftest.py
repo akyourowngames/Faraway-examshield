@@ -26,6 +26,7 @@ def tmp_settings(tmp_path: Path) -> Settings:
         repo_root=tmp_path,
         upload_root=upload_root,
         registry_path=registry_path,
+        copies_path=tmp_path / "watermark_copies.json",
         api_key="",
         model="test-model",
         fallback_models=(),

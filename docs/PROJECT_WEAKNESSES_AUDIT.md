@@ -111,10 +111,6 @@
 
 ## 8. Backend Weaknesses
 
-* **HTTP server choice:** `http.server` is not built for production traffic; no keep-alive tuning, no
-  request body size cap at the server level, no timeout on slow clients.
-* **Validation:** Manual (`require_text`, `optional_text`, multipart parsing via `cgi.FieldStorage`
-  — **deprecated in Python 3.13+**). Inconsistent field validation across endpoints.
 * **Error handling:** Mix of raised exceptions and returned error dicts; no centralised error middleware.
 * **Logging:** `logging.basicConfig` to stdout is fine for containers, but there is no structured logging
   (JSON), no log levels per route, no correlation IDs across OCR→memory→alert.
@@ -180,6 +176,11 @@
 * **Secrets management:** Render env vars `sync:false` → must be set manually; high risk of drift between
   local `.env`, `render.yaml`, and `settings.py`. No secrets scanner configured.
 * **Environment parity:** Local uses local-JSON fallback; prod uses Supabase. Divergent code paths (§3).
+* **CI is now present (✅ Resolved):** `.github/workflows/ci.yml` runs on push to `main` and on PRs. It gates the
+  backend (`apps/ai-service`: `ruff check`, `mypy examshield_ai`, `pytest`) and the frontend (`web`: `npm run lint`,
+  `npm run build`) with placeholder `NEXT_PUBLIC_*` Supabase values so the build prerenders. `concurrency` cancels
+  superseded runs. Remaining gaps from this section (Dockerfile context, health-check depth, no migrations/observability,
+  secrets drift) are still open.
 
 ---
 
@@ -227,7 +228,7 @@ removed from the tree; no duplicate object-detection intent remains in the pipel
 
 * **Backend tests exist** (`apps/ai-service/tests/`: `test_analysis_flow`, `test_ocr`, `test_ocrspace`,
   `test_store_snapshot`, `test_telegram_pipeline`, `test_workers`, `conftest`) — good, but they are
-  integration-style and depend on local filesystem/network; **[UNVERIFIED]** whether they run in CI (no CI).
+  integration-style and depend on local filesystem/network; they now run in CI (`.github/workflows/ci.yml`, §12).
 * **No type checking in Python — ✅ Resolved (§6.2):** `mypy` is configured (`pyproject.toml`
   `[tool.mypy]`), enforced in CI (`.github/workflows/ci.yml`), and the backend type-checks clean; new
   code is fully annotated.
@@ -273,7 +274,7 @@ removed from the tree; no duplicate object-detection intent remains in the pipel
 
 | Issue | Severity | Impact | Likelihood | Priority | Suggested Fix |
 |-------|----------|--------|-----------|----------|---------------|
-| No CI | High | Regressions | High | P1 | GitHub Actions |
+| No CI | High | Regressions | High | P1 | GitHub Actions — ✅ Resolved: `.github/workflows/ci.yml` gates backend (ruff/mypy/pytest) and frontend (lint/build) on push + PR (§12). |
 | No RBAC | High | Unauthorized access | Medium | P1 | Roles/scopes |
 | Binary auth only | Medium | Privilege issues | Medium | P2 | RBAC |
 | Naive redaction | Medium | PII leak | Medium | P2 | Stronger redaction |
@@ -323,7 +324,7 @@ removed from the tree; no duplicate object-detection intent remains in the pipel
 
 ### 20.2 Biggest weaknesses
 * **Security model is demo-grade:** unauthenticated API and binary auth remain.
-* **No CI, no migrations, no caching, no observability.**
+* **No migrations, no caching, no observability.** (CI is now present — §12/§18.)
 * **Scalability ceiling** from single-process Python + free tier + JSONB bag.
 * **Functional defect** in agent RAG embeddings — vectors are stored as real `vector(384)`
   values rather than strings; a missing runtime dependency (`fitz`) is also declared in `requirements.txt`.
@@ -344,7 +345,7 @@ private network, but it must clear the P0 security items before any real deploym
 
 ### 20.5 Recommended next steps
 1. Close all **P0** security items — API auth still outstanding — before any external exposure.
-2. Add **CI** + **migrations** to stop regressions and unversioned schema.
+2. Add **migrations** to stop unversioned schema evolution. (**CI** is now present — §12/§18.)
 3. Introduce a **caching + queue** layer to raise the scalability ceiling.
 4. Plan a phased move from the JSONB document bag to a relational schema with foreign keys.
 

@@ -20,6 +20,7 @@ class Settings:
     repo_root: Path
     upload_root: Path
     registry_path: Path
+    copies_path: Path
     api_key: str
     model: str
     fallback_models: tuple[str, ...]
@@ -50,6 +51,9 @@ class Settings:
     api_auth_secret: str = ""
     llm_daily_token_budget: int = 0
     llm_budget_window_seconds: int = 86_400
+    request_timeout_seconds: float = 30.0
+    max_request_body_bytes: int = 25 * 1024 * 1024
+    keep_alive_enabled: bool = False
 
 
 def load_settings() -> Settings:
@@ -61,6 +65,10 @@ def load_settings() -> Settings:
     registry_path = Path(
         os.environ.get("EXAMSHIELD_REGISTRY_PATH")
         or repo_root / "apps" / "core" / "data" / "papers.json"
+    ).resolve()
+    copies_path = Path(
+        os.environ.get("EXAMSHIELD_COPIES_PATH")
+        or repo_root / "apps" / "core" / "data" / "watermark_copies.json"
     ).resolve()
     model = (
         os.environ.get("EXAMSHIELD_AI_MODEL")
@@ -92,6 +100,7 @@ def load_settings() -> Settings:
         repo_root=repo_root,
         upload_root=upload_root,
         registry_path=registry_path,
+        copies_path=copies_path,
         api_key=(
             os.environ.get("KILO_API_KEY")
             or os.environ.get("NVIDIA_API_KEY")
@@ -147,6 +156,9 @@ def load_settings() -> Settings:
         api_auth_secret=(os.environ.get("EXAMSHIELD_API_AUTH_SECRET") or "").strip(),
         llm_daily_token_budget=int(os.environ.get("EXAMSHIELD_LLM_DAILY_TOKEN_BUDGET", "0")),
         llm_budget_window_seconds=int(os.environ.get("EXAMSHIELD_LLM_BUDGET_WINDOW_SECONDS", "86400")),
+        request_timeout_seconds=float(os.environ.get("EXAMSHIELD_REQUEST_TIMEOUT_SECONDS", "30")),
+        max_request_body_bytes=int(os.environ.get("EXAMSHIELD_MAX_REQUEST_BODY_BYTES", str(25 * 1024 * 1024))),
+        keep_alive_enabled=os.environ.get("EXAMSHIELD_KEEP_ALIVE", "").lower() in ("1", "true", "yes", "on"),
     )
 
 

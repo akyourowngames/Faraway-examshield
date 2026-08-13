@@ -1,6 +1,17 @@
-pytest>=8.0
+# Runtime dependencies — required to run `python service.py`
+# (Supabase, Telegram, and all LLM providers are reached over stdlib urllib,
+#  so no supabase/requests/telegram/openai client packages are needed here.)
 opencv-python-headless>=4.8.0
-python-dotenv>=1.0.0
+numpy>=1.24.0
 pymupdf>=1.23.0
-pillow>=10.0.0
+python-dotenv>=1.0.0
 cryptography>=42.0.0
+python-multipart>=0.0.32
+
+# Test dependencies (CI runs `pytest -q` after installing this file)
+pytest>=8.0
+
+# Dev / type-checking tooling
+# NOTE: `ruff` and `mypy` are installed separately in CI
+# (see .github/workflows/ci.yml: `pip install ruff mypy`), so they are
+# intentionally not pinned here.
