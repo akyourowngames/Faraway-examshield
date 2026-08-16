@@ -96,7 +96,12 @@ class EvidencePipeline:
                 except Exception as fail_exc:
                     logger.error("Failed to mark job %s failed: %s", job_id, fail_exc)
                 return
-            combined_detection = self._combined_detection(detection, text, analysis)
+            combined_detection = self._combined_detection(
+                detection,
+                text,
+                analysis,
+                is_media=str((created.get("evidence") or {}).get("fileType") or "") != "text/plain",
+            )
             if evidence_id:
                 try:
                     self.store._update_evidence_record(
@@ -279,6 +284,8 @@ class EvidencePipeline:
         detection: JsonObject,
         caption_text: str | None,
         analysis: JsonObject,
+        *,
+        is_media: bool = False,
     ) -> JsonObject:
         evidence = analysis.get("evidence") if isinstance(analysis.get("evidence"), dict) else {}
         ocr_text = evidence.get("ocrText") if isinstance(evidence, dict) else None
@@ -290,6 +297,14 @@ class EvidencePipeline:
         if not combined:
             return detection
         rescanned = scan_text(combined)
+        # A monitored-group image/PDF is almost certainly the artifact itself
+        # (you don't screenshot an exam header for chit-chat), so an exam-document
+        # signal in OCR'd media is treated as leak-relevant even without a
+        # "leaked" verb. Plain text chatter keeps the stricter verb requirement.
+        if is_media and any(m.get("category") == "leak" for m in rescanned.get("matches", [])):
+            boosted = dict(rescanned)
+            boosted["score"] = max(float(rescanned.get("score") or 0), 9.0)
+            return boosted
         return rescanned if rescanned.get("score", 0) >= detection.get("score", 0) else detection
 
     @staticmethod

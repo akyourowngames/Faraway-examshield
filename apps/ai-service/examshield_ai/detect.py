@@ -44,6 +44,12 @@ KEYWORD_PATTERNS: list[tuple[str, int, str, str]] = [
     # Exam terms that matter with suspicious context
     (r"\b(neet|jee|upsc|gate)\s*202[4-9]\b", 4, "general", "Exam year mention"),
     (r"\banswer\s*key\b", 5, "cheat", "Answer key"),
+    # Exam-document signals: an actual paper/admit card/answer key posted. These
+    # are specific document phrases (not casual chatter like "NEET is hard"), so
+    # they mark a leaked/monitored exam artifact rather than ordinary talk.
+    (r"\b(national\s+eligibility\s+cum\s+entrance\s+test|entrance\s+test)\b", 7, "leak", "Exam document header"),
+    (r"\b(question|model|sample)\s*paper\b", 6, "leak", "Exam question paper"),
+    (r"\b(admit\s+card|hall\s+ticket|answer\s+key|rank\s+card)\b", 6, "leak", "Exam document"),
 ]
 
 # Fuzzily common typos/misspellings for high-value terms
