@@ -192,7 +192,7 @@ class MemoryManager:
                             "match_count": match_count,
                             "exclude_source_ref": exclude_source_ref,
                             "min_created_at": created_after,
-                            "owner_id": owner_id,
+                            "p_owner_id": owner_id,
                         },
                     )
                     if isinstance(rows, list):
