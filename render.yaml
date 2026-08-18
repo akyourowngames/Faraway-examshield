@@ -59,7 +59,9 @@ services:
       - key: EXAMSHIELD_OCR_PSM_WORKERS
         value: "2"
       - key: EXAMSHIELD_ANALYSIS_JOB_TIMEOUT_SECONDS
-        value: "180"
+        value: "240"
+      - key: EXAMSHIELD_ANALYSIS_JOB_GRACE_SECONDS
+        value: "60"
       - key: EXAMSHIELD_STALE_JOB_SWEEP_SECONDS
         value: "60"
       - key: EXAMSHIELD_STALE_JOB_MAX_AGE_SECONDS
