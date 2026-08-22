@@ -181,10 +181,11 @@ class ExamshieldToolRegistry:
     def execute(self, name: str, arguments: JsonObject | None = None) -> ToolExecution:
         tool = self._tools.get(name)
         if not tool:
+            requested = str(name or "").strip() or "unknown"
             result = create_result(
-                tool="listEvidence",
+                tool=requested,
                 title="TOOL NOT FOUND",
-                summary=f"{name} is not registered in the EXAMSHIELD AI service.",
+                summary=f"{requested} is not registered in the EXAMSHIELD AI service.",
                 current_investigation=empty_investigation(),
                 metrics=[metric("Available Tools", ", ".join(self.names()))],
                 sections=[],
@@ -773,15 +774,18 @@ def answer_context(result: JsonObject) -> str:
     metrics = {
         str(item.get("label")): str(item.get("value"))
         for item in result.get("metrics", [])
-        if item.get("label") is not None
+        if isinstance(item, dict) and item.get("label") is not None
     }
     sections = []
     for section in result.get("sections", []):
+        if not isinstance(section, dict):
+            continue
+        rows = section.get("rows", [])
         sections.append(
             {
                 "title": section.get("title"),
                 "rowsAreSamplesNotTotals": True,
-                "rows": section.get("rows", []),
+                "rows": rows if isinstance(rows, list) else [],
             }
         )
     answer_rules = [
