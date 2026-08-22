@@ -38,6 +38,10 @@ class Settings:
     api_auth_secret: str = ""
     llm_daily_token_budget: int = 0
     llm_budget_window_seconds: int = 86_400
+    llm_retry_attempts: int = 2
+    llm_retry_backoff_seconds: float = 0.5
+    budget_per_request_tokens: int = 4_000
+    budget_per_session_tokens: int = 50_000
 
 
 def load_settings() -> Settings:
@@ -129,6 +133,10 @@ def load_settings() -> Settings:
         api_auth_secret=(os.environ.get("EXAMSHIELD_API_AUTH_SECRET") or "").strip(),
         llm_daily_token_budget=int(os.environ.get("EXAMSHIELD_LLM_DAILY_TOKEN_BUDGET", "0")),
         llm_budget_window_seconds=int(os.environ.get("EXAMSHIELD_LLM_BUDGET_WINDOW_SECONDS", "86400")),
+        llm_retry_attempts=int(os.environ.get("EXAMSHIELD_AI_LLM_RETRY_ATTEMPTS", "2")),
+        llm_retry_backoff_seconds=float(os.environ.get("EXAMSHIELD_AI_LLM_RETRY_BACKOFF_SECONDS", "0.5")),
+        budget_per_request_tokens=int(os.environ.get("EXAMSHIELD_AI_BUDGET_PER_REQUEST_TOKENS", "4000")),
+        budget_per_session_tokens=int(os.environ.get("EXAMSHIELD_AI_BUDGET_PER_SESSION_TOKENS", "50000")),
     )
 
 

@@ -6,8 +6,10 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from .budget import TokenBudget, estimate_tokens
+from .hallucination import verify_answer
 from .llm import KiloClient
-from .responses import conversation_messages
+from .responses import conversation_messages, grounded_system_message
 from .store import JsonObject
 from .tools import ExamshieldToolRegistry
 from .turn_policy import TurnIntent, classify_turn_intent
@@ -28,10 +30,14 @@ class ChatSession:
         client: KiloClient,
         registry: ExamshieldToolRegistry,
         write: EventWriter,
+        budget: TokenBudget | None = None,
+        session_id: str | None = None,
     ) -> None:
         self.client = client
         self.registry = registry
         self.write = write
+        self.budget = budget
+        self.session_id = session_id or "chat"
 
     def run(
         self,
@@ -50,6 +56,21 @@ class ChatSession:
             )
             return
 
+        # Budget guardrail — deny before any provider call when this request or
+        # session has spent its allowance. Degrades to a visible local message.
+        if self.budget is not None:
+            decision = self.budget.evaluate(
+                self.session_id,
+                estimate_tokens(prompt) + self.client.settings.chat_max_tokens,
+            )
+            if not decision.allowed:
+                self._write_local_fallback(
+                    f"Token budget exhausted, so I can't run this request right now. "
+                    f"({decision.reason} Start a new session or raise the limit.)",
+                    started,
+                )
+                return
+
         # Ares-style cheap intent classification — zero LLM calls. This decides
         # whether we attach tool schemas at all. When the message is plain
         # conversation we stream directly with no tools (fast path). When it
@@ -62,7 +83,11 @@ class ChatSession:
         messages = list(conversation_messages(prompt, history))
         tool_schemas = self.registry.schemas() if use_tools else []
 
-        self._run_loop(prompt, messages, tool_schemas, current_evidence_id, started)
+        try:
+            self._run_loop(prompt, messages, tool_schemas, current_evidence_id, started)
+        finally:
+            if self.budget is not None:
+                self.budget.record(self.session_id, estimate_tokens(prompt) + self.client.settings.chat_max_tokens)
 
     def _run_loop(
         self,
@@ -74,6 +99,8 @@ class ChatSession:
     ) -> None:
         evidence_id = self._resolve_evidence_id(prompt, current_evidence_id)
         last_content = ""
+        answer_parts: list[str] = []
+        tool_contexts: list[str] = []
 
         for _iteration in range(MAX_TOOL_ITERATIONS):
             emitted_text = False
@@ -82,6 +109,7 @@ class ChatSession:
             def on_token(token: str) -> None:
                 nonlocal emitted_text
                 emitted_text = True
+                answer_parts.append(token)
                 self.write({"type": "token", "token": token})
 
             def on_tool_call(index: int, call_id: str, name: str) -> None:
@@ -112,10 +140,15 @@ class ChatSession:
             # If the model selected a tool, execute it and continue the loop so
             # the model can answer from the real data (Ares execute-then-continue).
             if tool_calls:
-                last_content = self._execute_tool_calls(tool_calls, messages, evidence_id)
+                last_content, contexts = self._execute_tool_calls(tool_calls, messages, evidence_id)
+                tool_contexts.extend(contexts)
                 continue
 
-            # No tool call — this is the final answer.
+            # No tool call — this is the final answer. Verify it against the
+            # live data we actually retrieved and flag unsupported claims.
+            if tool_contexts:
+                report = verify_answer("".join(answer_parts), tool_contexts)
+                self.write({"type": "grounding", **report.as_dict()})
             self._write_meta(started)
             self.write({"type": "done", "latencyMs": self._latency_ms(started)})
             return
@@ -129,7 +162,7 @@ class ChatSession:
         tool_calls: dict[int, dict[str, str]],
         messages: list[JsonObject],
         evidence_id: str | None,
-    ) -> str:
+    ) -> tuple[str, list[str]]:
         assistant_tool_calls = []
         for index in sorted(tool_calls):
             call = tool_calls[index]
@@ -141,6 +174,7 @@ class ChatSession:
         messages.append({"role": "assistant", "content": "", "tool_calls": assistant_tool_calls})
 
         last_summary = ""
+        contexts: list[str] = []
         for call in assistant_tool_calls:
             name = str(call["function"]["name"] or "")
             raw_args = str(call["function"]["arguments"] or "")
@@ -161,6 +195,7 @@ class ChatSession:
                 continue
 
             result = execution.result
+            contexts.append(json.dumps(result, ensure_ascii=False))
             self.write({"type": "tool", "tool": result.get("tool") or name, "result": result})
             last_summary = self._tool_fallback_text(result)
             messages.append({
@@ -169,7 +204,11 @@ class ChatSession:
                 "content": json.dumps(result, ensure_ascii=False),
             })
 
-        return last_summary
+        if contexts:
+            # Grounding instruction: the follow-up answer must come from the
+            # live data just retrieved, not from the model's imagination.
+            messages.append({"role": "system", "content": grounded_system_message()})
+        return last_summary, contexts
 
     def _handle_stream_error(
         self,
