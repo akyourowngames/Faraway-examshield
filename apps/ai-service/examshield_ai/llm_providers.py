@@ -461,12 +461,11 @@ def _validate_opencode_key(config: ProviderConfig, provider_info: dict[str, Any]
         req = urllib.request.Request(validate_url, data=payload, headers=headers, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:
-                data = json.loads(resp.read().decode("utf-8", errors="replace"))
+                json.loads(resp.read().decode("utf-8", errors="replace"))
                 return {"valid": True, "model": model, "provider": config.provider}
         except urllib.error.HTTPError as exc:
-            error_body = ""
             try:
-                error_body = exc.read().decode("utf-8", errors="replace")
+                exc.read()
             except Exception:
                 pass
 

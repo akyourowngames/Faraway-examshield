@@ -9,7 +9,7 @@ import urllib.parse
 import urllib.request
 from html import escape
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Callable
 from uuid import uuid4
 
 from .detect import is_suspicious, scan_text
@@ -866,36 +866,35 @@ def _fallback_alert_text(context: JsonObject) -> str:
     evidence = context.get("evidence") or {}
     detection = context.get("detection") or {}
     report = context.get("forensicReport") or {}
-    alert_type = str(context.get("alertType") or "SUSPICIOUS ACTIVITY")
     group = str(context.get("group") or "Unknown")
     sender = str(context.get("sender") or "Unknown")
     preview = str(context.get("messagePreview") or "").strip()
     
     lines = [
-        f"<b>Hey team,</b>",
-        f"",
+        "<b>Hey team,</b>",
+        "",
         f"Just spotted something <b>suspicious</b> in group <code>{escape(group)}</code>.",
     ]
     
     if preview:
-        lines.append(f"")
+        lines.append("")
         lines.append(f"User <b>{escape(sender)}</b> posted:")
         lines.append(f"<i>\"{escape(preview[:200])}\"</i>")
     
     if evidence.get("id"):
-        lines.append(f"")
+        lines.append("")
         lines.append(f"Evidence logged: <code>{escape(str(evidence.get('id')))}</code>")
     
     if report.get("status") == "investigation-complete":
         paper = str(report.get("paper") or "Unknown")
         center = str(report.get("center") or "Unknown")
         confidence = str(report.get("confidence") or "N/A")
-        lines.append(f"")
+        lines.append("")
         lines.append(f"<b>Investigation complete:</b> Paper: {escape(paper)} | Center: {escape(center)} | Confidence: {escape(confidence)}%")
     else:
         score = str(detection.get("score") or 0)
         max_score = str(detection.get("maxScore") or 50)
-        lines.append(f"")
+        lines.append("")
         lines.append(f"Detection score: <b>{escape(score)}/{escape(max_score)}</b>")
         matches = detection.get("matches") if isinstance(detection.get("matches"), list) else []
         keywords = ", ".join(
@@ -904,8 +903,8 @@ def _fallback_alert_text(context: JsonObject) -> str:
         if keywords:
             lines.append(f"Keywords found: <b>{escape(keywords[:150])}</b>")
     
-    lines.append(f"")
-    lines.append(f"Working on it. Will update soon.")
+    lines.append("")
+    lines.append("Working on it. Will update soon.")
     
     return "\n".join(lines)
 

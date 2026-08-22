@@ -1,17 +1,37 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
-from typing import Any
 
 from .settings import Settings
 from .store import JsonObject
 
-
 TokenWriter = Callable[[str], None]
+
+# HTTP codes worth a quick retry — everything else fails fast to the next model.
+_TRANSIENT_HTTP_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+
+
+class _StreamFailure(Exception):
+    """Candidate-stream failure tagged with whether it is safe to replay."""
+
+    def __init__(self, message: str, *, transient: bool) -> None:
+        super().__init__(message)
+        self.transient = transient
+
+
+def _is_transient(exc: Exception) -> bool:
+    """True for timeouts/connection errors and retryable HTTP statuses."""
+    if isinstance(exc, _StreamFailure):
+        return exc.transient
+    if isinstance(exc, (TimeoutError, urllib.error.URLError)):
+        return True
+    match = re.search(r"returned (\d{3})", str(exc))
+    return bool(match and int(match.group(1)) in _TRANSIENT_HTTP_CODES)
 
 
 class KiloClient:
@@ -84,57 +104,82 @@ class KiloClient:
                 payload["tools"] = tools
                 payload["tool_choice"] = "auto"
             request = self._request(payload)
-            try:
-                with urllib.request.urlopen(request, timeout=per_model_timeout) as response:
-                    emitted = False
-                    reasoning_buffer: list[str] = []
-                    for raw_line in response:
-                        line = raw_line.decode("utf-8", errors="replace").strip()
-                        if not line.startswith("data:"):
-                            continue
-                        data = line[5:].strip()
-                        if not data or data == "[DONE]":
-                            continue
-                        try:
-                            parsed = json.loads(data)
-                        except json.JSONDecodeError:
-                            continue
-                        choice = parsed.get("choices", [{}])[0]
-                        delta = choice.get("delta", {})
-                        # Reasoning models (e.g. tencent/hy3 via Kilo) stream their
-                        # output in `reasoning`/`reasoning_content` and may leave
-                        # `content` empty until the final answer. Surface `content`
-                        # live as the answer; keep reasoning in reserve so a model
-                        # that never emits `content` still produces visible text
-                        # instead of an "empty stream" error.
-                        content_token = delta.get("content") or ""
-                        reasoning_token = delta.get("reasoning") or delta.get("reasoning_content") or ""
-                        if content_token:
-                            emitted = True
-                            on_token(str(content_token))
-                        elif reasoning_token:
-                            reasoning_buffer.append(reasoning_token)
-                        for tc in delta.get("tool_calls") or []:
-                            emitted = True
-                            index = int(tc.get("index", 0))
-                            fn = tc.get("function", {})
-                            if on_tool_call is not None and (tc.get("id") or fn.get("name")):
-                                on_tool_call(index, str(tc.get("id") or ""), str(fn.get("name") or ""))
-                            if on_tool_delta is not None and fn.get("arguments"):
-                                on_tool_delta(index, str(fn.get("arguments")))
-                    if emitted:
-                        self._unavailable_until = 0.0
-                        return True
-                    # No `content` arrived — surface the buffered reasoning as the answer.
-                    if reasoning_buffer:
-                        on_token("".join(reasoning_buffer))
-                        self._unavailable_until = 0.0
-                        return True
-                    errors.append(f"{candidate}: empty stream")
-            except Exception as exc:
-                errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
+            # Transient failures (timeouts, 429/5xx) get a bounded exponential
+            # backoff — but only while nothing has been emitted, since tokens
+            # already streamed to the client can never be replayed.
+            for attempt in range(self.settings.llm_retry_attempts + 1):
+                try:
+                    emitted = self._stream_candidate(request, per_model_timeout, on_token, on_tool_call, on_tool_delta)
+                except Exception as exc:
+                    errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
+                    if attempt >= self.settings.llm_retry_attempts or not _is_transient(exc):
+                        break
+                    time.sleep(self._retry_delay(attempt))
+                    continue
+                if emitted:
+                    self._unavailable_until = 0.0
+                    return True
+                # No `content` arrived — try the next model instead of retrying.
+                errors.append(f"{candidate}: empty stream")
+                break
         self._unavailable_until = time.monotonic() + 10.0
         raise RuntimeError("Kilo gateway stream failed for all models: " + " | ".join(errors))
+
+    def _stream_candidate(
+        self,
+        request: urllib.request.Request,
+        timeout: float,
+        on_token: TokenWriter,
+        on_tool_call: Callable[[int, str, str], None] | None,
+        on_tool_delta: Callable[[int, str], None],
+    ) -> bool:
+        """Stream one candidate model. Returns True when output was emitted."""
+        emitted = False
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                reasoning_buffer: list[str] = []
+                for raw_line in response:
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if not data or data == "[DONE]":
+                        continue
+                    try:
+                        parsed = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    choice = parsed.get("choices", [{}])[0]
+                    delta = choice.get("delta", {})
+                    content_token = delta.get("content") or ""
+                    reasoning_token = delta.get("reasoning") or delta.get("reasoning_content") or ""
+                    if content_token:
+                        emitted = True
+                        on_token(str(content_token))
+                    elif reasoning_token:
+                        reasoning_buffer.append(reasoning_token)
+                    for tc in delta.get("tool_calls") or []:
+                        emitted = True
+                        index = int(tc.get("index", 0))
+                        fn = tc.get("function", {})
+                        if on_tool_call is not None and (tc.get("id") or fn.get("name")):
+                            on_tool_call(index, str(tc.get("id") or ""), str(fn.get("name") or ""))
+                        if on_tool_delta is not None and fn.get("arguments"):
+                            on_tool_delta(index, str(fn.get("arguments")))
+                if not emitted and reasoning_buffer:
+                    # Reasoning models may never emit `content`; surface the
+                    # buffered reasoning so the user still sees an answer.
+                    on_token("".join(reasoning_buffer))
+                    emitted = True
+                return emitted
+        except Exception as exc:
+            # Once tokens reached the client a retry would replay them, so only
+            # failures before any output are safe to treat as transient.
+            raise _StreamFailure(f"{type(exc).__name__}: {exc}", transient=not emitted) from exc
+
+    def _retry_delay(self, attempt: int) -> float:
+        """Exponential backoff with a small cap so retries stay bounded."""
+        return min(self.settings.llm_retry_backoff_seconds * (2**attempt), 4.0)
 
     def chat_text(
         self,
@@ -171,12 +216,16 @@ class KiloClient:
         for candidate in self._candidate_models(model):
             candidate_payload = dict(payload)
             candidate_payload["model"] = candidate
-            try:
-                response = self._request_json(candidate_payload, per_model_timeout)
-                self._unavailable_until = 0.0
-                return response
-            except Exception as exc:
-                errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
+            for attempt in range(self.settings.llm_retry_attempts + 1):
+                try:
+                    response = self._request_json(candidate_payload, per_model_timeout)
+                    self._unavailable_until = 0.0
+                    return response
+                except Exception as exc:
+                    errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
+                    if attempt >= self.settings.llm_retry_attempts or not _is_transient(exc):
+                        break
+                    time.sleep(self._retry_delay(attempt))
         self._unavailable_until = time.monotonic() + 10.0
         raise RuntimeError("Kilo gateway chat request failed for all configured models: " + " | ".join(errors))
 

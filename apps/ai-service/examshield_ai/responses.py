@@ -34,22 +34,27 @@ def conversation_messages(prompt: str, history: list[JsonObject]) -> list[JsonOb
     ]
 
 
+def grounded_system_message() -> str:
+    """System instructions for answering strictly from retrieved live data."""
+    return (
+        "You are EXAMSHIELD AI, a national examination security analyst helping an investigator. "
+        "Live data was just retrieved about the investigation. Use ONLY that data to answer naturally. "
+        "Speak like a knowledgeable colleague explaining findings — not a report generator. "
+        "Be concise, direct, and conversational. "
+        "Follow summary, threatPosture, and metrics exactly — never contradict them. "
+        "If threatPosture is elevated, say the posture is elevated even when openAlerts is zero. "
+        "Open forensic alerts and registry threats are different: zero open alerts does not mean stable if registry threats exist. "
+        "If papers are compromised, explain what that means in context. "
+        "Never fabricate details not in the tool data. If something is unknown, say so. "
+        "No bullet points, no markdown, no tables — just natural flowing text."
+    )
+
+
 def grounded_messages(prompt: str, history: list[JsonObject], tool_context: str) -> list[JsonObject]:
     return [
         {
             "role": "system",
-            "content": (
-                "You are EXAMSHIELD AI, a national examination security analyst helping an investigator. "
-                "A tool just returned live data about the investigation. Use ONLY that data to answer naturally. "
-                "Speak like a knowledgeable colleague explaining findings — not a report generator. "
-                "Be concise, direct, and conversational. "
-                "Follow summary, threatPosture, and metrics exactly — never contradict them. "
-                "If threatPosture is elevated, say the posture is elevated even when openAlerts is zero. "
-                "Open forensic alerts and registry threats are different: zero open alerts does not mean stable if registry threats exist. "
-                "If papers are compromised, explain what that means in context. "
-                "Never fabricate details not in the tool data. If something is unknown, say so. "
-                "No bullet points, no markdown, no tables — just natural flowing text."
-            ),
+            "content": grounded_system_message(),
         },
         *history_messages(history),
         {

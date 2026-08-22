@@ -12,7 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from .detect import get_alert_severity
-from .store import EvidenceStore, JsonObject, detection_confidence_score, utc_now
+from .store import EvidenceStore, JsonObject, utc_now
 
 logger = logging.getLogger(__name__)
 
