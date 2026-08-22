@@ -6,6 +6,7 @@ import { motion } from "framer-motion";
 import { Mail, Lock, ArrowRight } from "lucide-react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
+import { loginSchema } from "@/lib/validation";
 
 const GithubIcon = () => (
   <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
@@ -34,6 +35,13 @@ export default function LoginPage() {
     e.preventDefault();
     setLoading(true);
     setError(null);
+
+    const parsed = loginSchema.safeParse({ email, password });
+    if (!parsed.success) {
+      setError(parsed.error.issues[0]?.message ?? "Please check your input.");
+      setLoading(false);
+      return;
+    }
 
     const { error } = await supabase.auth.signInWithPassword({
       email,
@@ -213,7 +221,7 @@ export default function LoginPage() {
 
             <div className="mt-10 text-center">
               <p className="text-sm text-zinc-400">
-                Don't have an account?{" "}
+                Don&apos;t have an account?{" "}
                 <Link href="/signup" className="text-white font-medium hover:text-indigo-400 transition-colors">
                   Sign up
                 </Link>

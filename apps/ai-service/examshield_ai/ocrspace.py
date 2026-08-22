@@ -7,7 +7,8 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -219,7 +220,7 @@ def _post_multipart_file(
         headers={**_request_headers(), "Content-Type": content_type_header},
         method="POST",
     )
-    return _read_json_response(request, timeout=timeout)
+    return _read_json_response(request=request, timeout=timeout)
 
 
 def _post_base64_image(
@@ -244,7 +245,7 @@ def _post_base64_image(
         },
         method="POST",
     )
-    return _read_json_response(request, timeout=timeout)
+    return _read_json_response(request=request, timeout=timeout)
 
 
 def _read_json_response(request: urllib.request.Request, *, timeout: int) -> dict[str, Any]:

@@ -14,13 +14,17 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
-      - key: NVIDIA_API_KEY
+      - key: KILO_API_KEY
         sync: false
       - key: EXAMSHIELD_PUBLIC_URL
         sync: false
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_WEBHOOK_SECRET
+        sync: false
+      - key: EXAMSHIELD_AI_MASTER_KEY
+        sync: false
+      - key: EXAMSHIELD_API_AUTH_SECRET
         sync: false
       - key: TELEGRAM_CHAT_ID
         sync: false
@@ -61,9 +65,9 @@ services:
       - key: EXAMSHIELD_STALE_JOB_MAX_AGE_SECONDS
         value: "300"
       - key: EXAMSHIELD_AI_PLANNER_MODEL
-        value: mistralai/ministral-14b-instruct-2512
+        value: stepfun/step-3.7-flash:free
       - key: EXAMSHIELD_AI_MODEL
-        value: meta/llama-4-maverick-17b-128e-instruct
+        value: stepfun/step-3.7-flash:free
       - key: EXAMSHIELD_TOOL_PLANNER_TIMEOUT_SECONDS
         value: "4"
       - key: EXAMSHIELD_AI_STREAM_TIMEOUT_SECONDS

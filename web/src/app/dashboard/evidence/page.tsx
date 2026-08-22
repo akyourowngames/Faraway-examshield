@@ -182,7 +182,9 @@ export default function EvidenceCenter() {
                 </div>
                 <div>
                   <div className="text-white/35 uppercase tracking-widest mb-1 text-[10px]">Risk</div>
-                  <div className="text-white/80 uppercase text-xs sm:text-sm">{forensicReport?.riskLevel ?? item.riskLevel}</div>
+                  <div className="text-white/80 uppercase text-xs sm:text-sm">
+                    {forensicReport?.status === "no-match" ? "No Match" : forensicReport?.riskLevel ?? item.riskLevel}
+                  </div>
                 </div>
                 <div>
                   <div className="text-white/35 uppercase tracking-widest mb-1 text-[10px]">OCR</div>
@@ -239,7 +241,9 @@ export default function EvidenceCenter() {
                 <div>
                   <div className="text-white/35 uppercase tracking-widest mb-1 text-[10px]">Final</div>
                   <div className="text-white/80 text-xs sm:text-sm">
-                    {forensicReport
+                    {forensicReport?.status === "no-match"
+                      ? "N/A"
+                      : forensicReport
                       ? `${forensicReport.finalConfidence}%`
                       : textEvidence
                         ? detectionPct === null
@@ -255,7 +259,7 @@ export default function EvidenceCenter() {
                   <div className="text-white/80 text-xs sm:text-sm">
                     {forensicReport?.centerCode ??
                       attribution?.centerCode ??
-                      (textEvidence ? "N/A" : "Pending")}
+                      (textEvidence ? "N/A" : forensicReport?.status === "no-match" ? "Unresolved" : "Pending")}
                   </div>
                 </div>
                 <div>

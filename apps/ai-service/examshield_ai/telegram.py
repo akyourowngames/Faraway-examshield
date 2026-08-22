@@ -4,15 +4,18 @@ import json
 import logging
 import mimetypes
 import re
+import time
 import urllib.parse
 import urllib.request
 from html import escape
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Callable
 from uuid import uuid4
 
 from .detect import is_suspicious, scan_text
-from .llm import NvidiaClient
+from .injection import SYSTEM_PROMPT_HARDENING, sanitize_input
+from .llm import KiloClient
+from .reports import generate_evidence_report, generate_summary_report, report_to_document_bytes
 from .settings import Settings
 from .store import EvidenceStore, JsonObject, UploadedFile, normalize_telegram_timestamp
 
@@ -50,6 +53,95 @@ class TelegramWebhook:
         expected = self.settings.telegram_webhook_secret
         return not expected or received == expected
 
+    # ------------------------------------------------------------------
+    # Long-polling fallback (no public URL required, for local dev)
+    # ------------------------------------------------------------------
+    def start_polling(
+        self,
+        store: EvidenceStore,
+        ocr_runner: Callable[[bytes, str], JsonObject],
+        *,
+        pipeline: "EvidencePipeline | None" = None,
+        idle_sleep: float = 2.0,
+    ) -> None:
+        """Poll Telegram for updates when no webhook URL is configured.
+
+        Uses ``timeout=0`` (non-blocking) plus a Python sleep between cycles.
+        This avoids the long-poll connection hanging on Windows daemon threads.
+        """
+        # Clear any stale webhook so getUpdates works
+        try:
+            self._api("deleteWebhook", {"drop_pending_updates": False})
+        except Exception:
+            pass
+
+        # Check privacy mode — warn if enabled (bot won't see group messages)
+        try:
+            me = self._api("getMe", {})
+            can_read = me.get("can_read_all_group_messages", True)
+            if not can_read:
+                logger.warning(
+                    "⚠️  Bot privacy mode is ON (can_read_all_group_messages=False). "
+                    "The bot will NOT see group messages! Fix: open @BotFather → "
+                    "/setprivacy → select this bot → Disable. Then restart."
+                )
+        except Exception:
+            pass
+
+        offset = 0
+        cycle = 0
+        logger.info("Telegram poll started (no PUBLIC_URL, poll interval=%ss).", idle_sleep)
+        while True:
+            cycle += 1
+            try:
+                updates = self._get_updates(offset, timeout=0)
+                logger.info(
+                    "Poll #%s: %s update(s), next offset=%s",
+                    cycle, len(updates), offset,
+                )
+            except Exception as exc:
+                logger.warning("Poll #%s failed: %s: %s", cycle, type(exc).__name__, exc)
+                time.sleep(idle_sleep)
+                continue
+            for update in updates:
+                update_id = int(update.get("update_id", 0))
+                offset = update_id + 1
+                try:
+                    result = self.process_update(update, store, ocr_runner, pipeline=pipeline)
+                    logger.info("Processed update %s -> %s", update_id, result.get("message"))
+                except Exception as exc:
+                    logger.error("Update processing failed: %s", exc, exc_info=True)
+            time.sleep(idle_sleep)
+
+    def _get_updates(self, offset: int, *, timeout: int) -> list[JsonObject]:
+        # getUpdates returns a LIST result, but _api coerces non-dict results to
+        # {} — so call the raw endpoint here to keep the update list intact.
+        request = urllib.request.Request(
+            f"{self._base_api}/getUpdates",
+            data=json.dumps(
+                {
+                    "offset": offset,
+                    "timeout": timeout,
+                    "allowed_updates": [
+                        "message",
+                        "edited_message",
+                        "channel_post",
+                        "edited_channel_post",
+                    ],
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        # Hard-cap the socket timeout so we never hang indefinitely.
+        socket_timeout = max(timeout + 5, 15)
+        with urllib.request.urlopen(request, timeout=socket_timeout) as response:
+            body = json.loads(response.read().decode("utf-8"))
+        if not body.get("ok"):
+            raise RuntimeError(str(body.get("description") or "Telegram getUpdates failed."))
+        updates = body.get("result")
+        return updates if isinstance(updates, list) else []
+
     def process_update(
         self,
         update: JsonObject,
@@ -67,6 +159,13 @@ class TelegramWebhook:
         )
         if not isinstance(message, dict):
             return {"message": "Telegram update ignored", "processed": False}
+
+        logger.info(
+            "Telegram poll received %s from chat %s (type=%s)",
+            message.get("message_id"),
+            message.get("chat", {}).get("id"),
+            message.get("chat", {}).get("type"),
+        )
 
         chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
         chat_id = str(chat.get("id") or "")
@@ -449,7 +548,7 @@ class TelegramWebhook:
         chat_id: str,
         message: JsonObject,
     ) -> str:
-        llm = NvidiaClient(self.settings)
+        llm = KiloClient(self.settings)
         context = _alert_context(created, analysis, detection, text, chat_id, message)
         if llm.configured:
             try:
@@ -466,6 +565,7 @@ class TelegramWebhook:
                                 "Keep it under 800 characters. Be human, not robotic. "
                                 "Example style: 'Heads up team - just caught something suspicious in group -XXXXX. "
                                 "Someone posted: \"[message preview]\". Score is X/50. Looking into it.'"
+                                + SYSTEM_PROMPT_HARDENING
                             ),
                         },
                         {
@@ -518,12 +618,17 @@ class TelegramWebhook:
 
     def _handle_chat_message(self, chat_id: str, message: JsonObject, text: str, store: EvidenceStore | None = None) -> JsonObject | None:
         """Handle private/direct messages using LLM with real data from the store."""
-        llm = NvidiaClient(self.settings)
+        llm = KiloClient(self.settings)
         if not llm.configured or not text:
             return None
 
         sender = _extract_sender(message)
         lower_text = text.lower().strip()
+
+        # ── Report request detection ──
+        if store and _is_report_request(lower_text):
+            self._handle_report_request(chat_id, text, lower_text, store)
+            return None
 
         # Gather real data from store to give actual answers
         data_context = _build_chat_data_context(store, lower_text)
@@ -539,11 +644,12 @@ class TelegramWebhook:
             "- Keep responses under 300 characters.\n"
             "- Use Telegram HTML: <b>, <i>, <code>.\n"
             "- Be natural and concise, not robotic."
+            + SYSTEM_PROMPT_HARDENING
         )
 
         user_prompt = (
             f"Data context:\n{data_context}\n\n"
-            f"User ({sender}) says: {text}"
+            f"User ({sender}) says: {sanitize_input(text)}"
         )
 
         try:
@@ -563,6 +669,80 @@ class TelegramWebhook:
             logger.warning("LLM chat response failed: %s", exc)
 
         return None
+
+    # ------------------------------------------------------------------
+    # Report generation and delivery
+    # ------------------------------------------------------------------
+    def _handle_report_request(
+        self, chat_id: str, text: str, lower_text: str, store: EvidenceStore
+    ) -> None:
+        """Detect report intent and generate/send the appropriate MD file."""
+        import re as _re
+
+        # Check for specific evidence ID
+        ev_match = _re.search(r"\b(ev[-_]?\d{3,})\b", lower_text)
+        if ev_match:
+            evidence_id = ev_match.group(1).upper().replace("_", "-")
+            if not evidence_id.startswith("EV-"):
+                evidence_id = "EV-" + evidence_id[2:]
+            self.send_message(
+                chat_id,
+                f"⏳ Generating forensic report for <code>{evidence_id}</code>...",
+                parse_mode="HTML",
+            )
+            self.send_report_file(chat_id, evidence_id, store, report_type="evidence")
+            return
+
+        # Summary / dashboard report
+        if any(kw in lower_text for kw in ("summary", "dashboard", "overview", "all reports", "full report")):
+            self.send_message(chat_id, "⏳ Generating dashboard summary report...", parse_mode="HTML")
+            self.send_report_file(chat_id, None, store, report_type="summary")
+            return
+
+        # Generic "report" without specific ID — try to find latest evidence
+        self.send_message(chat_id, "⏳ Generating summary report...", parse_mode="HTML")
+        self.send_report_file(chat_id, None, store, report_type="summary")
+
+    def send_report_file(
+        self,
+        chat_id: str,
+        evidence_id: str | None,
+        store: EvidenceStore,
+        *,
+        report_type: str = "evidence",
+    ) -> JsonObject:
+        """Generate an MD report and send it as a Telegram document."""
+        if report_type == "evidence" and evidence_id:
+            md = generate_evidence_report(evidence_id, store)
+            filename = f"report-{evidence_id}.md"
+            caption = f"📄 Forensic Report: {evidence_id}"
+        else:
+            md = generate_summary_report(store)
+            filename = "report-dashboard-summary.md"
+            caption = "📊 ExamShield Dashboard Summary Report"
+
+        data = report_to_document_bytes(md)
+
+        if not data:
+            return {"status": "skipped", "reason": "empty_report"}
+
+        try:
+            result = self._api_multipart(
+                "sendDocument",
+                fields={
+                    "chat_id": chat_id,
+                    "caption": caption,
+                },
+                file_field="document",
+                filename=filename,
+                data=data,
+                content_type="text/markdown",
+            )
+            logger.info("Report file sent to %s: %s (%d bytes)", chat_id, filename, len(data))
+            return {"status": "ok", "filename": filename, "size": len(data), "result": result}
+        except Exception as exc:
+            logger.error("Failed to send report file: %s", exc)
+            return {"status": "error", "error": str(exc)}
 
     def _api_multipart(
         self,
@@ -654,7 +834,7 @@ def _alert_context(
         "alertType": "LEAK DETECTED" if report.get("status") == "investigation-complete" else "SUSPICIOUS ACTIVITY",
         "group": chat_id,
         "sender": _extract_sender(message),
-        "messagePreview": (text or "")[:300],
+        "messagePreview": sanitize_input((text or "")[:300]),
         "evidence": {
             "id": evidence.get("evidenceId"),
             "filename": evidence.get("filename"),
@@ -689,36 +869,35 @@ def _fallback_alert_text(context: JsonObject) -> str:
     evidence = context.get("evidence") or {}
     detection = context.get("detection") or {}
     report = context.get("forensicReport") or {}
-    alert_type = str(context.get("alertType") or "SUSPICIOUS ACTIVITY")
     group = str(context.get("group") or "Unknown")
     sender = str(context.get("sender") or "Unknown")
     preview = str(context.get("messagePreview") or "").strip()
     
     lines = [
-        f"<b>Hey team,</b>",
-        f"",
+        "<b>Hey team,</b>",
+        "",
         f"Just spotted something <b>suspicious</b> in group <code>{escape(group)}</code>.",
     ]
     
     if preview:
-        lines.append(f"")
+        lines.append("")
         lines.append(f"User <b>{escape(sender)}</b> posted:")
         lines.append(f"<i>\"{escape(preview[:200])}\"</i>")
     
     if evidence.get("id"):
-        lines.append(f"")
+        lines.append("")
         lines.append(f"Evidence logged: <code>{escape(str(evidence.get('id')))}</code>")
     
     if report.get("status") == "investigation-complete":
         paper = str(report.get("paper") or "Unknown")
         center = str(report.get("center") or "Unknown")
         confidence = str(report.get("confidence") or "N/A")
-        lines.append(f"")
+        lines.append("")
         lines.append(f"<b>Investigation complete:</b> Paper: {escape(paper)} | Center: {escape(center)} | Confidence: {escape(confidence)}%")
     else:
         score = str(detection.get("score") or 0)
         max_score = str(detection.get("maxScore") or 50)
-        lines.append(f"")
+        lines.append("")
         lines.append(f"Detection score: <b>{escape(score)}/{escape(max_score)}</b>")
         matches = detection.get("matches") if isinstance(detection.get("matches"), list) else []
         keywords = ", ".join(
@@ -727,8 +906,8 @@ def _fallback_alert_text(context: JsonObject) -> str:
         if keywords:
             lines.append(f"Keywords found: <b>{escape(keywords[:150])}</b>")
     
-    lines.append(f"")
-    lines.append(f"Working on it. Will update soon.")
+    lines.append("")
+    lines.append("Working on it. Will update soon.")
     
     return "\n".join(lines)
 
@@ -758,6 +937,12 @@ def _should_send_alert(analysis: JsonObject, detection: JsonObject) -> bool:
     if is_suspicious(detection):
         return True
     return False
+
+
+def _is_report_request(lower_text: str) -> bool:
+    """Check if the user message is asking for a report."""
+    report_keywords = ("report", "forensic report", "generate report", "share report", "send report")
+    return any(kw in lower_text for kw in report_keywords)
 
 
 def _build_chat_data_context(store: EvidenceStore | None, user_query: str) -> str:

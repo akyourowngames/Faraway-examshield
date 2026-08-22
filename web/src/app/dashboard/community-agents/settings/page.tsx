@@ -1,8 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Save, Bell, Lock, Globe, Trash2, AlertTriangle } from "lucide-react";
+import { deleteAgent, listAgents } from "@/lib/agent-api";
+
+const SETTINGS_KEY = "examshield-community-agent-settings";
 
 const containerVariants = {
   hidden: { opacity: 0 },
@@ -20,6 +23,43 @@ export default function SettingsPage() {
   const [defaultModel, setDefaultModel] = useState("gpt-4o");
   const [maxAgents, setMaxAgents] = useState("25");
   const [notifications, setNotifications] = useState(true);
+  const [message, setMessage] = useState("");
+  const [deleting, setDeleting] = useState(false);
+
+  useEffect(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "null");
+      if (!stored) return;
+      setOrgName(stored.orgName ?? "ExamShield Security");
+      setAllowPublicAgents(stored.allowPublicAgents ?? true);
+      setDefaultModel(stored.defaultModel ?? "gpt-4o");
+      setMaxAgents(String(stored.maxAgents ?? 25));
+      setNotifications(stored.notifications ?? true);
+    } catch {
+      setMessage("Saved preferences could not be read.");
+    }
+  }, []);
+
+  function saveSettings() {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ orgName, allowPublicAgents, defaultModel, maxAgents: Number(maxAgents) || 25, notifications }));
+    setMessage("Workspace preferences saved in this browser.");
+  }
+
+  async function deleteAllAgents() {
+    if (!confirm("Permanently delete every agent and all related configurations, conversations, and knowledge?")) return;
+    setDeleting(true);
+    setMessage("");
+    try {
+      const { agents } = await listAgents();
+      const results = await Promise.allSettled(agents.map((agent) => deleteAgent(agent.id)));
+      const failures = results.filter((result) => result.status === "rejected").length;
+      setMessage(failures ? `Deleted ${agents.length - failures} agents; ${failures} could not be deleted.` : `Deleted ${agents.length} agents.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not delete agents.");
+    } finally {
+      setDeleting(false);
+    }
+  }
 
   return (
     <motion.div
@@ -151,16 +191,17 @@ export default function SettingsPage() {
             <div className="text-xs font-bold text-white/60 uppercase tracking-wider">Delete All Agents</div>
             <div className="text-[10px] text-white/30 mt-0.5">Permanently remove all agents and their data</div>
           </div>
-          <button className="flex items-center gap-2 px-4 py-2 border border-red-500/30 text-red-400/60 text-[10px] font-bold uppercase tracking-widest hover:bg-red-500/10 transition-colors">
+          <button onClick={deleteAllAgents} disabled={deleting} className="flex items-center gap-2 px-4 py-2 border border-red-500/30 text-red-400/60 text-[10px] font-bold uppercase tracking-widest hover:bg-red-500/10 transition-colors disabled:opacity-40">
             <Trash2 className="w-3 h-3" />
-            Delete All
+            {deleting ? "Deleting..." : "Delete All"}
           </button>
         </div>
       </motion.div>
 
       {/* Save */}
       <div className="flex justify-end">
-        <button className="flex items-center gap-2 px-6 py-2.5 bg-white text-black text-xs font-bold uppercase tracking-widest hover:bg-white/90 transition-colors">
+        {message && <span className="mr-4 self-center text-xs text-white/50">{message}</span>}
+        <button onClick={saveSettings} className="flex items-center gap-2 px-6 py-2.5 bg-white text-black text-xs font-bold uppercase tracking-widest hover:bg-white/90 transition-colors">
           <Save className="w-3.5 h-3.5" />
           Save Changes
         </button>

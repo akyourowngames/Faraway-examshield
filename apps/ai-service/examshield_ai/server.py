@@ -1,34 +1,124 @@
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
 import threading
 import time
-from cgi import FieldStorage
 from dataclasses import replace
-from io import BytesIO
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
+from .agent_telegram import AgentTelegramService
 from .chat import ChatSession
 from .detect import is_suspicious, scan_text
 from .events import sse_bytes
-from .llm import NvidiaClient
+from .llm import KiloClient
+from .llm_providers import ProviderConfig, list_providers, validate_api_key
+from .llm_providers import chat_completion as provider_chat_completion
 from .memory import MemoryManager
+from .multipart_parse import parse_multipart
+from .normalize import (
+    normalize_api_key,
+    normalize_current_evidence_id,
+    normalize_evidence_id,
+)
 from .ocr import SUPPORTED_TYPES, analyze_image, ocr_runtime_status
+from .operator import resolve_operator
 from .pipeline import EvidencePipeline
 from .planner import ToolPlanner
-from .responses import conversation_messages, grounded_messages
+from .rag import (
+    RAGConfig,
+    chunk_text,
+    extract_text_from_file,
+    ingest_knowledge_source,
+    search_agent_knowledge,
+)
+from .ratelimit import RateLimiter, make_ocr_limiter, make_upload_limiter
+from .response_cache import ReadResponseCache, cached_get
 from .settings import Settings, load_settings
-from .store import EvidenceStore, UploadedFile, normalize_telegram_timestamp, AgentStore
+from .store import AgentStore, EvidenceStore, UploadedFile, normalize_telegram_timestamp
 from .telegram import TelegramWebhook
+from .watermark import decode_watermark, parse_token
 from .tools import ExamshieldToolRegistry
 from .workers import AnalysisTask, AnalysisWorkerPool
-from .llm_providers import list_providers, validate_api_key, ProviderConfig, chat_completion as provider_chat_completion
-from .rag import ingest_knowledge_source, search_agent_knowledge, RAGConfig
+
+
+def _error_payload(message: str) -> dict[str, str]:
+    """Build a safe error body. Never includes exception internals (audit §6.3).
+
+    Handlers must pass a fixed, client-safe message rather than `str(exc)`,
+    which can leak stack traces or internal identifiers to clients.
+    """
+    return {"error": message}
+
+
+def resolve_cors_headers(settings: Settings, origin: str | None) -> dict[str, str]:
+    """Resolve CORS response headers against an allow-list.
+
+    Replaces the old behaviour of blindly echoing `cors_origin` (which defaulted
+    to `*`). Now the request's `Origin` is only reflected when it is explicitly
+    present in the allow-list. `EXAMSHIELD_AI_CORS_ORIGIN` accepts a
+    comma/space-separated list of allowed origins; an explicit `*` opts back into
+    allow-all (discouraged). With an empty allow-list (the new default) no
+    `Access-Control-Allow-Origin` header is emitted.
+    """
+    allowed = [o.strip() for o in (settings.cors_origin or "").split(",") if o.strip()]
+    if origin and ("*" in allowed or origin in allowed):
+        return {"Access-Control-Allow-Origin": origin, "Vary": "Origin"}
+    return {}
+
+
+# ── Backend API authentication (audit §2.2) ───────────────────────────────────
+# A shared secret gate between the Vercel frontend proxy and the Render backend.
+# The frontend sends `X-Examshield-Api-Key` on every upstream call; an
+# `Authorization: Bearer <secret>` is also accepted. Enforced only when a secret
+# is configured — when it is empty the gate is disabled (dev/offline) with a
+# loud startup warning, mirroring the `EXAMSHIELD_AI_MASTER_KEY` fallback.
+API_AUTH_HEADER = "X-Examshield-Api-Key"
+# Routes that must never require the backend secret:
+#  - /health is the Render health check.
+#  - /telegram/webhook and /telegram/events are called directly by Telegram's
+#    servers and carry their own TELEGRAM_WEBHOOK_SECRET validation; gating them
+#    here would break inbound Telegram delivery.
+API_AUTH_EXEMPT = {"/health", "/", "/telegram/webhook", "/telegram/events"}
+
+
+def is_path_exempt(path: str) -> bool:
+    """Return True if *path* must never require the backend shared secret."""
+    return path in API_AUTH_EXEMPT
+
+
+def _bearer_secret(authorization: str | None) -> str | None:
+    if not authorization:
+        return None
+    authorization = authorization.strip()
+    if authorization.lower().startswith("bearer "):
+        token = authorization[len("bearer "):].strip()
+        return token or None
+    return None
+
+
+def is_authorized(headers: Any, secret: str, path: str) -> bool:
+    """Decide whether a request may proceed.
+
+    - No secret configured -> auth disabled (backward-compatible offline mode).
+    - Exempt path -> always allowed (health check, Telegram inbound).
+    - Otherwise the request must carry the matching shared secret, compared in
+      constant time to avoid leaking the secret via timing.
+    """
+    if not secret:
+        return True
+    if is_path_exempt(path):
+        return True
+    provided = headers.get(API_AUTH_HEADER) or _bearer_secret(headers.get("Authorization"))
+    return bool(provided) and hmac.compare_digest(provided, secret)
+
+
+_UNAUTHORIZED_BODY = json.dumps({"error": "Unauthorized."}).encode("utf-8")
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,12 +131,16 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
     settings: Settings
     store: EvidenceStore
     registry: ExamshieldToolRegistry
-    client: NvidiaClient
+    client: KiloClient
     telegram: TelegramWebhook
     workers: AnalysisWorkerPool
     pipeline: EvidencePipeline
     memory: MemoryManager
     agent_store: AgentStore
+    # Wired up on ConfiguredExamshieldAiHandler at startup (see make_handler).
+    _get_cache: ReadResponseCache
+    _ocr_limiter: RateLimiter
+    _upload_limiter: RateLimiter
 
     def do_OPTIONS(self) -> None:
         self._send_empty(204)
@@ -62,8 +156,28 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         self.send_response(404)
         self.end_headers()
 
+    def _authorize_request(self) -> bool:
+        """Gate non-exempt routes behind the backend shared secret.
+
+        Returns True when the request may proceed; returns False after writing a
+        401 response (so the caller should `return` immediately).
+        """
+        path = urlparse(self.path).path
+        if is_authorized(self.headers, self.settings.api_auth_secret, path):
+            return True
+        self.send_response(401)
+        self._cors_headers()
+        self.send_header("WWW-Authenticate", 'Bearer realm="examshield-api"')
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(_UNAUTHORIZED_BODY)))
+        self.end_headers()
+        self.wfile.write(_UNAUTHORIZED_BODY)
+        return False
+
     def do_GET(self) -> None:
         path = urlparse(self.path).path
+        if not self._authorize_request():
+            return
         parts = [part for part in path.split("/") if part]
         if path == "/health":
             self._send_json(
@@ -72,6 +186,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                     "service": "examshield-ai",
                     "model": self.settings.model,
                     "nimConfigured": self.client.configured,
+                    "kiloConfigured": self.client.configured,
                     "tools": self.registry.names(),
                     "ocr": {
                         "endpoint": "/ocr/analyze",
@@ -98,21 +213,33 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             self._send_json({"tools": self.registry.schemas()})
             return
         if path == "/evidence":
-            self._send_json(self.store.list_evidence())
+            self._send_json(cached_get(self._get_cache, self.path, self.store.list_evidence))
             return
         if len(parts) == 2 and parts[0] == "evidence":
             bundle = self.store.get_bundle(parts[1])
             self._send_json(bundle if bundle else {"error": "Evidence not found."}, status=200 if bundle else 404)
             return
         if path == "/alerts":
-            self._send_json({"alerts": self.store.list_evidence()["alerts"]})
+            self._send_json(
+                cached_get(
+                    self._get_cache,
+                    self.path,
+                    lambda: {"alerts": self.store.list_evidence()["alerts"]},
+                )
+            )
             return
         if len(parts) == 2 and parts[0] == "memory":
             self._get_memory(parts[1])
             return
         # Monitored Telegram groups
         if path == "/telegram/groups":
-            self._send_json({"groups": self.store.list_monitored_groups()})
+            self._send_json(
+                cached_get(
+                    self._get_cache,
+                    self.path,
+                    lambda: {"groups": self.store.list_monitored_groups()},
+                )
+            )
             return
         if path == "/telegram/status":
             self._get_telegram_status()
@@ -124,18 +251,22 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         if path == "/registry/stats":
             self._get_registry_stats()
             return
+        # Issued watermark copies (preventive minting)
+        if path == "/watermark/copies":
+            self._list_watermark_copies()
+            return
         if len(parts) == 2 and parts[0] == "registry":
             self._get_registry_paper(parts[1])
             return
-        if len(parts) == 2 and parts[0] == "analysis" and parts[1] == "jobs":
+        if len(parts) == 3 and parts[0] == "analysis" and parts[1] == "jobs":
             try:
                 self._send_json(self.store.analysis_job_snapshot(parts[2]))
-            except LookupError as exc:
-                self._send_json({"error": str(exc)}, status=404)
+            except LookupError:
+                self._send_json(_error_payload("Not found."), status=404)
             return
         # Community Agents
         if path == "/llm/providers":
-            self._send_json({"providers": list_providers()})
+            self._send_json(cached_get(self._get_cache, self.path, lambda: {"providers": list_providers()}))
             return
         if path == "/llm/validate":
             self._validate_llm_key()
@@ -146,8 +277,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         if len(parts) == 2 and parts[0] == "agents":
             self._get_agent(parts[1])
             return
-        if len(parts) == 3 and parts[0] == "agents" and parts[1] == "stats":
-            self._get_agent_stats(parts[2])
+        if len(parts) == 3 and parts[0] == "agents" and parts[2] == "stats":
+            self._get_agent_stats(parts[1])
             return
         if len(parts) == 3 and parts[0] == "agents" and parts[2] == "knowledge":
             self._list_knowledge_sources(parts[1])
@@ -155,10 +286,23 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         if len(parts) == 3 and parts[0] == "agents" and parts[2] == "conversations":
             self._list_conversations(parts[1])
             return
+        # Reports
+        if path == "/reports/templates":
+            self._send_json({
+                "templates": [
+                    {"id": "evidence", "name": "Evidence Report", "description": "Detailed forensic report for a specific evidence item."},
+                    {"id": "summary", "name": "Dashboard Summary", "description": "High-level summary of all evidence, alerts, and investigations."},
+                ]
+            })
+            return
         self._send_json({"error": "Not found"}, status=404)
 
     def do_POST(self) -> None:
+        if self._reject_oversized_request():
+            return
         path = urlparse(self.path).path
+        if not self._authorize_request():
+            return
         parts = [part for part in path.split("/") if part]
 
         if path in {"/ocr/analyze", "/analyze"}:
@@ -216,6 +360,13 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         if path == "/registry/match":
             self._match_evidence_to_registry()
             return
+        # Issued watermark copies (preventive minting)
+        if path == "/watermark/mint":
+            self._mint_watermark()
+            return
+        if path == "/watermark/decode":
+            self._decode_watermark()
+            return
 
         if path == "/plan":
             self._run_plan()
@@ -240,8 +391,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         if len(parts) == 3 and parts[0] == "agents" and parts[2] == "knowledge":
             self._create_knowledge_source(parts[1])
             return
-        if len(parts) == 4 and parts[0] == "agents" and parts[3] == "upload":
-            self._upload_knowledge_files(parts[1], parts[2])
+        if len(parts) == 5 and parts[0] == "agents" and parts[2] == "knowledge" and parts[4] == "upload":
+            self._upload_knowledge_files(parts[1], parts[3])
             return
         if len(parts) == 3 and parts[0] == "agents" and parts[2] == "test":
             self._test_agent(parts[1])
@@ -252,10 +403,17 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         if path == "/telegram/verify-bot":
             self._verify_bot_token()
             return
+        if path == "/reports/generate":
+            self._generate_report()
+            return
 
         self._send_json({"error": "Not found"}, status=404)
 
     def _run_ocr(self) -> None:
+        # ── Rate limit ──
+        if not self._rate_limit_check(self._ocr_limiter, "OCR"):
+            return
+
         content_type = (self.headers.get("Content-Type") or "").split(";")[0].lower()
         suffix = SUPPORTED_TYPES.get(content_type)
         if not suffix:
@@ -277,20 +435,39 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             self._send_json({"status": "failed", "error": "Image payload is required."}, status=400)
             return
 
+        # ── Size enforcement ──
+        max_bytes = self.settings.max_upload_bytes
+        if max_bytes > 0 and content_length > max_bytes:
+            self._send_json(
+                {"status": "failed", "error": f"Image too large. Maximum is {max_bytes} bytes."},
+                status=413,
+            )
+            return
+
         image_bytes = self.rfile.read(content_length)
+
+        # ── Magic-byte validation ──
+        magic_err = self._validate_image_magic(image_bytes, content_type)
+        if magic_err:
+            self._send_json({"status": "failed", "error": magic_err}, status=400)
+            return
+
         self._send_json(analyze_image(image_bytes, suffix))
 
     def _upload_evidence(self) -> None:
+        # ── Rate limit ──
+        if not self._rate_limit_check(self._upload_limiter, "upload"):
+            return
         try:
             uploaded = self._read_multipart_file("file")
             created = self.store.create_evidence(uploaded)
             self._send_json({"message": "Evidence Created", **created}, status=201)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Evidence upload failed."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Evidence upload failed."), status=400)
 
     def _create_analysis_job(self) -> None:
         payload = self._read_json()
-        evidence_id = str(payload.get("evidenceId") or "").strip()
+        evidence_id = normalize_evidence_id(payload)
         async_mode = bool(payload.get("async"))
         if not evidence_id:
             self._send_json({"error": "evidenceId is required."}, status=400)
@@ -348,10 +525,10 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                     "activity": [queued["activity"]],
                 }
             )
-        except LookupError as exc:
-            self._send_json({"error": str(exc)}, status=404)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Analysis failed."}, status=400)
+        except LookupError:
+            self._send_json(_error_payload("Not found."), status=404)
+        except Exception:
+            self._send_json(_error_payload("Analysis failed."), status=400)
 
     def _process_analysis_job(self, job_id: str) -> None:
         try:
@@ -371,7 +548,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 self._send_json(snapshot, status=202)
                 return
 
-            evidence_id = str(job.get("evidenceId") or "")
+            evidence_id = normalize_evidence_id(job)
             if self.workers.is_evidence_active(evidence_id):
                 snapshot = self.store.analysis_job_snapshot(job_id)
                 snapshot["message"] = "Analysis In Progress"
@@ -405,10 +582,10 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             snapshot = self.store.analysis_job_snapshot(job_id)
             snapshot["message"] = "Analysis In Progress"
             self._send_json(snapshot, status=202)
-        except LookupError as exc:
-            self._send_json({"error": str(exc)}, status=404)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Analysis failed."}, status=400)
+        except LookupError:
+            self._send_json(_error_payload("Not found."), status=404)
+        except Exception:
+            self._send_json(_error_payload("Analysis failed."), status=400)
 
     def _ingest_telegram_event(self) -> None:
         try:
@@ -474,7 +651,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                     created, detection, text, chat_id, message
                 )
                 latest_evidence = (
-                    self.store.get_evidence_by_id(str(created["evidence"].get("evidenceId")))
+                    self.store.get_evidence_by_id(normalize_evidence_id(created["evidence"]))
                     or created["evidence"]
                 )
                 self._send_json(
@@ -510,8 +687,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 },
                 status=202,
             )
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Telegram event ingestion failed."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Telegram event ingestion failed."), status=400)
 
     def _ingest_telegram_webhook(self) -> None:
         secret = self.headers.get("X-Telegram-Bot-Api-Secret-Token")
@@ -529,14 +706,13 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             self._send_json(result)
         except Exception as exc:
             logger.error(f"Webhook processing failed: {type(exc).__name__}: {exc}", exc_info=True)
-            self._send_json({"error": str(exc) or "Telegram webhook failed."}, status=400)
+            self._send_json(_error_payload("Telegram webhook failed."), status=400)
 
     def _register_telegram_webhook(self) -> None:
         payload = self._read_json()
         url_override = str(payload.get("url") or "").strip()
         try:
             if url_override:
-                from .settings import Settings
                 self.telegram = TelegramWebhook(replace(self.settings, public_url=url_override))
             self.telegram.register()
             self._send_json({
@@ -545,13 +721,13 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 "publicUrl": self.telegram.settings.public_url or "NOT SET",
                 "botTokenSet": bool(self.telegram.settings.telegram_bot_token),
             })
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Webhook registration failed."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Webhook registration failed."), status=400)
 
     def _get_telegram_status(self) -> None:
         try:
             info = self.telegram._api("getWebhookInfo", {})
-            self._send_json({
+            payload = {
                 "configured": self.telegram.configured,
                 "publicUrl": self.settings.public_url or "NOT SET",
                 "botTokenSet": bool(self.settings.telegram_bot_token),
@@ -560,9 +736,13 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 "pendingUpdateCount": info.get("pending_update_count", 0),
                 "lastErrorDate": info.get("last_error_date"),
                 "lastErrorMessage": info.get("last_error_message"),
-            })
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to get Telegram status."}, status=400)
+            }
+        except Exception:
+            self._send_json(_error_payload("Failed to get Telegram status."), status=400)
+            return
+        # The Telegram API call is the expensive part; cache the assembled status
+        # for read_cache_ttl_seconds so dashboard polling doesn't hit Telegram each time.
+        self._send_json(cached_get(self._get_cache, self.path, lambda: payload))
 
     def _run_chat(self) -> None:
         payload = self._read_json()
@@ -572,8 +752,17 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             return
 
         history = payload.get("messages") if isinstance(payload.get("messages"), list) else []
-        current_evidence_id = payload.get("currentEvidenceId")
+        current_evidence_id = normalize_current_evidence_id(payload)
         current_evidence_id = str(current_evidence_id) if current_evidence_id else None
+
+        # Resolve the operator (logged-in user) so the model can address them by
+        # name. Client-sent profile is preferred; the forwarded Supabase JWT is
+        # the fallback. A fresh per-request registry scopes the operator safely
+        # under the threaded server (the shared class registry stays operator-free
+        # for /tools and /plan).
+        operator = resolve_operator(payload, self.headers.get("Authorization"), self.settings)
+        registry = ExamshieldToolRegistry(self.store)
+        registry.operator = operator
 
         self.send_response(200)
         self._cors_headers()
@@ -587,9 +776,9 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             self.wfile.write(sse_bytes(event))
             self.wfile.flush()
 
-        session = ChatSession(client=self.client, registry=self.registry, write=write_event)
+        session = ChatSession(client=self.client, registry=registry, write=write_event)
         try:
-            session.run(prompt, history, current_evidence_id)
+            session.run(prompt, history, current_evidence_id, operator, tenant=self._client_ip())
         except Exception as exc:
             logger.error("Chat stream failed: %s", exc, exc_info=True)
             write_event({"type": "error", "message": str(exc) or "Chat failed."})
@@ -603,11 +792,11 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             return
 
         history = payload.get("messages") if isinstance(payload.get("messages"), list) else []
-        current_evidence_id = payload.get("currentEvidenceId")
+        current_evidence_id = normalize_current_evidence_id(payload)
         current_evidence_id = str(current_evidence_id) if current_evidence_id else None
 
         if not self.client.configured:
-            self._send_json({"tool": None, "error": "NVIDIA_API_KEY is not configured."})
+            self._send_json({"tool": None, "error": "KILO_API_KEY is not configured."})
             return
 
         try:
@@ -630,10 +819,10 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
     def _memory_ingest(self) -> None:
         try:
             self._send_json(self.memory.ingest_manual(self._read_json()), status=201)
-        except LookupError as exc:
-            self._send_json({"error": str(exc)}, status=404)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Memory ingest failed."}, status=400)
+        except LookupError:
+            self._send_json(_error_payload("Not found."), status=404)
+        except Exception:
+            self._send_json(_error_payload("Memory ingest failed."), status=400)
 
     def _memory_search(self) -> None:
         try:
@@ -644,15 +833,26 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 return
             threshold = float(payload.get("threshold") or payload.get("matchThreshold") or 0.76)
             match_count = int(payload.get("matchCount") or payload.get("limit") or 8)
-            self._send_json(self.memory.search(query, threshold=threshold, match_count=match_count))
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Memory search failed."}, status=400)
+            created_after = (
+                str(payload.get("createdAfter") or payload.get("minCreatedAt") or payload.get("since") or "").strip()
+                or None
+            )
+            self._send_json(
+                self.memory.search(
+                    query,
+                    threshold=threshold,
+                    match_count=match_count,
+                    created_after=created_after,
+                )
+            )
+        except Exception:
+            self._send_json(_error_payload("Memory search failed."), status=400)
 
     def _memory_correlate(self) -> None:
         try:
             payload = self._read_json()
             memory_id = str(payload.get("memoryId") or "").strip()
-            evidence_id = str(payload.get("evidenceId") or "").strip()
+            evidence_id = normalize_evidence_id(payload)
             if memory_id:
                 self._send_json(self.memory.correlate_memory_id(memory_id))
                 return
@@ -661,17 +861,17 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 self._send_json(result.get("correlation") or {"correlated": False})
                 return
             self._send_json({"error": "memoryId or evidenceId is required."}, status=400)
-        except LookupError as exc:
-            self._send_json({"error": str(exc)}, status=404)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Memory correlation failed."}, status=400)
+        except LookupError:
+            self._send_json(_error_payload("Not found."), status=404)
+        except Exception:
+            self._send_json(_error_payload("Memory correlation failed."), status=400)
 
     def _get_memory(self, memory_id: str) -> None:
         try:
             result = self.memory.get_memory(memory_id)
             self._send_json(result if result else {"error": "Memory item not found."}, status=200 if result else 404)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Memory lookup failed."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Memory lookup failed."), status=400)
 
     # ─────────────────────────────────────────────────────────────────
     # Community Agents
@@ -684,10 +884,14 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             for param in (parsed.query or "").split("&"):
                 if param.startswith("status="):
                     status = param.split("=", 1)[1] or None
-            agents = self.agent_store.list_agents(status=status)
+            agents = cached_get(
+                self._get_cache,
+                self.path,
+                lambda: self.agent_store.list_agents(status=status),
+            )
             self._send_json({"agents": agents, "total": len(agents)})
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to list agents."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Failed to list agents."), status=400)
 
     def _get_agent(self, agent_id: str) -> None:
         try:
@@ -699,33 +903,41 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             tg_config = self.agent_store.get_telegram_config(agent_id)
             sources = self.agent_store.list_knowledge_sources(agent_id)
             stats = self.agent_store.get_agent_stats(agent_id)
+            safe_telegram = None
+            if tg_config:
+                safe_telegram = {k: v for k, v in tg_config.items() if k != "botToken"}
+                safe_telegram["botTokenSet"] = bool(tg_config.get("botToken"))
             self._send_json({
-                "agent": agent,
+                "agent": {
+                    **agent,
+                    "knowledgeCount": stats["totalKnowledgeSources"],
+                    "conversationCount": stats["totalConversations"],
+                },
                 "llmConfig": {k: v for k, v in (llm_config or {}).items() if k != "apiKeyEncrypted"} if llm_config else None,
-                "telegramConfig": tg_config,
+                "telegramConfig": safe_telegram,
                 "knowledgeSources": sources,
                 "stats": stats,
             })
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to get agent."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Failed to get agent."), status=400)
 
     def _create_agent(self) -> None:
         try:
             data = self._read_json()
             agent = self.agent_store.create_agent(data)
             self._send_json({"agent": agent, "message": "Agent created."}, status=201)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to create agent."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Failed to create agent."), status=400)
 
     def _update_agent(self, agent_id: str) -> None:
         try:
             data = self._read_json()
             agent = self.agent_store.update_agent(agent_id, data)
             self._send_json({"agent": agent, "message": "Agent updated."})
-        except LookupError as exc:
-            self._send_json({"error": str(exc)}, status=404)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to update agent."}, status=400)
+        except LookupError:
+            self._send_json(_error_payload("Not found."), status=404)
+        except Exception:
+            self._send_json(_error_payload("Failed to update agent."), status=400)
 
     def _delete_agent(self, agent_id: str) -> None:
         try:
@@ -734,24 +946,30 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 self._send_json({"message": "Agent deleted."})
             else:
                 self._send_json({"error": "Agent not found."}, status=404)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to delete agent."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Failed to delete agent."), status=400)
 
     def _upsert_agent_llm(self, agent_id: str) -> None:
         try:
             data = self._read_json()
             config = self.agent_store.upsert_llm_config(agent_id, data)
             self._send_json({"config": {k: v for k, v in config.items() if k != "apiKeyEncrypted"}, "message": "LLM config saved."})
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to save LLM config."}, status=400)
+        except LookupError:
+            self._send_json(_error_payload("Not found."), status=404)
+        except Exception:
+            self._send_json(_error_payload("Failed to save LLM config."), status=400)
 
     def _upsert_agent_telegram(self, agent_id: str) -> None:
         try:
             data = self._read_json()
             config = self.agent_store.upsert_telegram_config(agent_id, data)
-            self._send_json({"config": config, "message": "Telegram config saved."})
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to save Telegram config."}, status=400)
+            safe_config = {k: v for k, v in config.items() if k != "botToken"}
+            safe_config["botTokenSet"] = bool(config.get("botToken"))
+            self._send_json({"config": safe_config, "message": "Telegram config saved."})
+        except LookupError:
+            self._send_json(_error_payload("Not found."), status=404)
+        except Exception:
+            self._send_json(_error_payload("Failed to save Telegram config."), status=400)
 
     def _validate_llm_key(self) -> None:
         try:
@@ -781,23 +999,25 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             config = ProviderConfig(provider=provider, api_key=api_key, model=model, endpoint_url=endpoint_url)
             result = validate_api_key(config)
             self._send_json(result)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Validation failed."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Validation failed."), status=400)
 
     def _create_knowledge_source(self, agent_id: str) -> None:
         try:
             data = self._read_json()
             source = self.agent_store.create_knowledge_source(agent_id, data)
             self._send_json({"source": source, "message": "Knowledge source created."}, status=201)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to create knowledge source."}, status=400)
+        except LookupError:
+            self._send_json(_error_payload("Not found."), status=404)
+        except Exception:
+            self._send_json(_error_payload("Failed to create knowledge source."), status=400)
 
     def _list_knowledge_sources(self, agent_id: str) -> None:
         try:
             sources = self.agent_store.list_knowledge_sources(agent_id)
             self._send_json({"sources": sources, "total": len(sources)})
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to list sources."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Failed to list sources."), status=400)
 
     def _delete_knowledge_source(self, agent_id: str, source_id: str) -> None:
         try:
@@ -807,8 +1027,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 return
             self.agent_store.delete_knowledge_source(source_id)
             self._send_json({"message": "Knowledge source deleted."})
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to delete source."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Failed to delete source."), status=400)
 
     def _verify_bot_token(self) -> None:
         try:
@@ -818,8 +1038,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "Bot token is required."}, status=400)
                 return
 
-            import urllib.request
             import urllib.error
+            import urllib.request
             url = f"https://api.telegram.org/bot{token}/getMe"
             req = urllib.request.Request(url, method="GET")
             try:
@@ -844,8 +1064,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                     self._send_json({"valid": False, "error": f"Telegram API error ({exc.code})."})
             except urllib.error.URLError:
                 self._send_json({"valid": False, "error": "Network error reaching Telegram API."})
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Verification failed."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Verification failed."), status=400)
 
     def _deploy_agent(self, agent_id: str) -> None:
         try:
@@ -866,8 +1086,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
 
             self.agent_store.update_agent(agent_id, {"status": "deploying"})
 
-            import urllib.request
             import urllib.error
+            import urllib.request
             token = telegram_config["botToken"]
             url = f"https://api.telegram.org/bot{token}/getMe"
             req = urllib.request.Request(url, method="GET")
@@ -909,12 +1129,12 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 "webhookUrl": webhook_url,
             })
             self._send_json({"message": "Agent deployed successfully.", "status": "active", "webhookUrl": webhook_url})
-        except Exception as exc:
+        except Exception:
             try:
                 self.agent_store.update_agent(agent_id, {"status": "failed"})
             except Exception:
                 pass
-            self._send_json({"error": str(exc) or "Deployment failed."}, status=500)
+            self._send_json(_error_payload("Deployment failed."), status=500)
 
     def _upload_knowledge_files(self, agent_id: str, source_id: str) -> None:
         try:
@@ -953,19 +1173,48 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 embed_function_url=f"{self.settings.supabase_url}/functions/v1/embed" if self.settings.supabase_url else "",
             )
 
-            if not rag_config.supabase_url:
-                self.agent_store.update_knowledge_source(source_id, {"status": "failed", "errorMessage": "Supabase not configured."})
-                self._send_json({"error": "Supabase not configured for RAG."}, status=400)
-                return
+            result: dict[str, Any] | None = None
+            if rag_config.supabase_url and rag_config.supabase_service_role_key:
+                result = ingest_knowledge_source(source_id, agent_id, files_data, rag_config)
 
-            result = ingest_knowledge_source(source_id, agent_id, files_data, rag_config)
+            if not result or result.get("status") != "ready":
+                local_chunks: list[dict[str, Any]] = []
+                total_chars = 0
+                for file_info in files_data:
+                    extracted = extract_text_from_file(
+                        str(file_info.get("filename") or ""),
+                        file_info.get("data") or b"",
+                        str(file_info.get("contentType") or "application/octet-stream"),
+                    )
+                    if not extracted:
+                        continue
+                    total_chars += len(extracted)
+                    for item in chunk_text(extracted):
+                        local_chunks.append({
+                            **item,
+                            "filename": file_info.get("filename", ""),
+                        })
+                if not local_chunks:
+                    message = "No text could be extracted from the uploaded files. Use PDF, TXT, or Markdown files with selectable text."
+                    self.agent_store.update_knowledge_source(source_id, {"status": "failed", "errorMessage": message})
+                    self._send_json({"error": message}, status=400)
+                    return
+                stored = self.agent_store.replace_knowledge_chunks(source_id, agent_id, local_chunks)
+                result = {"status": "ready", "chunksStored": stored, "totalChars": total_chars, "storage": "local"}
+
+            self.agent_store.update_knowledge_source(source_id, {
+                "status": "ready",
+                "chunkCount": int(result.get("chunksStored") or 0),
+                "totalChars": int(result.get("totalChars") or 0),
+                "errorMessage": None,
+            })
             self._send_json(result)
         except Exception as exc:
             try:
                 self.agent_store.update_knowledge_source(source_id, {"status": "failed", "errorMessage": str(exc)})
             except Exception:
                 pass
-            self._send_json({"error": str(exc) or "Upload failed."}, status=400)
+            self._send_json(_error_payload("Upload failed."), status=400)
 
     def _test_agent(self, agent_id: str) -> None:
         try:
@@ -997,6 +1246,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                     context_chunks = search_agent_knowledge(question, agent_id, rag_config)
                 except Exception as exc:
                     logger.warning("RAG search failed for agent test: %s", exc)
+            if not context_chunks:
+                context_chunks = self.agent_store.search_knowledge_chunks(agent_id, question)
 
             system_prompt = agent.get("systemPrompt", "") or "You are a helpful assistant."
             if context_chunks:
@@ -1014,7 +1265,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
 
             provider_config = ProviderConfig(
                 provider=llm_config.get("provider", "openai"),
-                api_key=llm_config.get("apiKeyEncrypted", ""),
+                api_key=normalize_api_key(llm_config),
                 model=llm_config.get("model", "gpt-4o"),
                 endpoint_url=llm_config.get("endpointUrl", ""),
                 extra_headers=llm_config.get("extraHeaders", {}),
@@ -1026,12 +1277,20 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": question},
             ]
-            result = provider_chat_completion(provider_config, messages, max_tokens=1024, timeout=30)
+            result = provider_chat_completion(provider_config, messages, max_tokens=1024, timeout=15)
             latency_ms = int((_time.monotonic() - start) * 1000)
 
             response_text = result.get("content", "")
             if result.get("error"):
-                response_text = f"Error: {result['error']}"
+                self._send_json({
+                    "error": f"{provider_config.provider} request failed: {result['error']}",
+                    "provider": provider_config.provider,
+                    "model": provider_config.model,
+                }, status=502)
+                return
+            if not str(response_text).strip():
+                self._send_json({"error": "The configured model returned an empty response."}, status=502)
+                return
 
             self.agent_store.log_conversation(
                 agent_id=agent_id,
@@ -1048,22 +1307,55 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 "model": provider_config.model,
                 "provider": provider_config.provider,
             })
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Agent test failed."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Agent test failed."), status=400)
 
     def _get_agent_stats(self, agent_id: str) -> None:
         try:
             stats = self.agent_store.get_agent_stats(agent_id)
             self._send_json(stats)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to get stats."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Failed to get stats."), status=400)
 
     def _list_conversations(self, agent_id: str) -> None:
         try:
             convs = self.agent_store.list_conversations(agent_id)
             self._send_json({"conversations": convs, "total": len(convs)})
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to list conversations."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Failed to list conversations."), status=400)
+
+    # ── Rate limiting / abuse helpers ───────────────────────────────────
+
+    def _client_ip(self) -> str:
+        """Extract client IP, respecting X-Forwarded-For (first entry)."""
+        xff = (self.headers.get("X-Forwarded-For") or "").strip()
+        if xff:
+            return xff.split(",")[0].strip()
+        return self.client_address[0]
+
+    def _rate_limit_check(self, limiter, label: str) -> bool:
+        """Check rate limit; send 429 if exceeded. Returns True if allowed."""
+        if limiter.max_requests <= 0:
+            return True
+        allowed, info = limiter.allow(self._client_ip())
+        if not allowed:
+            self._send_json(
+                {"error": f"Rate limit exceeded for {label}. Retry after {info['retry_after']:.0f}s."},
+                status=429,
+            )
+            return False
+        return True
+
+    @staticmethod
+    def _validate_image_magic(data: bytes, content_type: str) -> str | None:
+        """Check magic bytes match declared content-type. Returns error or None."""
+        if not data:
+            return "Empty file payload."
+        if content_type == "image/jpeg" and data[:2] != b"\xff\xd8":
+            return "Content-Type says JPEG but file does not start with JPEG magic bytes."
+        if content_type == "image/png" and data[:8] != b"\x89PNG\r\n\x1a\n":
+            return "Content-Type says PNG but file does not start with PNG magic bytes."
+        return None
 
     def _read_json(self) -> dict[str, Any]:
         try:
@@ -1091,30 +1383,40 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length") or "0")
         except ValueError:
             length = 0
+        # ── Size enforcement ──
+        max_bytes = self.settings.max_upload_bytes
+        if max_bytes > 0 and length > max_bytes:
+            raise ValueError(f"Payload too large ({length} bytes). Maximum is {max_bytes}.")
         body = self.rfile.read(length)
         content_type = self.headers.get("Content-Type") or ""
-        form = FieldStorage(
-            fp=BytesIO(body),
-            environ={
-                "REQUEST_METHOD": "POST",
-                "CONTENT_TYPE": content_type,
-                "CONTENT_LENGTH": str(length),
-            },
-            keep_blank_values=True,
-        )
-        values: dict[str, str | UploadedFile] = {}
-        for key in form.keys():
-            field = form[key]
-            item = field[0] if isinstance(field, list) else field
-            if item.filename:
-                values[key] = UploadedFile(
-                    filename=Path(item.filename).name,
-                    content_type=item.type or "application/octet-stream",
-                    data=item.file.read(),
-                )
-            else:
-                values[key] = str(item.value)
-        return values
+        return parse_multipart(body, content_type)
+
+    def _body_exceeds_server_cap(self) -> bool:
+        """Server-level request body cap (audit §8 — Backend Weaknesses).
+
+        Returns True when the declared ``Content-Length`` exceeds
+        ``settings.max_request_body_bytes``. A missing/invalid length is
+        treated as zero and never rejected here (the endpoint still validates
+        the bytes it actually reads).
+        """
+        cap = self.settings.max_request_body_bytes
+        if cap <= 0:
+            return False
+        try:
+            length = int(self.headers.get("Content-Length") or "0")
+        except ValueError:
+            length = 0
+        return length > cap
+
+    def _reject_oversized_request(self) -> bool:
+        """If the request body exceeds the server cap, send 413 and return True."""
+        if self._body_exceeds_server_cap():
+            self._send_json(
+                {"status": "failed", "error": "Payload too large for this endpoint."},
+                status=413,
+            )
+            return True
+        return False
 
     def _send_json(self, payload: dict[str, Any], status: int = 200) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -1122,6 +1424,14 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             self.send_response(status)
             self._cors_headers()
             self.send_header("Content-Type", "application/json")
+            # Read endpoints are safe for browsers/CDNs to cache briefly, which
+            # keeps the dashboard's polling from re-fetching unchanged data on
+            # every tick. /health stays no-cache so it always reflects liveness.
+            if self.command == "GET" and urlparse(self.path).path != "/health":
+                self.send_header(
+                    "Cache-Control",
+                    f"public, max-age={self.settings.cache_control_max_age}",
+                )
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -1130,6 +1440,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:
         path = urlparse(self.path).path
+        if not self._authorize_request():
+            return
         parts = [part for part in path.split("/") if part]
         if len(parts) == 3 and parts[0] == "telegram" and parts[1] == "groups":
             self._remove_monitored_group(parts[2])
@@ -1146,7 +1458,11 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         self._send_json({"error": "Not found"}, status=404)
 
     def do_PUT(self) -> None:
+        if self._reject_oversized_request():
+            return
         path = urlparse(self.path).path
+        if not self._authorize_request():
+            return
         parts = [part for part in path.split("/") if part]
         if len(parts) == 2 and parts[0] == "agents":
             self._update_agent(parts[1])
@@ -1160,10 +1476,10 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
 
     def _list_registry_papers(self) -> None:
         try:
-            papers = self.store.read_registry()
+            papers = cached_get(self._get_cache, self.path, self.store.read_registry)
             self._send_json({"papers": papers, "total": len(papers)})
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to list papers."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Failed to list papers."), status=400)
 
     def _get_registry_paper(self, paper_id: str) -> None:
         try:
@@ -1172,12 +1488,12 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "Paper not found."}, status=404)
                 return
             self._send_json({"paper": paper})
-        except Exception as exc:
-            self._send_json({"error": str(exc)}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Request failed."), status=400)
 
     def _get_registry_stats(self) -> None:
         try:
-            papers = self.store.read_registry()
+            papers = cached_get(self._get_cache, self.path, self.store.read_registry)
             total = len(papers)
             protected = sum(1 for p in papers if p.get("protected", True))
             compromised = sum(1 for p in papers if p.get("status") == "compromised")
@@ -1193,8 +1509,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 "investigatingPapers": investigating,
                 "byExam": by_exam,
             })
-        except Exception as exc:
-            self._send_json({"error": str(exc)}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Request failed."), status=400)
 
     def _create_registry_paper(self) -> None:
         try:
@@ -1209,25 +1525,25 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 return
             paper = self.store.add_registry_paper(data)
             self._send_json({"paper": paper, "message": "Paper registered."}, status=201)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to create paper."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Failed to create paper."), status=400)
 
     def _reset_registry(self) -> None:
         try:
             self.store._write_registry([])
             self._send_json({"message": "Registry cleared.", "total": 0})
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to reset registry."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Failed to reset registry."), status=400)
 
     def _update_registry_paper(self, paper_id: str) -> None:
         try:
             data = self._read_json()
             paper = self.store.update_registry_paper(paper_id, data)
             self._send_json({"paper": paper})
-        except LookupError as exc:
-            self._send_json({"error": str(exc)}, status=404)
-        except Exception as exc:
-            self._send_json({"error": str(exc)}, status=400)
+        except LookupError:
+            self._send_json(_error_payload("Not found."), status=404)
+        except Exception:
+            self._send_json(_error_payload("Request failed."), status=400)
 
     def _delete_registry_paper(self, paper_id: str) -> None:
         try:
@@ -1236,14 +1552,14 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "Paper not found."}, status=404)
                 return
             self._send_json({"message": "Paper deleted."})
-        except Exception as exc:
-            self._send_json({"error": str(exc)}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Request failed."), status=400)
 
     def _match_evidence_to_registry(self) -> None:
         try:
             data = self._read_json()
             ocr_text = str(data.get("ocrText", "")).strip()
-            evidence_id = str(data.get("evidenceId", "")).strip()
+            evidence_id = normalize_evidence_id(data)
             if not ocr_text:
                 self._send_json({"error": "ocrText is required."}, status=400)
                 return
@@ -1258,8 +1574,129 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                         "detail": f"Matched {best.get('matchedExam')} ({best.get('matchedSet')}) at {best.get('similarityScore')}%",
                     })
             self._send_json({"matches": matches, "total": len(matches)})
-        except Exception as exc:
+        except Exception:
+            self._send_json(_error_payload("Request failed."), status=400)
+
+    def _mint_watermark(self) -> None:
+        """POST /watermark/mint — issue uniquely watermarked copies per recipient."""
+        try:
+            data = self._read_json()
+            paper_id = str(data.get("paperId", "")).strip()
+            source_text = str(data.get("sourceText", ""))
+            recipients = [r for r in (data.get("recipients") or []) if isinstance(r, dict)]
+            if not paper_id:
+                self._send_json({"error": "paperId is required."}, status=400)
+                return
+            if not recipients:
+                self._send_json({"error": "recipients (list) is required."}, status=400)
+                return
+            copies = self.store.mint_copies(paper_id, recipients, source_text)
+            self._send_json(
+                {"paperId": paper_id, "copies": copies, "count": len(copies), "message": "Watermarked copies issued."},
+                status=201,
+            )
+        except LookupError as exc:
+            self._send_json({"error": str(exc)}, status=404)
+        except ValueError as exc:
             self._send_json({"error": str(exc)}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Failed to mint watermark."), status=400)
+
+    def _decode_watermark(self) -> None:
+        """POST /watermark/decode — recover the issuing recipient from leaked text."""
+        try:
+            data = self._read_json()
+            text = str(data.get("text") or data.get("ocrText") or "")
+            if not text.strip():
+                self._send_json({"error": "text is required."}, status=400)
+                return
+            matches = []
+            for token in decode_watermark(text):
+                parsed = parse_token(token)
+                if not parsed:
+                    continue
+                copy = self.store.find_copy_by_watermark(parsed["copyId"])
+                matches.append({
+                    "token": token,
+                    "copyId": parsed["copyId"],
+                    "paperId": parsed["paperId"],
+                    "recipientRef": parsed["recipientRef"],
+                    "copy": copy,
+                })
+            self._send_json({"matches": matches, "total": len(matches), "detected": bool(matches)})
+        except Exception:
+            self._send_json(_error_payload("Failed to decode watermark."), status=400)
+
+    def _list_watermark_copies(self) -> None:
+        """GET /watermark/copies?paperId= — list issued watermark copies."""
+        try:
+            qs = parse_qs(urlparse(self.path).query)
+            paper_id = (qs.get("paperId") or [None])[0]
+            copies = self.store.read_copies()
+            if paper_id:
+                copies = [c for c in copies if c.get("paperId") == paper_id]
+            self._send_json({"copies": copies, "total": len(copies)})
+        except Exception:
+            self._send_json(_error_payload("Failed to list copies."), status=400)
+
+    def _generate_report(self) -> None:
+        """POST /reports/generate — Generate a Markdown report."""
+        from .reports import (
+            generate_evidence_report,
+            generate_summary_report,
+            report_to_document_bytes,
+        )
+
+        try:
+            payload = self._read_json()
+        except Exception:
+            payload = {}
+
+        evidence_id = normalize_evidence_id(payload)
+        report_type = str(payload.get("reportType") or ("evidence" if evidence_id else "summary")).strip()
+        send_to_telegram = bool(payload.get("sendToTelegram"))
+        telegram_chat_id = str(payload.get("chatId") or self.settings.telegram_admin_chat_id or "").strip()
+
+        if report_type == "evidence" and evidence_id:
+            md = generate_evidence_report(evidence_id, self.store)
+            filename = f"report-{evidence_id}.md"
+        else:
+            md = generate_summary_report(self.store)
+            filename = "report-dashboard-summary.md"
+            evidence_id = ""
+
+        result = {
+            "report": md,
+            "filename": filename,
+            "length": len(md),
+            "reportType": report_type,
+            "evidenceId": evidence_id or None,
+        }
+
+        # Optionally send to Telegram
+        if send_to_telegram and telegram_chat_id:
+            try:
+                from .telegram import TelegramWebhook
+                tg = TelegramWebhook(self.settings)
+                data_bytes = report_to_document_bytes(md)
+                caption = f"📄 Report: {evidence_id}" if evidence_id else "📊 Dashboard Summary Report"
+                tg._api_multipart(
+                    "sendDocument",
+                    fields={"chat_id": telegram_chat_id, "caption": caption},
+                    file_field="document",
+                    filename=filename,
+                    data=data_bytes,
+                    content_type="text/markdown",
+                )
+                result["sentToTelegram"] = True
+                result["telegramChatId"] = telegram_chat_id
+                logger.info("Report %s sent to Telegram chat %s", filename, telegram_chat_id)
+            except Exception as exc:
+                result["sentToTelegram"] = False
+                result["telegramError"] = str(exc)
+                logger.error("Failed to send report to Telegram: %s", exc)
+
+        self._send_json(result)
 
     def _test_telegram_chat(self) -> None:
         """Test endpoint for Telegram private chat functionality."""
@@ -1273,7 +1710,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 return
             
             # Try to get a chat response
-            llm = NvidiaClient(self.settings)
+            llm = KiloClient(self.settings)
             if llm.configured:
                 from .telegram import _clean_telegram_html
                 
@@ -1316,9 +1753,9 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                     "sentToTelegram": telegram.configured,
                 })
             else:
-                self._send_json({"error": "NVIDIA API key not configured."}, status=500)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Chat test failed."}, status=400)
+                self._send_json({"error": "KILO_API_KEY is not configured."}, status=500)
+        except Exception:
+            self._send_json(_error_payload("Chat test failed."), status=400)
 
     def _add_monitored_group(self) -> None:
         try:
@@ -1330,15 +1767,15 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             name = optional_text(payload.get("name")) or str(chat_id)
             result = self.store.add_monitored_group(chat_id, name=name, added_by="api")
             self._send_json(result, status=201 if result.get("created") else 200)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to add group."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Failed to add group."), status=400)
 
     def _remove_monitored_group(self, chat_id: str) -> None:
         try:
             result = self.store.remove_monitored_group(chat_id)
             self._send_json(result)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to remove group."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Failed to remove group."), status=400)
 
     def _send_empty(self, status: int) -> None:
         self.send_response(status)
@@ -1347,9 +1784,10 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _cors_headers(self) -> None:
-        self.send_header("Access-Control-Allow-Origin", self.settings.cors_origin)
+        for name, value in resolve_cors_headers(self.settings, self.headers.get("Origin")).items():
+            self.send_header(name, value)
         self.send_header("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.send_header("Access-Control-Allow-Headers", f"Content-Type, Authorization, {API_AUTH_HEADER}")
 
     def log_message(self, format: str, *args: Any) -> None:
         print("%s - %s" % (self.address_string(), format % args))
@@ -1367,12 +1805,26 @@ def build_handler(settings: Settings):
     ConfiguredExamshieldAiHandler.settings = settings
     ConfiguredExamshieldAiHandler.store = store
     ConfiguredExamshieldAiHandler.registry = ExamshieldToolRegistry(store)
-    ConfiguredExamshieldAiHandler.client = NvidiaClient(settings)
+    ConfiguredExamshieldAiHandler.client = KiloClient(settings)
     ConfiguredExamshieldAiHandler.telegram = telegram
     ConfiguredExamshieldAiHandler.workers = workers
     ConfiguredExamshieldAiHandler.pipeline = pipeline
     ConfiguredExamshieldAiHandler.memory = pipeline.memory
     ConfiguredExamshieldAiHandler.agent_store = AgentStore(store)
+    ConfiguredExamshieldAiHandler._get_cache = ReadResponseCache(settings.read_cache_ttl_seconds)
+    ConfiguredExamshieldAiHandler._ocr_limiter = make_ocr_limiter()
+    ConfiguredExamshieldAiHandler._upload_limiter = make_upload_limiter()
+    # ── Production hardening (audit §8 — Backend Weaknesses) ──
+    # Slow-client / idle socket timeout, applied by BaseHTTPRequestHandler.setup()
+    # via self.connection.settimeout(self.timeout). A client that trickles bytes
+    # is cut off rather than pinning a worker thread indefinitely.
+    ConfiguredExamshieldAiHandler.timeout = settings.request_timeout_seconds
+    # Keep-alive tuning: HTTP/1.1 persistent connections when enabled, otherwise
+    # close after each request (HTTP/1.0) to bound connection lifetime on a
+    # single-process server.
+    ConfiguredExamshieldAiHandler.protocol_version = (
+        "HTTP/1.1" if settings.keep_alive_enabled else "HTTP/1.0"
+    )
     return ConfiguredExamshieldAiHandler
 
 
@@ -1397,6 +1849,14 @@ def main() -> None:
     settings = load_settings()
     handler = build_handler(settings)
     logger.info(f"EXAMSHIELD AI starting - telegramBotToken={'SET' if settings.telegram_bot_token else 'NOT SET'}, publicUrl={settings.public_url or 'NOT SET'}, chatId={settings.telegram_chat_id or 'NOT SET'}, adminChatId={settings.telegram_admin_chat_id or 'NOT SET'}")
+    if settings.api_auth_secret:
+        logger.info("API auth ENABLED — all non-exempt routes require X-Examshield-Api-Key.")
+    else:
+        logger.warning(
+            "API auth DISABLED — set EXAMSHIELD_API_AUTH_SECRET to require a shared "
+            "secret on all backend routes (the frontend must send the matching "
+            "X-Examshield-Api-Key). Without it the API is reachable anonymously."
+        )
     try:
         handler.telegram.register()
         if handler.telegram.configured:
@@ -1417,6 +1877,53 @@ def main() -> None:
     except Exception as exc:
         logger.warning("Evidence cache warmup skipped: %s", exc)
     _start_stale_job_sweeper(handler.store)
+    # When no PUBLIC_URL is configured there is no webhook, so poll Telegram
+    # directly. This keeps the bot working in local/dev without a public host.
+    if handler.telegram.configured:
+        logger.info("Telegram webhook enabled (PUBLIC_URL set).")
+    else:
+        # If a community agent is configured with the SAME bot token as the
+        # global ExamShield bot, that agent's poller must own the token (it
+        # answers DMs as the agent). Running the global poll too would cause a
+        # Telegram getUpdates 409 conflict, so we hand the bot to the agent.
+        global_token = settings.telegram_bot_token or ""
+        agent_owns_global = False
+        if global_token:
+            for ag in handler.agent_store.list_agents(status="active"):
+                tg = handler.agent_store.get_telegram_config(str(ag.get("id") or ""))
+                if not tg:
+                    continue
+                if str(tg.get("deploymentStatus", "")).lower() in ("connected", "deployed", "active") and str(tg.get("botToken") or "") == global_token:
+                    agent_owns_global = True
+                    break
+
+        if agent_owns_global:
+            logger.info(
+                "Global Telegram bot token is owned by a community agent — the agent poller "
+                "will answer DMs as that agent; global assistant DM polling is skipped to avoid a getUpdates conflict."
+            )
+        else:
+            logger.info("Telegram webhook disabled (no PUBLIC_URL) — starting long-poll receiver.")
+            threading.Thread(
+                target=handler.telegram.start_polling,
+                kwargs={
+                    "store": handler.store,
+                    "ocr_runner": analyze_image,
+                    "pipeline": handler.pipeline,
+                },
+                daemon=True,
+                name="telegram-poll",
+            ).start()
+    # Community agents each have their own Telegram bot (configured via the
+    # agent's botToken). Poll those bots independently so DMs to an agent's bot
+    # are answered as that agent. This runs regardless of PUBLIC_URL because
+    # agent bots use getUpdates polling, not webhooks.
+    threading.Thread(
+        target=AgentTelegramService(handler.agent_store, settings).start,
+        daemon=True,
+        name="agent-telegram-poll",
+    ).start()
+
     server = ThreadingHTTPServer((settings.host, settings.port), handler)
     logger.info(f"EXAMSHIELD AI service listening on http://{settings.host}:{settings.port}")
     try:

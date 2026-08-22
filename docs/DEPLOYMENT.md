@@ -7,7 +7,7 @@ EXAMSHIELD uses one Python backend process on Render. That process owns OCR, evi
 ```txt
 Browser -> Vercel Next.js -> Render unified Python API -> Supabase
                                               |
-                                              +-> NVIDIA NIM
+                                              +-> Kilo Gateway
                                               +-> Tesseract OCR
 Telegram webhook -----------------------------+
 ```
@@ -43,8 +43,9 @@ This repo includes [`Dockerfile`](../Dockerfile) because OCR needs the Tesseract
 | --- | --- |
 | `SUPABASE_URL` | Supabase project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase service-role key |
-| `NVIDIA_API_KEY` | NVIDIA NIM API key |
-| `EXAMSHIELD_AI_CORS_ORIGIN` | Your Vercel production URL, or `*` during setup |
+| `KILO_API_KEY` | Kilo Gateway API key |
+| `EXAMSHIELD_AI_CORS_ORIGIN` | Your Vercel production URL (comma-separate multiple origins if needed). Do **not** use `*` in production; an empty value sends no CORS headers. |
+| `EXAMSHIELD_API_AUTH_SECRET` | A long random secret. **Required** — authenticates the backend API (audit §2.2). The Vercel frontend must set `EXAMSHIELD_BACKEND_API_KEY` to the *same* value so its proxy can reach protected routes. If left empty the API is reachable anonymously (loud startup warning). |
 
 Render supplies `PORT`. The server automatically binds to `0.0.0.0` and that port.
 
@@ -114,6 +115,16 @@ Enter this value when prompted:
 ```txt
 https://YOUR-RENDER-SERVICE.onrender.com
 ```
+
+Also add the backend API secret as a server-side variable (must match `EXAMSHIELD_API_AUTH_SECRET` on Render) so the proxy can authenticate:
+
+```powershell
+vercel env add EXAMSHIELD_BACKEND_API_KEY production --cwd web
+vercel env add EXAMSHIELD_BACKEND_API_KEY preview --cwd web
+vercel env add EXAMSHIELD_BACKEND_API_KEY development --cwd web
+```
+
+> The `EXAMSHIELD_BACKEND_API_KEY` is **server-side only** — never prefix it with `NEXT_PUBLIC_`.
 
 Deploy production:
 

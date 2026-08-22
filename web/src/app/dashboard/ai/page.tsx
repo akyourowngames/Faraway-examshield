@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, type ReactNode } from "react";
 import Link from "next/link";
 import { motion } from "framer-motion";
+import { createClient } from "@/lib/supabase/client";
 import {
   AlertTriangle,
   ArrowUpRight,
@@ -63,7 +64,7 @@ type AiStreamEvent =
   | { type: "stage"; message: string }
   | { type: "tool"; tool: AiToolName; result: AiToolResult }
   | { type: "token"; token: string }
-  | { type: "meta"; model: string; provider: "nvidia-nim" | "local-fallback" }
+  | { type: "meta"; model: string; provider: "kilo-gateway" | "local-fallback" }
   | { type: "error"; message: string }
   | { type: "done"; latencyMs?: number };
 
@@ -155,6 +156,27 @@ export default function ExamshieldAiPage() {
     setStreamingId(assistantId);
 
     try {
+      // Hand the operator's identity to the AI service so it can address the
+      // user by name. Mirrors how the Settings page reads the Supabase user.
+      // The proxy forwards the auth JWT as a server-side fallback if this is
+      // missing.
+      let operator: { name: string; email: string; role: string } | undefined;
+      try {
+        const supabase = createClient();
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        if (user) {
+          operator = {
+            name: (user.user_metadata?.full_name as string) ?? "",
+            email: user.email ?? "",
+            role: "Operator",
+          };
+        }
+      } catch {
+        operator = undefined;
+      }
+
       const historyPayload = messages.slice(-6).map((message) => ({
         role: message.role,
         content: message.content,
@@ -167,6 +189,7 @@ export default function ExamshieldAiPage() {
           prompt: trimmed,
           currentEvidenceId: currentInvestigation.evidenceId,
           messages: historyPayload,
+          ...(operator ? { operator } : {}),
         }),
       });
 
@@ -334,6 +357,166 @@ function SuggestedActions({ onSelect }: { onSelect: (prompt: string) => void }) 
   );
 }
 
+// Lightweight markdown renderer for assistant messages: **bold**, *italic*,
+// `code`, headings, blockquotes, and bullet/numbered lists. Kept dependency-free
+// so streaming tokens render incrementally without a markdown library.
+function renderInline(text: string, keyPrefix: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const regex = /(\*\*([^*]+)\*\*)|(\*([^*]+)\*)|(`([^`]+)`)/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  let key = 0;
+  while ((m = regex.exec(text)) !== null) {
+    if (m.index > last) nodes.push(text.slice(last, m.index));
+    if (m[2] !== undefined) {
+      nodes.push(<strong key={`${keyPrefix}-b${key++}`} className="font-semibold text-white">{m[2]}</strong>);
+    } else if (m[4] !== undefined) {
+      nodes.push(<em key={`${keyPrefix}-i${key++}`}>{m[4]}</em>);
+    } else if (m[6] !== undefined) {
+      nodes.push(
+        <code key={`${keyPrefix}-c${key++}`} className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-[0.8em] text-white/90">
+          {m[6]}
+        </code>,
+      );
+    }
+    last = regex.lastIndex;
+  }
+  if (last < text.length) nodes.push(text.slice(last));
+  return nodes;
+}
+
+function MarkdownMessage({ content, streaming }: { content: string; streaming?: boolean }) {
+  const lines = content.split("\n");
+  const blocks: ReactNode[] = [];
+  let listBuffer: { type: "ul" | "ol"; items: string[] } | null = null;
+  let key = 0;
+
+  const flushList = () => {
+    if (!listBuffer) return;
+    const items = listBuffer.items.map((it, idx) => (
+      <li key={idx} className="leading-7">
+        {renderInline(it, `li${key}-${idx}`)}
+      </li>
+    ));
+    if (listBuffer.type === "ul") {
+      blocks.push(
+        <ul key={`ul${key++}`} className="my-1 list-disc space-y-1 pl-5 marker:text-white/40">
+          {items}
+        </ul>,
+      );
+    } else {
+      blocks.push(
+        <ol key={`ol${key++}`} className="my-1 list-decimal space-y-1 pl-5 marker:text-white/40">
+          {items}
+        </ol>,
+      );
+    }
+    listBuffer = null;
+  };
+
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    if (trimmed.startsWith("```")) {
+      flushList();
+      const codeLines: string[] = [];
+      i++;
+      while (i < lines.length && !lines[i].trim().startsWith("```")) {
+        codeLines.push(lines[i]);
+        i++;
+      }
+      i++;
+      blocks.push(
+        <pre key={`pre${key++}`} className="my-2 overflow-x-auto rounded-md border border-white/10 bg-black/40 p-3">
+          <code className="font-mono text-[0.8em] text-white/85">{codeLines.join("\n")}</code>
+        </pre>,
+      );
+      continue;
+    }
+
+    const h = /^(#{1,4})\s+(.*)$/.exec(line);
+    if (h) {
+      flushList();
+      const level = h[1].length;
+      const cls = level <= 1 ? "mt-2 text-base font-bold text-white" : "mt-2 text-sm font-semibold text-white";
+      blocks.push(
+        <div key={`h${key++}`} className={`${cls} mb-1`}>
+          {renderInline(h[2], `h${key}`)}
+        </div>,
+      );
+      i++;
+      continue;
+    }
+
+    if (line.startsWith("> ")) {
+      flushList();
+      blocks.push(
+        <blockquote key={`bq${key++}`} className="my-1 border-l-2 border-white/20 pl-3 text-white/70 italic">
+          {renderInline(line.slice(2), `bq${key}`)}
+        </blockquote>,
+      );
+      i++;
+      continue;
+    }
+
+    const ul = /^[-*]\s+(.*)$/.exec(line);
+    if (ul) {
+      if (!listBuffer || listBuffer.type !== "ul") {
+        flushList();
+        listBuffer = { type: "ul", items: [] };
+      }
+      listBuffer.items.push(ul[1]);
+      i++;
+      continue;
+    }
+
+    const ol = /^\d+\.\s+(.*)$/.exec(line);
+    if (ol) {
+      if (!listBuffer || listBuffer.type !== "ol") {
+        flushList();
+        listBuffer = { type: "ol", items: [] };
+      }
+      listBuffer.items.push(ol[1]);
+      i++;
+      continue;
+    }
+
+    if (trimmed === "") {
+      flushList();
+      i++;
+      continue;
+    }
+
+    flushList();
+    const paraLines: string[] = [line];
+    i++;
+    while (
+      i < lines.length &&
+      lines[i].trim() !== "" &&
+      !/^(#{1,4}\s|[-*]\s|\d+\.\s|> )/.test(lines[i]) &&
+      !lines[i].trim().startsWith("```")
+    ) {
+      paraLines.push(lines[i]);
+      i++;
+    }
+    blocks.push(
+      <p key={`p${key++}`} className="leading-7">
+        {renderInline(paraLines.join(" "), `p${key}`)}
+      </p>,
+    );
+  }
+  flushList();
+
+  return (
+    <div className="text-sm leading-7 text-white/85">
+      {blocks}
+      {streaming && <span className="ml-0.5 inline-block h-4 w-[3px] animate-pulse bg-white align-middle" />}
+    </div>
+  );
+}
+
 function ChatBubble({ message, isLatest }: { message: ChatMessage; isLatest?: boolean }) {
   if (message.role === "operator") {
     return (
@@ -375,10 +558,7 @@ function ChatBubble({ message, isLatest }: { message: ChatMessage; isLatest?: bo
           )}
         </div>
         <div className="px-5 py-4">
-          <div className="whitespace-pre-wrap font-mono text-sm leading-7 text-white/85">
-            {message.content}
-            {message.streaming && <span className="ml-0.5 inline-block h-4 w-[3px] animate-pulse bg-white align-middle" />}
-          </div>
+          <MarkdownMessage content={message.content} streaming={message.streaming} />
         </div>
       </motion.div>
     );
@@ -435,10 +615,7 @@ function ChatBubble({ message, isLatest }: { message: ChatMessage; isLatest?: bo
             <MessageSquare className="h-3.5 w-3.5" />
             Analyst Transmission
           </div>
-          <div className="whitespace-pre-wrap font-mono text-sm leading-7 text-white/85">
-            {message.content}
-            {message.streaming && <span className="ml-0.5 inline-block h-4 w-[3px] animate-pulse bg-white align-middle" />}
-          </div>
+          <MarkdownMessage content={message.content} streaming={message.streaming} />
         </div>
       </div>
     </motion.div>
@@ -711,10 +888,18 @@ function applyStreamEvent(messages: ChatMessage[], assistantId: string, event: A
       return { ...message, model: event.model };
     }
     if (event.type === "error") {
-      return { ...message, stages: [...(message.stages ?? []), event.message] };
+      return {
+        ...message,
+        content: message.content || `EXAMSHIELD AI could not complete this response.\n\n${event.message}`,
+        stages: [...(message.stages ?? []), event.message],
+      };
     }
     if (event.type === "done") {
-      return { ...message, streaming: false };
+      return {
+        ...message,
+        content: message.content || "EXAMSHIELD AI ended the stream without a response. Please retry.",
+        streaming: false,
+      };
     }
     return message;
   });

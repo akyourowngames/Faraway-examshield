@@ -6,6 +6,7 @@ import { motion } from "framer-motion";
 import { Mail, Lock, User, ArrowRight } from "lucide-react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
+import { signupSchema, fieldErrors } from "@/lib/validation";
 
 const GithubIcon = () => (
   <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
@@ -29,6 +30,7 @@ export default function SignupPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [fieldErrorsState, setFieldErrorsState] = useState<Record<string, string>>({});
   const router = useRouter();
   const supabase = createClient();
 
@@ -37,6 +39,16 @@ export default function SignupPage() {
     setLoading(true);
     setError(null);
     setSuccess(null);
+    setFieldErrorsState({});
+
+    const parsed = signupSchema.safeParse({ name, email, password });
+    if (!parsed.success) {
+      const errors = fieldErrors(parsed);
+      setFieldErrorsState(errors);
+      setError(errors.name ?? errors.email ?? errors.password ?? "Please check your input.");
+      setLoading(false);
+      return;
+    }
 
     const { data, error } = await supabase.auth.signUp({
       email,
@@ -169,6 +181,9 @@ export default function SignupPage() {
                     disabled={loading}
                   />
                 </div>
+                {fieldErrorsState.name && (
+                  <p className="text-xs text-red-400">{fieldErrorsState.name}</p>
+                )}
               </div>
 
               <div className="space-y-2">
@@ -187,6 +202,9 @@ export default function SignupPage() {
                     disabled={loading}
                   />
                 </div>
+                {fieldErrorsState.email && (
+                  <p className="text-xs text-red-400">{fieldErrorsState.email}</p>
+                )}
               </div>
 
               <div className="space-y-2">
@@ -205,6 +223,9 @@ export default function SignupPage() {
                     disabled={loading}
                   />
                 </div>
+                {fieldErrorsState.password && (
+                  <p className="text-xs text-red-400">{fieldErrorsState.password}</p>
+                )}
               </div>
 
               <button

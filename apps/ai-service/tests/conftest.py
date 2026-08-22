@@ -26,6 +26,7 @@ def tmp_settings(tmp_path: Path) -> Settings:
         repo_root=tmp_path,
         upload_root=upload_root,
         registry_path=registry_path,
+        copies_path=tmp_path / "watermark_copies.json",
         api_key="",
         model="test-model",
         fallback_models=(),
@@ -36,6 +37,8 @@ def tmp_settings(tmp_path: Path) -> Settings:
         chat_max_tokens=220,
         planner_max_tokens=120,
         list_cache_ttl_seconds=8.0,
+        read_cache_ttl_seconds=5.0,
+        cache_control_max_age=5,
         supabase_timeout_seconds=20.0,
         detect_threshold=7.0,
         cors_origin="*",
@@ -49,6 +52,7 @@ def tmp_settings(tmp_path: Path) -> Settings:
         telegram_webhook_secret="secret",
         telegram_chat_id="-100123",
         telegram_admin_chat_id="-100999",
+        master_key="",
     )
 
 

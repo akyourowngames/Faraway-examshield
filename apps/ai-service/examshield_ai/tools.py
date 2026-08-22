@@ -5,9 +5,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable
 
+from .injection import sanitize_input
 from .memory import MemoryManager
+from .reports import generate_evidence_report, generate_summary_report
 from .store import EvidenceStore, JsonObject, is_today
-
 
 ToolHandler = Callable[[JsonObject], "ToolExecution"]
 
@@ -40,6 +41,11 @@ class ExamshieldToolRegistry:
     def __init__(self, store: EvidenceStore) -> None:
         self.store = store
         self.memory = MemoryManager(store)
+        # Per-request operator identity (name/email/role). Set by ChatSession for
+        # /chat; None elsewhere (e.g. /tools, /plan). When None, getUserProfile is
+        # hidden from the schema list so the model only sees it when a real
+        # operator context exists.
+        self.operator: JsonObject | None = None
         self._tools = {
             "listEvidence": ToolSpec(
                 name="listEvidence",
@@ -131,10 +137,44 @@ class ExamshieldToolRegistry:
                 parameters=schema({}),
                 handler=self._generate_report,
             ),
+            "generateMdReport": ToolSpec(
+                name="generateMdReport",
+                description="Generate a detailed Markdown forensic report for a specific evidence item or a dashboard summary report. Use when the user asks for a report, forensic report, or wants to download/share a report.",
+                parameters=schema(
+                    {
+                        "evidenceId": {
+                            "type": "string",
+                            "description": "The evidence ID for a per-evidence report (e.g. EV-001). Omit or leave empty for a dashboard summary report.",
+                        },
+                        "reportType": {
+                            "type": "string",
+                            "enum": ["evidence", "summary"],
+                            "description": "Use evidence for a specific item report, summary for a dashboard overview.",
+                        },
+                    }
+                ),
+                handler=self._generate_md_report,
+            ),
+            "getUserProfile": ToolSpec(
+                name="getUserProfile",
+                description=(
+                    "Get the current operator's identity — their name, email, and role on the "
+                    "EXAMSHIELD platform. Use this when the user asks who they are, for their "
+                    "account details, or to confirm the person you are speaking with."
+                ),
+                parameters=schema({}),
+                handler=self._get_user_profile,
+            ),
         }
 
     def schemas(self) -> list[JsonObject]:
-        return [tool.schema() for tool in self._tools.values()]
+        # Hide getUserProfile unless a real operator context exists for this
+        # request, so the model only offers it when identity is actually known.
+        return [
+            tool.schema()
+            for name, tool in self._tools.items()
+            if name != "getUserProfile" or self.operator is not None
+        ]
 
     def names(self) -> list[str]:
         return sorted(self._tools)
@@ -398,7 +438,6 @@ class ExamshieldToolRegistry:
             item for item in data.get("memoryCorrelations", []) if item.get("status") == "open"
         ]
         critical_registry = len([item for item in registry_threats if item.get("riskLevel") == "critical"])
-        medium_registry = len([item for item in registry_threats if item.get("riskLevel") == "medium"])
         compromised_papers = [item for item in top_threats if item.get("status") == "compromised"]
         investigating_papers = [item for item in top_threats if item.get("status") == "investigating"]
         posture, summary = threat_posture_summary(
@@ -587,6 +626,69 @@ class ExamshieldToolRegistry:
         )
         return with_context(result)
 
+    def _generate_md_report(self, arguments: JsonObject) -> ToolExecution:
+        report_type = str(arguments.get("reportType") or "summary").strip()
+        evidence_id = str(arguments.get("evidenceId") or "").strip()
+
+        if report_type == "evidence" and evidence_id:
+            md = generate_evidence_report(evidence_id, self.store)
+            title = f"EVIDENCE REPORT {evidence_id}"
+            summary = f"Detailed forensic report generated for {evidence_id}."
+        else:
+            md = generate_summary_report(self.store)
+            title = "DASHBOARD SUMMARY REPORT"
+            summary = "Full dashboard summary report generated."
+
+        result = create_result(
+            tool="generateMdReport",
+            title=title,
+            summary=summary,
+            current_investigation=empty_investigation(),
+            metrics=[metric("Report Type", report_type), metric("Length", f"{len(md)} chars")],
+            sections=[{
+                "title": "Report Preview",
+                "rows": [metric("Content", md[:1500])],
+            }],
+            evidence_ids=[evidence_id] if evidence_id else [],
+        )
+        result["markdownReport"] = md
+        result["filename"] = f"report-{evidence_id}.md" if evidence_id else "report-dashboard-summary.md"
+        return with_context(result)
+
+    def _get_user_profile(self, arguments: JsonObject) -> ToolExecution:
+        operator = self.operator if isinstance(self.operator, dict) else {}
+        name = str(operator.get("name") or "").strip()
+        email = str(operator.get("email") or "").strip()
+        role = str(operator.get("role") or "Operator").strip() or "Operator"
+
+        if not name and not email:
+            result = create_result(
+                tool="getUserProfile",
+                title="NO OPERATOR CONTEXT",
+                summary="No signed-in operator identity is available for this chat session.",
+                current_investigation=empty_investigation(),
+                metrics=[metric("Status", "No user context")],
+                sections=[],
+                evidence_ids=[],
+            )
+            return with_context(result)
+
+        display = name or email
+        result = create_result(
+            tool="getUserProfile",
+            title="OPERATOR PROFILE",
+            summary=f"Current operator: {display} ({role}).",
+            current_investigation=empty_investigation(),
+            metrics=[
+                metric("Name", name or "—"),
+                metric("Email", email or "—"),
+                metric("Role", role),
+            ],
+            sections=[],
+            evidence_ids=[],
+        )
+        return with_context(result)
+
 
 def schema(properties: JsonObject, required: tuple[str, ...] = ()) -> JsonObject:
     return {
@@ -669,40 +771,11 @@ def threat_posture_summary(
 
 
 def answer_context(result: JsonObject) -> str:
-    metrics = {
-        str(item.get("label")): str(item.get("value"))
-        for item in result.get("metrics", [])
-        if item.get("label") is not None
-    }
-    sections = []
-    for section in result.get("sections", []):
-        sections.append(
-            {
-                "title": section.get("title"),
-                "rowsAreSamplesNotTotals": True,
-                "rows": section.get("rows", []),
-            }
-        )
-    answer_rules = [
-        "Use metrics for all totals and counts.",
-        "Do not count section rows to create totals.",
-        "Do not change a row severity; copy only the severity shown in that row.",
-        "If metrics conflict with a section row count, metrics win.",
-        "Do not discuss these answer rules in the reply.",
-    ]
-    if result.get("tool") == "listThreats":
-        answer_rules.extend(
-            [
-                "Open forensic alerts and registry threats are different signals.",
-                "If threatPosture is elevated, do not say the threat level is stable.",
-                "If openAlerts is 0 but registryThreatCount is above 0, explain that forensic alerts are clear while registry threats remain active.",
-                "Lead with summary and threatPosture, then mention compromised papers from sections.",
-            ]
-        )
+    metrics = _build_answer_metrics(result)
     context = {
         "tool": result.get("tool"),
         "title": result.get("title"),
-        "summary": result.get("summary"),
+        "summary": sanitize_input(str(result.get("summary") or "")),
         "threatPosture": result.get("threatPosture"),
         "openAlerts": result.get("openAlerts"),
         "registryThreatCount": result.get("registryThreatCount"),
@@ -713,12 +786,66 @@ def answer_context(result: JsonObject) -> str:
             for label, value in metrics.items()
         ],
         "currentInvestigation": result.get("currentInvestigation"),
-        "sections": sections,
+        "sections": _build_answer_sections(result),
         "evidenceIds": result.get("evidenceIds", []),
         "generatedAt": result.get("generatedAt"),
-        "answerRules": answer_rules,
+        "answerRules": _build_answer_rules(result),
     }
     return json.dumps(context, indent=2, ensure_ascii=False)[:7000]
+
+
+def _build_answer_metrics(result: JsonObject) -> dict[str, str]:
+    return {
+        str(item.get("label")): str(item.get("value"))
+        for item in result.get("metrics", [])
+        if item.get("label") is not None
+    }
+
+
+def _build_answer_sections(result: JsonObject) -> list[JsonObject]:
+    """Sanitize external OCR/evidence text in section rows before it reaches the model."""
+    sections: list[JsonObject] = []
+    for section in result.get("sections", []):
+        rows = section.get("rows", [])
+        # Sanitize string values in rows — they may contain OCR/evidence text
+        # that was ingested from external sources (Telegram, uploads).
+        safe_rows = []
+        for row in rows:
+            if isinstance(row, dict):
+                safe_rows.append({
+                    k: sanitize_input(v) if isinstance(v, str) else v
+                    for k, v in row.items()
+                })
+            else:
+                safe_rows.append(row)
+        sections.append(
+            {
+                "title": sanitize_input(str(section.get("title") or "")),
+                "rowsAreSamplesNotTotals": True,
+                "rows": safe_rows,
+            }
+        )
+    return sections
+
+
+def _build_answer_rules(result: JsonObject) -> list[str]:
+    rules = [
+        "Use metrics for all totals and counts.",
+        "Do not count section rows to create totals.",
+        "Do not change a row severity; copy only the severity shown in that row.",
+        "If metrics conflict with a section row count, metrics win.",
+        "Do not discuss these answer rules in the reply.",
+    ]
+    if result.get("tool") == "listThreats":
+        rules.extend(
+            [
+                "Open forensic alerts and registry threats are different signals.",
+                "If threatPosture is elevated, do not say the threat level is stable.",
+                "If openAlerts is 0 but registryThreatCount is above 0, explain that forensic alerts are clear while registry threats remain active.",
+                "Lead with summary and threatPosture, then mention compromised papers from sections.",
+            ]
+        )
+    return rules
 
 
 def current_investigation(data: JsonObject) -> JsonObject:
@@ -825,6 +952,25 @@ def format_status(value: Any) -> str:
 
 def format_source(value: Any) -> str:
     return "Manual Upload" if value == "manual-upload" else "Telegram"
+
+
+def format_similarity(value: Any) -> str:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    return f"{score * 100:.0f}%"
+
+
+def memory_preview(item: Any) -> str:
+    if not isinstance(item, dict):
+        return str(item or "—")
+    content = str(
+        item.get("content") or item.get("summary") or item.get("sourceRef") or item.get("note") or ""
+    ).strip()
+    if not content:
+        return str(item.get("memoryType") or item.get("sourceEvidenceId") or "—")
+    return content[:80] + ("…" if len(content) > 80 else "")
 
 
 def format_date_time(value: Any) -> str:

@@ -1,0 +1,20 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["server.log"]
+
+[tool.ruff.lint]
+# Gate on real defects only (syntax E9, undefined names/pyflakes F). Style rules
+# (E4/E7/I) are intentionally not selected so CI stays green on a codebase that
+# was not previously linted; they can be enabled incrementally later.
+select = ["E9", "F"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["examshield_ai", "tests"]
+
+[tool.ruff.lint.per-file-ignores]
+# conftest inserts the repo root onto sys.path before importing the app,
+# which legitimately requires imports below the sys.path manipulation.
+"tests/conftest.py" = ["E402"]
+# service.py must load_dotenv() before importing the app, which reads env at import time.
+"service.py" = ["E402"]

@@ -71,61 +71,102 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "opencode": {
         "name": "OpenCode Zen",
         "base_url": "https://opencode.ai/zen/v1",
-        "models": [
-            "big-pickle",
-            "deepseek-v4-flash-free",
-            "mimo-v2.5-free",
-            "north-mini-code-free",
-            "nemotron-3-ultra-free",
-            "deepseek-v4-flash",
-            "deepseek-v4-pro",
-            "minimax-m2.5",
-            "minimax-m2.7",
-            "glm-5",
-            "glm-5.1",
-            "kimi-k2.5",
-            "kimi-k2.6",
-            "grok-build-0.1",
-            "qwen3.5-plus",
-            "qwen3.6-plus",
-            "qwen3.7-plus",
-            "qwen3.7-max",
-            "claude-haiku-4-5",
-            "claude-sonnet-4",
-            "claude-sonnet-4-5",
-            "claude-sonnet-4-6",
-            "claude-opus-4-1",
-            "claude-opus-4-5",
-            "claude-opus-4-6",
-            "claude-opus-4-7",
-            "claude-opus-4-8",
-            "claude-fable-5",
-            "gpt-5",
-            "gpt-5-nano",
-            "gpt-5.1",
-            "gpt-5.1-codex",
-            "gpt-5.1-codex-max",
-            "gpt-5.1-codex-mini",
-            "gpt-5.2",
-            "gpt-5.2-codex",
-            "gpt-5.3-codex",
-            "gpt-5.3-codex-spark",
-            "gpt-5.4",
-            "gpt-5.4-mini",
-            "gpt-5.4-nano",
-            "gpt-5.4-pro",
-            "gpt-5.5",
-            "gpt-5.5-pro",
-            "gemini-3-flash",
-            "gemini-3.1-pro",
-            "gemini-3.5-flash",
-        ],
+        "models": {
+            "Free Models": [
+                "big-pickle",
+                "deepseek-v4-flash-free",
+                "mimo-v2.5-free",
+                "north-mini-code-free",
+                "nemotron-3-ultra-free",
+            ],
+            "DeepSeek": [
+                "deepseek-v4-flash",
+                "deepseek-v4-pro",
+            ],
+            "MiniMax": [
+                "minimax-m2.5",
+                "minimax-m2.7",
+            ],
+            "GLM": [
+                "glm-5",
+                "glm-5.1",
+            ],
+            "Kimi": [
+                "kimi-k2.5",
+                "kimi-k2.6",
+            ],
+            "Grok": [
+                "grok-build-0.1",
+            ],
+            "Qwen": [
+                "qwen3.5-plus",
+                "qwen3.6-plus",
+                "qwen3.7-plus",
+                "qwen3.7-max",
+            ],
+            "Claude": [
+                "claude-haiku-4-5",
+                "claude-sonnet-4",
+                "claude-sonnet-4-5",
+                "claude-sonnet-4-6",
+                "claude-opus-4-1",
+                "claude-opus-4-5",
+                "claude-opus-4-6",
+                "claude-opus-4-7",
+                "claude-opus-4-8",
+                "claude-fable-5",
+            ],
+            "GPT": [
+                "gpt-5",
+                "gpt-5-nano",
+                "gpt-5.1",
+                "gpt-5.1-codex",
+                "gpt-5.1-codex-max",
+                "gpt-5.1-codex-mini",
+                "gpt-5.2",
+                "gpt-5.2-codex",
+                "gpt-5.3-codex",
+                "gpt-5.3-codex-spark",
+                "gpt-5.4",
+                "gpt-5.4-mini",
+                "gpt-5.4-nano",
+                "gpt-5.4-pro",
+                "gpt-5.5",
+                "gpt-5.5-pro",
+            ],
+            "Gemini": [
+                "gemini-3-flash",
+                "gemini-3.1-pro",
+                "gemini-3.5-flash",
+            ],
+        },
         "requires_key": True,
         "requires_endpoint": False,
         "key_prefix": "sk-",
         "validate_url": "https://opencode.ai/zen/v1/chat/completions",
         "validate_method": "POST",
         "validate_model": "big-pickle",
+    },
+    "kilo": {
+        "name": "Kilo Gateway",
+        "base_url": "https://api.kilo.ai/api/gateway",
+        "models": [
+            "tencent/hy3:free",
+            "tencent/hy3",
+            "tencent/hy3-preview",
+            "stepfun/step-3.7-flash:free",
+            "kilo-auto/free",
+            "kilo-auto/balanced",
+            "kilo-auto/efficient",
+            "kilo-auto/frontier",
+            "anthropic/claude-sonnet-5",
+        ],
+        "requires_key": True,
+        "requires_endpoint": False,
+        "key_prefix": "",
+        "validate_url": "https://api.kilo.ai/api/gateway/chat/completions",
+        "validate_method": "POST",
+        "validate_model": "tencent/hy3:free",
     },
 }
 
@@ -142,13 +183,29 @@ class ProviderConfig:
 def list_providers() -> list[dict[str, Any]]:
     result = []
     for key, info in PROVIDER_REGISTRY.items():
-        result.append({
-            "id": key,
-            "name": info["name"],
-            "models": info["models"],
-            "requiresKey": info["requires_key"],
-            "requiresEndpoint": info["requires_endpoint"],
-        })
+        models = info["models"]
+        # Handle grouped models (dict) vs flat list
+        if isinstance(models, dict):
+            flat_models = []
+            for group_models in models.values():
+                flat_models.extend(group_models)
+            result.append({
+                "id": key,
+                "name": info["name"],
+                "models": flat_models,
+                "groupedModels": models,
+                "requiresKey": info["requires_key"],
+                "requiresEndpoint": info["requires_endpoint"],
+            })
+        else:
+            result.append({
+                "id": key,
+                "name": info["name"],
+                "models": models,
+                "groupedModels": None,
+                "requiresKey": info["requires_key"],
+                "requiresEndpoint": info["requires_endpoint"],
+            })
     return result
 
 
@@ -306,6 +363,10 @@ def validate_api_key(config: ProviderConfig) -> dict[str, Any]:
     if not validate_url:
         return {"valid": False, "error": f"Provider '{config.provider}' not supported for validation."}
 
+    # For OpenCode Zen, try a simpler validation approach
+    if config.provider == "opencode":
+        return _validate_opencode_key(config, provider_info)
+
     if config.provider == "anthropic":
         headers = {
             "x-api-key": config.api_key,
@@ -317,8 +378,8 @@ def validate_api_key(config: ProviderConfig) -> dict[str, Any]:
             "max_tokens": 10,
             "messages": [{"role": "user", "content": "Say ok"}],
         }).encode("utf-8")
-    elif config.provider == "opencode":
-        validate_model = provider_info.get("validate_model", "big-pickle")
+    elif config.provider == "kilo":
+        validate_model = provider_info.get("validate_model", "tencent/hy3:free")
         headers = {
             "Authorization": f"Bearer {config.api_key}",
             "Content-Type": "application/json",
@@ -340,12 +401,12 @@ def validate_api_key(config: ProviderConfig) -> dict[str, Any]:
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode("utf-8", errors="replace"))
             model = config.model
-            if not model and config.provider not in ("anthropic", "opencode"):
+            if not model and config.provider not in ("anthropic", "kilo"):
                 models = data.get("data", [])
                 if models and isinstance(models, list):
                     model = models[0].get("id", config.model)
-            if not model and config.provider == "opencode":
-                model = provider_info.get("validate_model", "big-pickle")
+            if not model and config.provider == "kilo":
+                model = provider_info.get("validate_model", config.model)
             return {"valid": True, "model": model, "provider": config.provider}
     except urllib.error.HTTPError as exc:
         error_body = ""
@@ -356,16 +417,69 @@ def validate_api_key(config: ProviderConfig) -> dict[str, Any]:
         if exc.code == 401:
             return {"valid": False, "error": "Invalid API key."}
         elif exc.code == 403:
-            if config.provider == "opencode":
-                return {"valid": False, "error": "API key rejected. Make sure you are using an OpenCode Zen key from https://opencode.ai/auth (not the CLI key), and that your account has credits."}
             return {"valid": False, "error": "API key does not have access to this resource."}
         elif exc.code == 429:
             return {"valid": True, "model": config.model, "provider": config.provider}
         else:
-            if config.provider == "opencode" and exc.code == 500:
-                return {"valid": False, "error": "Invalid API key or server error. Ensure you are using an OpenCode Zen key from https://opencode.ai/auth."}
             return {"valid": False, "error": f"Validation failed (HTTP {exc.code}): {error_body[:200]}"}
     except urllib.error.URLError:
         return {"valid": False, "error": "Network error reaching provider API."}
     except Exception as exc:
         return {"valid": False, "error": str(exc) or "Validation failed."}
+
+
+def _validate_opencode_key(config: ProviderConfig, provider_info: dict[str, Any]) -> dict[str, Any]:
+    """Special validation for OpenCode Zen.
+
+    Strategy: try a real API call with a free model. If the API confirms the key
+    works, great. If we get 401, the key is definitely bad. For any other error
+    (403, 500, network timeout, DNS failure, etc.) we accept the key with a
+    warning rather than blocking the user — the actual agent test will catch
+    real problems.
+    """
+    validate_url = provider_info.get("validate_url", "https://opencode.ai/zen/v1/chat/completions")
+
+    headers = {
+        "Authorization": f"Bearer {config.api_key}",
+        "Content-Type": "application/json",
+    }
+
+    # Quick format check first
+    if not config.api_key.startswith("sk-"):
+        return {"valid": False, "error": "Invalid key format. OpenCode Zen keys start with 'sk-'. Get one from https://opencode.ai/auth"}
+
+    # Try a free model to confirm the key works
+    models_to_try = ["big-pickle", "deepseek-v4-flash-free", "mimo-v2.5-free"]
+
+    for model in models_to_try:
+        payload = json.dumps({
+            "model": model,
+            "max_tokens": 5,
+            "messages": [{"role": "user", "content": "hi"}],
+        }).encode("utf-8")
+
+        req = urllib.request.Request(validate_url, data=payload, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                resp.read()
+                return {"valid": True, "model": model, "provider": config.provider}
+        except urllib.error.HTTPError as exc:
+            if exc.code == 401:
+                return {"valid": False, "error": "Invalid API key. Get a Zen key from https://opencode.ai/auth (not the CLI key)."}
+            if exc.code == 429:
+                return {"valid": True, "model": model, "provider": config.provider}
+            # 403, 500, etc — try next model, don't reject yet
+            continue
+        except Exception:
+            # Network/DNS/timeout — try next model
+            continue
+
+    # All models failed but key format is correct. Don't block the user — the
+    # API may be temporarily unreachable or the specific models may be
+    # unavailable. The agent test will catch real credential problems.
+    return {
+        "valid": True,
+        "model": config.model or "big-pickle",
+        "provider": config.provider,
+        "warning": "Could not verify the key against OpenCode Zen (service may be temporarily unavailable). The key format looks correct — proceed and test your agent to confirm.",
+    }

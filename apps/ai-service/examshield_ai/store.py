@@ -14,7 +14,9 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from .detect import get_alert_severity
+from .secrets_crypto import decrypt_secret, encrypt_secret
 from .settings import Settings
+from .watermark import build_token, decode_watermark, embed, parse_token
 
 logger = logging.getLogger(__name__)
 
@@ -47,12 +49,30 @@ class UploadedFile:
     data: bytes
 
 
+def _dir_mtime(directory: Path) -> "float | None":
+    """Max mtime of the ``.json`` files in a collection directory.
+
+    Returns ``None`` when the directory is missing or empty so callers can treat
+    "no data yet" and "data present" as distinct cache-key states.
+    """
+    try:
+        entries = list(directory.iterdir())
+    except (OSError, NotADirectoryError):
+        return None
+    mtimes = [
+        p.stat().st_mtime
+        for p in entries
+        if p.is_file() and p.suffix.lower() == ".json"
+    ]
+    return max(mtimes) if mtimes else None
+
+
 class EvidenceStore:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.root = settings.upload_root
         self.supabase_enabled = bool(settings.supabase_url and settings.supabase_service_role_key)
-        self._dir_cache: dict[str, tuple[float, list[JsonObject]]] = {}
+        self._dir_cache: dict[str, tuple[float, "float | None", list[JsonObject]]] = {}
         self._list_evidence_cache: tuple[float, JsonObject] | None = None
 
     def ensure_storage(self) -> None:
@@ -170,6 +190,19 @@ class EvidenceStore:
             key=lambda item: _time_sort_key(item.get("timestamp")),
             reverse=True,
         )
+        reference_count = len(self.read_registry())
+        reports = [
+            {
+                **report,
+                "comparisonStatus": report.get("comparisonStatus")
+                or ("not-run" if reference_count == 0 else "no-match")
+                if report.get("status") == "no-match"
+                else report.get("comparisonStatus"),
+                "comparisonSource": report.get("comparisonSource") or "Core question-paper registry",
+                "referenceCount": report.get("referenceCount", reference_count),
+            }
+            for report in reports
+        ]
         telegram_events = sorted(
             collections.get("telegram-events", []),
             key=lambda item: _time_sort_key(item.get("timestamp")),
@@ -236,7 +269,7 @@ class EvidenceStore:
             if ttl > 0:
                 cached = self._dir_cache.get(name)
                 if cached and (now - cached[0]) < ttl:
-                    grouped[name] = cached[1]
+                    grouped[name] = cached[2]
                     continue
             missing.append(name)
         if not missing:
@@ -266,7 +299,7 @@ class EvidenceStore:
         if ttl > 0:
             stamp = time.monotonic()
             for name in missing:
-                self._dir_cache[name] = (stamp, grouped[name])
+                self._dir_cache[name] = (stamp, None, grouped[name])
         return grouped
 
     def get_active_job_for_evidence(self, evidence_id: str) -> JsonObject | None:
@@ -567,15 +600,7 @@ class EvidenceStore:
                 logger.error(f"OCR failed for evidence {evidence_id}: {error_msg}")
                 raise RuntimeError(error_msg)
             logger.info(f"OCR completed for evidence {evidence_id}, confidence: {ocr_result.get('confidence')}")
-            completed = self.complete_analysis_job(
-                job_id,
-                {
-                    "text": str(ocr_result.get("text") or ""),
-                    "confidence": int(ocr_result.get("confidence") or 0),
-                    "processingTimeMs": int(ocr_result.get("processingTimeMs") or 0),
-                },
-            )
-            timeline.extend(completed["activity"])
+            completed = self._persist_ocr_result(job_id, ocr_result, timeline)
             attribution = self.run_attribution_for_evidence(
                 str(completed["evidence"]["evidenceId"]),
                 str(completed["evidence"].get("ocrText") or ""),
@@ -583,18 +608,7 @@ class EvidenceStore:
             )
             timeline.extend(attribution["activity"])
             report = attribution["forensicReport"]
-            completed_event = self.record_activity(
-                {
-                    "type": "analysis-completed",
-                    "title": "Analysis Completed",
-                    "evidenceId": completed["evidence"]["evidenceId"],
-                    "jobId": job_id,
-                    "timestamp": add_milliseconds(str(report["timestamp"]), 4),
-                    "detail": f"{report['finalConfidence']}% final confidence"
-                    if report["status"] == "investigation-complete"
-                    else "No registry match",
-                }
-            )
+            completed_event = self._compose_analysis_completed_event(completed["evidence"], job_id, report)
             timeline.append(completed_event)
             alert = self.create_critical_alert_if_needed(report, attribution["attribution"])
             if alert["activity"]:
@@ -620,6 +634,42 @@ class EvidenceStore:
                 "job": failed["job"],
                 "activity": [*timeline, *failed["activity"]],
             }
+
+    def _persist_ocr_result(
+        self,
+        job_id: str,
+        ocr_result: JsonObject,
+        timeline: list[JsonObject],
+    ) -> JsonObject:
+        completed = self.complete_analysis_job(
+            job_id,
+            {
+                "text": str(ocr_result.get("text") or ""),
+                "confidence": int(ocr_result.get("confidence") or 0),
+                "processingTimeMs": int(ocr_result.get("processingTimeMs") or 0),
+            },
+        )
+        timeline.extend(completed["activity"])
+        return completed
+
+    def _compose_analysis_completed_event(
+        self,
+        evidence: JsonObject,
+        job_id: str,
+        report: JsonObject,
+    ) -> JsonObject:
+        return self.record_activity(
+            {
+                "type": "analysis-completed",
+                "title": "Analysis Completed",
+                "evidenceId": evidence["evidenceId"],
+                "jobId": job_id,
+                "timestamp": add_milliseconds(str(report["timestamp"]), 4),
+                "detail": f"{report['finalConfidence']}% final confidence"
+                if report["status"] == "investigation-complete"
+                else "No registry match",
+            }
+        )
 
     def mark_analysis_job_processing(self, job_id: str) -> JsonObject:
         job = self._read_json_file("jobs", f"{job_id}.json")
@@ -995,8 +1045,9 @@ class EvidenceStore:
                 "timestamp": attribution_started_at,
             }
         )
+        registry_records = self.read_registry()
         registry_record = watermark_result.get("registryRecord")
-        match = self.match_paper_from_ocr(ocr_text) if not registry_record else None
+        match = self.match_paper_from_ocr(ocr_text) if not registry_record and registry_records else None
         if registry_record:
             match = {
                 "matchedPaperId": registry_record["paperId"],
@@ -1014,65 +1065,102 @@ class EvidenceStore:
             }
 
         if not match:
-            attribution = {
-                "attributionId": prefixed_id("ATTR", evidence_id),
-                "evidenceId": evidence_id,
-                "matchedPaperId": None,
-                "matchedExam": None,
-                "matchedSet": None,
-                "confidence": 0,
-                "centerCode": None,
-                "printerId": None,
-                "batchId": None,
-                "status": "no-match",
-                "matchedWatermarkId": None,
-                "centerName": None,
-                "city": None,
-                "state": None,
-                "ocrConfidence": ocr_confidence,
-                "watermarkConfidence": watermark["confidence"],
-                "finalConfidence": 0,
-                "createdAt": attribution_created_at,
-            }
+            attribution = self._build_no_match_attribution(
+                evidence_id, ocr_confidence, watermark, registry_records, attribution_created_at
+            )
             self._write_json("attributions", f"{evidence_id}.json", attribution)
             report = self._write_report(
-                {
-                    "reportId": prefixed_id("FR", evidence_id),
-                    "evidenceId": evidence_id,
-                    "paperIdentified": None,
-                    "watermarkId": watermark["watermarkId"],
-                    "centerCode": None,
-                    "printerId": None,
-                    "batchId": None,
-                    "centerName": None,
-                    "city": None,
-                    "state": None,
-                    "riskLevel": None,
-                    "status": "no-match",
-                    "ocrConfidence": ocr_confidence,
-                    "watermarkConfidence": watermark["confidence"],
-                    "finalConfidence": 0,
-                    "timestamp": attribution_created_at,
-                }
+                self._build_no_match_report(
+                    evidence_id, watermark, ocr_confidence, registry_records,
+                    attribution_created_at, watermark_extracted_at,
+                )
             )
-            completed = self.record_activity(
-                {
-                    "type": "attribution-complete",
-                    "title": "Attribution Complete",
-                    "evidenceId": evidence_id,
-                    "timestamp": add_milliseconds(attribution_created_at, 1),
-                    "detail": "No registry match found" if ocr_text.strip() else "No OCR text available",
-                }
+            activity = self._build_attribution_activity(
+                evidence_id=evidence_id,
+                watermark=watermark,
+                watermark_activity=watermark_activity,
+                attribution_started=attribution_started,
+                attribution_created_at=attribution_created_at,
+                ocr_text=ocr_text,
             )
             return {
                 "attribution": attribution,
                 "watermark": watermark,
                 "forensicReport": report,
-                "activity": [*watermark_activity, attribution_started, completed],
+                "activity": activity,
             }
 
         final_confidence = final_confidence_score(ocr_confidence, match.get("confidence"), watermark.get("confidence"))
-        attribution = {
+        attribution = self._build_match_attribution(
+            evidence_id, match, ocr_confidence, watermark, final_confidence, registry_records, attribution_created_at
+        )
+        self._write_json("attributions", f"{evidence_id}.json", attribution)
+        report = self._write_report(
+            self._build_match_report(
+                evidence_id, match, watermark, ocr_confidence, final_confidence,
+                registry_records, attribution_created_at, watermark_extracted_at,
+            )
+        )
+        activity = self._build_attribution_activity(
+            evidence_id=evidence_id,
+            watermark=watermark,
+            watermark_activity=watermark_activity,
+            attribution_started=attribution_started,
+            attribution_created_at=attribution_created_at,
+            ocr_text=ocr_text,
+            match=match,
+            final_confidence=final_confidence,
+        )
+        return {
+            "attribution": attribution,
+            "watermark": watermark,
+            "forensicReport": report,
+            "activity": activity,
+        }
+
+    def _build_no_match_attribution(
+        self,
+        evidence_id: str,
+        ocr_confidence: int | None,
+        watermark: JsonObject,
+        registry_records: list[JsonObject],
+        created_at: str,
+    ) -> JsonObject:
+        return {
+            "attributionId": prefixed_id("ATTR", evidence_id),
+            "evidenceId": evidence_id,
+            "matchedPaperId": None,
+            "matchedExam": None,
+            "matchedSet": None,
+            "confidence": 0,
+            "centerCode": None,
+            "printerId": None,
+            "batchId": None,
+            "status": "no-match",
+            "matchedWatermarkId": None,
+            "centerName": None,
+            "city": None,
+            "state": None,
+            "ocrConfidence": ocr_confidence,
+            "watermarkConfidence": watermark["confidence"],
+            "finalConfidence": 0,
+            "comparisonStatus": "not-run" if not registry_records else "no-match",
+            "comparisonSource": "Core question-paper registry",
+            "referenceCount": len(registry_records),
+            "createdAt": created_at,
+        }
+
+    def _build_match_attribution(
+        self,
+        evidence_id: str,
+        match: JsonObject,
+        ocr_confidence: int | None,
+        watermark: JsonObject,
+        final_confidence: int,
+        registry_records: list[JsonObject],
+        created_at: str,
+    ) -> JsonObject:
+        return {
             "attributionId": prefixed_id("ATTR", evidence_id),
             "evidenceId": evidence_id,
             "matchedPaperId": match["matchedPaperId"],
@@ -1090,29 +1178,126 @@ class EvidenceStore:
             "ocrConfidence": ocr_confidence,
             "watermarkConfidence": watermark["confidence"],
             "finalConfidence": final_confidence,
-            "createdAt": attribution_created_at,
+            "comparisonStatus": "matched",
+            "comparisonSource": "Core question-paper registry",
+            "referenceCount": len(registry_records),
+            "createdAt": created_at,
         }
-        self._write_json("attributions", f"{evidence_id}.json", attribution)
-        report = self._write_report(
-            {
-                "reportId": prefixed_id("FR", evidence_id),
-                "evidenceId": evidence_id,
-                "paperIdentified": match["matchedPaperId"],
-                "watermarkId": watermark["watermarkId"] or match["matchedWatermarkId"],
-                "centerCode": match["centerCode"],
-                "printerId": match["printerId"],
-                "batchId": match["batchId"],
-                "centerName": match.get("centerName"),
-                "city": match.get("city"),
-                "state": match.get("state"),
-                "riskLevel": "critical" if match["status"] == "compromised" else match["status"],
-                "status": "investigation-complete",
+
+    def _build_no_match_report(
+        self,
+        evidence_id: str,
+        watermark: JsonObject,
+        ocr_confidence: int | None,
+        registry_records: list[JsonObject],
+        created_at: str,
+        watermark_extracted_at: str,
+    ) -> JsonObject:
+        return {
+            "reportId": prefixed_id("FR", evidence_id),
+            "evidenceId": evidence_id,
+            "paperIdentified": None,
+            "watermarkId": watermark["watermarkId"],
+            "centerCode": None,
+            "printerId": None,
+            "batchId": None,
+            "centerName": None,
+            "city": None,
+            "state": None,
+            "riskLevel": None,
+            "status": "no-match",
+            "ocrConfidence": ocr_confidence,
+            "watermarkConfidence": watermark["confidence"],
+            "finalConfidence": 0,
+            "comparisonStatus": "not-run" if not registry_records else "no-match",
+            "comparisonSource": "Core question-paper registry",
+            "referenceCount": len(registry_records),
+            "timestamp": created_at,
+            # Enriched fields
+            "investigationTimeline": [
+                {"step": "Watermark Extraction", "status": watermark["status"], "timestamp": watermark_extracted_at},
+                {"step": "Registry Comparison", "status": "no-match" if registry_records else "not-run", "timestamp": created_at},
+            ],
+            "riskFactors": _build_risk_factors(None, watermark, ocr_confidence),
+            "recommendationSummary": "No matched paper found. Continue monitoring for new evidence or re-scan with higher quality image.",
+            "detectionDetails": {"ocrConfidence": ocr_confidence, "watermarkStatus": watermark["status"]},
+            "geolocation": None,
+        }
+
+    def _build_match_report(
+        self,
+        evidence_id: str,
+        match: JsonObject,
+        watermark: JsonObject,
+        ocr_confidence: int | None,
+        final_confidence: int,
+        registry_records: list[JsonObject],
+        created_at: str,
+        watermark_extracted_at: str,
+    ) -> JsonObject:
+        return {
+            "reportId": prefixed_id("FR", evidence_id),
+            "evidenceId": evidence_id,
+            "paperIdentified": match["matchedPaperId"],
+            "watermarkId": watermark["watermarkId"] or match["matchedWatermarkId"],
+            "centerCode": match["centerCode"],
+            "printerId": match["printerId"],
+            "batchId": match["batchId"],
+            "centerName": match.get("centerName"),
+            "city": match.get("city"),
+            "state": match.get("state"),
+            "riskLevel": "critical" if match["status"] == "compromised" else match["status"],
+            "status": "investigation-complete",
+            "ocrConfidence": ocr_confidence,
+            "watermarkConfidence": watermark["confidence"],
+            "finalConfidence": final_confidence,
+            "comparisonStatus": "matched",
+            "comparisonSource": "Core question-paper registry",
+            "referenceCount": len(registry_records),
+            "timestamp": created_at,
+            # Enriched fields
+            "investigationTimeline": [
+                {"step": "Watermark Extraction", "status": watermark["status"], "confidence": watermark["confidence"], "timestamp": watermark_extracted_at},
+                {"step": "Registry Match", "status": "matched", "confidence": match["confidence"], "paper": match["matchedPaperId"], "timestamp": created_at},
+                {"step": "Source Identification", "status": "identified", "center": match["centerCode"], "printer": match["printerId"], "batch": match["batchId"], "timestamp": add_milliseconds(created_at, 1)},
+                {"step": "Investigation Complete", "status": match["status"], "finalConfidence": final_confidence, "timestamp": add_milliseconds(created_at, 3)},
+            ],
+            "riskFactors": _build_risk_factors(match, watermark, ocr_confidence),
+            "recommendationSummary": _build_recommendation(match, final_confidence, watermark, ocr_confidence),
+            "detectionDetails": {
                 "ocrConfidence": ocr_confidence,
+                "paperMatchConfidence": match["confidence"],
                 "watermarkConfidence": watermark["confidence"],
-                "finalConfidence": final_confidence,
-                "timestamp": attribution_created_at,
-            }
-        )
+                "watermarkId": watermark.get("watermarkId") or match.get("matchedWatermarkId"),
+            },
+            "geolocation": {"city": match.get("city"), "state": match.get("state")} if match.get("city") or match.get("state") else None,
+        }
+
+    def _build_attribution_activity(
+        self,
+        *,
+        evidence_id: str,
+        watermark: JsonObject,
+        watermark_activity: list[JsonObject],
+        attribution_started: JsonObject,
+        attribution_created_at: str,
+        ocr_text: str,
+        match: JsonObject | None = None,
+        final_confidence: int | None = None,
+    ) -> list[JsonObject]:
+        activity: list[JsonObject] = [*watermark_activity, attribution_started]
+        if match is None:
+            completed = self.record_activity(
+                {
+                    "type": "attribution-complete",
+                    "title": "Attribution Complete",
+                    "evidenceId": evidence_id,
+                    "timestamp": add_milliseconds(attribution_created_at, 1),
+                    "detail": "No registry match found" if ocr_text.strip() else "No OCR text available",
+                }
+            )
+            activity.append(completed)
+            return activity
         matched = self.record_activity(
             {
                 "type": "paper-matched",
@@ -1149,19 +1334,8 @@ class EvidenceStore:
                 "detail": f"{final_confidence}% final confidence",
             }
         )
-        return {
-            "attribution": attribution,
-            "watermark": watermark,
-            "forensicReport": report,
-            "activity": [
-                *watermark_activity,
-                attribution_started,
-                matched,
-                source,
-                completed,
-                investigation_completed,
-            ],
-        }
+        activity.extend([matched, source, completed, investigation_completed])
+        return activity
 
     def create_critical_alert_if_needed(self, report: JsonObject | None, attribution: JsonObject | None) -> JsonObject:
         if not report or report.get("status") != "investigation-complete" or int(report.get("finalConfidence") or 0) <= 80:
@@ -1239,13 +1413,29 @@ class EvidenceStore:
 
     def extract_watermark(self, text: str) -> JsonObject:
         candidates = extract_watermark_candidates(text)
-        if not candidates:
-            return {"status": "not-detected", "watermarkId": None, "confidence": 0, "registryRecord": None}
-        watermark_id = candidates[0]
-        record = self.find_registry_record_by_watermark(watermark_id)
-        if not record:
-            return {"status": "invalid", "watermarkId": watermark_id, "confidence": 70, "registryRecord": None}
-        return {"status": "detected", "watermarkId": watermark_id, "confidence": 100, "registryRecord": record}
+        if candidates:
+            watermark_id = candidates[0]
+            record = self.find_registry_record_by_watermark(watermark_id)
+            if not record:
+                return {"status": "invalid", "watermarkId": watermark_id, "confidence": 70, "registryRecord": None}
+            return {"status": "detected", "watermarkId": watermark_id, "confidence": 100, "registryRecord": record}
+        # Invisible per-recipient watermark (preventive minting) — additive path.
+        for token in decode_watermark(text):
+            parsed = parse_token(token)
+            if not parsed:
+                continue
+            copy = self.find_copy_by_watermark(parsed["copyId"])
+            if copy:
+                return {
+                    "status": "detected",
+                    "watermarkId": parsed["copyId"],
+                    "confidence": 100,
+                    "registryRecord": copy,
+                    "copy": copy,
+                    "recipientRef": parsed["recipientRef"],
+                    "paperId": parsed["paperId"],
+                }
+        return {"status": "not-detected", "watermarkId": None, "confidence": 0, "registryRecord": None}
 
     def match_paper_from_ocr(self, text: str) -> JsonObject | None:
         query_tokens = tokenize(text)
@@ -1283,6 +1473,82 @@ class EvidenceStore:
     def find_registry_record_by_watermark(self, watermark_id: str) -> JsonObject | None:
         normalized = normalize_watermark_id(watermark_id)
         return next((record for record in self.read_registry() if record.get("watermarkId") == normalized), None)
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Issued watermark copies (preventive minting)
+    # ─────────────────────────────────────────────────────────────────────
+    def read_copies(self) -> list[JsonObject]:
+        if self.supabase_enabled:
+            document = self._read_document("registry", "copies") or {}
+            records = document.get("items")
+            return records if isinstance(records, list) else []
+        try:
+            self.settings.copies_path.parent.mkdir(parents=True, exist_ok=True)
+            raw = self.settings.copies_path.read_text(encoding="utf-8")
+            parsed = json.loads(raw)
+        except (OSError, json.JSONDecodeError):
+            return []
+        return parsed if isinstance(parsed, list) else []
+
+    def write_copies(self, records: list[JsonObject]) -> None:
+        if self.supabase_enabled:
+            self._write_document("registry", "copies", {"items": records})
+        else:
+            self.settings.copies_path.parent.mkdir(parents=True, exist_ok=True)
+            self.settings.copies_path.write_text(json.dumps(records, indent=2), encoding="utf-8")
+
+    def find_copy_by_watermark(self, watermark_id: str) -> JsonObject | None:
+        return next((c for c in self.read_copies() if c.get("copyId") == watermark_id), None)
+
+    def mint_copies(self, paper_id: str, recipients: list[JsonObject], source_text: str) -> list[JsonObject]:
+        """Mint a uniquely watermarked copy of ``source_text`` per recipient.
+
+        Each copy gets an invisible, tamper-evident watermark (zero-width Unicode)
+        embedding ``copyId|paperId|recipientRef|checksum`` and a matching record in
+        the issued-copies collection. Returns the watermarked text + receipts.
+        """
+        paper = self.get_registry_paper(paper_id)
+        if not paper:
+            raise LookupError(f"Paper {paper_id} not found.")
+        if not source_text or not source_text.strip():
+            raise ValueError("sourceText is required to mint watermarked copies.")
+        existing = self.read_copies()
+        prior_seqs = [int(c.get("copyId", "CPY-0").split("-")[-1] or 0) for c in existing if str(c.get("copyId", "")).startswith("CPY-")]
+        next_seq = (max(prior_seqs) + 1) if prior_seqs else 1
+        results: list[JsonObject] = []
+        for recipient in recipients:
+            ref = str(recipient.get("ref") or "").strip()
+            if not ref:
+                continue
+            copy_id = f"CPY-{next_seq:04d}"
+            next_seq += 1
+            token = build_token(copy_id, paper_id, ref)
+            watermarked = embed(source_text, token)
+            issued_to = str(recipient.get("issuedTo") or "").strip()
+            channel = str(recipient.get("channel") or "digital").strip()
+            record = {
+                "copyId": copy_id,
+                "watermarkId": copy_id,
+                "paperId": paper_id,
+                "recipientRef": ref,
+                "issuedTo": issued_to,
+                "channel": channel,
+                "mintedAt": utc_now(),
+                "status": "issued",
+            }
+            existing.append(record)
+            results.append({
+                "copyId": copy_id,
+                "paperId": paper_id,
+                "recipientRef": ref,
+                "issuedTo": issued_to,
+                "channel": channel,
+                "watermarkedText": watermarked,
+                "mintedAt": record["mintedAt"],
+                "status": "issued",
+            })
+        self.write_copies(existing)
+        return results
 
     def read_registry(self) -> list[JsonObject]:
         self.ensure_registry_seed()
@@ -1411,13 +1677,34 @@ class EvidenceStore:
 
     def _read_json_dir(self, name: str) -> list[JsonObject]:
         ttl = self.settings.list_cache_ttl_seconds
-        if ttl > 0:
-            cached = self._dir_cache.get(name)
-            if cached and (time.monotonic() - cached[0]) < ttl:
-                return cached[1]
+        if self.supabase_enabled:
+            # Supabase is a single network call per collection; the existing TTL
+            # cache is enough to avoid hammering it on every list request.
+            if ttl > 0:
+                cached = self._dir_cache.get(name)
+                if cached and (time.monotonic() - cached[0]) < ttl:
+                    return cached[1]
+            records = self._read_json_dir_uncached(name)
+            if ttl > 0:
+                self._dir_cache[name] = (time.monotonic(), None, records)
+            return records
+
+        # Local fallback: scanning every JSON file in a collection is O(n) file
+        # reads per request. Cache by the collection directory's mtime so that,
+        # while the files are unchanged, repeated list calls skip the re-read
+        # entirely (not just within a TTL window). The TTL still bounds how long
+        # a stale in-memory copy can live if something edits files out-of-band.
+        directory = self.root / name
+        mtime = _dir_mtime(directory)
+        cached = self._dir_cache.get(name)
+        if (
+            cached is not None
+            and cached[1] == mtime
+            and (ttl <= 0 or (time.monotonic() - cached[0]) < ttl)
+        ):
+            return cached[2]
         records = self._read_json_dir_uncached(name)
-        if ttl > 0:
-            self._dir_cache[name] = (time.monotonic(), records)
+        self._dir_cache[name] = (time.monotonic(), mtime, records)
         return records
 
     def _read_json_dir_uncached(self, name: str) -> list[JsonObject]:
@@ -1436,7 +1723,11 @@ class EvidenceStore:
             ]
         directory = self.root / name
         records: list[JsonObject] = []
-        for path in directory.iterdir():
+        try:
+            entries = list(directory.iterdir())
+        except (OSError, NotADirectoryError):
+            return []
+        for path in entries:
             if not path.is_file() or path.suffix.lower() != ".json":
                 continue
             try:
@@ -1618,6 +1909,14 @@ class EvidenceStore:
             return None
         return json.loads(body.decode("utf-8"))
 
+    @property
+    def _supabase_auth_key(self) -> str:
+        # Audit §2.1: prefer the least-privilege dedicated backend role
+        # (SUPABASE_BACKEND_ROLE_KEY) when configured so Supabase RLS actually
+        # applies to backend queries. Falls back to the bypassing service_role
+        # for backwards compatibility.
+        return self.settings.supabase_backend_role_key or self.settings.supabase_service_role_key
+
     def _supabase_bytes(
         self,
         method: str,
@@ -1628,8 +1927,8 @@ class EvidenceStore:
         extra_headers: dict[str, str] | None = None,
     ) -> bytes:
         headers = {
-            "apikey": self.settings.supabase_service_role_key,
-            "Authorization": f"Bearer {self.settings.supabase_service_role_key}",
+            "apikey": self._supabase_auth_key,
+            "Authorization": f"Bearer {self._supabase_auth_key}",
         }
         if content_type:
             headers["Content-Type"] = content_type
@@ -1847,7 +2146,66 @@ def final_confidence_score(ocr_confidence: int | None, paper_confidence: int | N
     if watermark_confidence is not None and watermark_confidence > 0:
         ocr_component = paper_confidence if paper_confidence is not None else ocr_confidence or 0
         return round(ocr_component * 0.4 + watermark_confidence * 0.6)
-        return paper_confidence if paper_confidence is not None else ocr_confidence or 0
+    return paper_confidence if paper_confidence is not None else ocr_confidence or 0
+
+
+def _build_risk_factors(match: JsonObject | None, watermark: JsonObject, ocr_confidence: int | None) -> list[str]:
+    """Auto-generate a list of risk indicators from the analysis data."""
+    factors: list[str] = []
+    if match:
+        if match.get("status") == "compromised":
+            factors.append("Paper status is COMPROMISED — high-priority incident")
+        if (match.get("confidence") or 0) >= 90:
+            factors.append("Very high paper match confidence (≥90%)")
+        elif (match.get("confidence") or 0) >= 70:
+            factors.append("Moderate paper match confidence (≥70%)")
+    if watermark.get("status") == "detected":
+        factors.append("Watermark successfully extracted from evidence")
+        if (watermark.get("confidence") or 0) >= 100:
+            factors.append("Watermark matches a registered paper with 100% confidence")
+    elif watermark.get("status") == "invalid":
+        factors.append("Watermark detected but does NOT match any registered paper")
+    if ocr_confidence is not None and ocr_confidence < 50:
+        factors.append("Low OCR confidence — manual review recommended")
+    if match and match.get("city"):
+        factors.append(f"Geographic location identified: {match['city']}, {match.get('state', '?')}")
+    if not factors:
+        factors.append("No significant risk factors identified")
+    return factors
+
+
+def _build_recommendation(match: JsonObject | None, final_confidence: int, watermark: JsonObject, ocr_confidence: int | None) -> str:
+    """Auto-generate investigation next-step recommendations."""
+    if not match:
+        if watermark.get("status") == "invalid":
+            return "Watermark found but unrecognized. Verify watermark ID against the registry or escalate to manual review."
+        if ocr_confidence is not None and ocr_confidence < 50:
+            return "Low OCR confidence. Re-scan with higher quality image to improve attribution accuracy."
+        return "No matched paper found. Continue monitoring for new evidence or re-scan with higher quality image."
+
+    if match.get("status") == "compromised":
+        return (
+            f"CRITICAL: Paper {match['matchedPaperId']} is compromised. "
+            f"Immediately notify examination authorities, secure the center {match.get('centerCode', 'N/A')}, "
+            f"and initiate incident response protocol."
+        )
+
+    if final_confidence >= 90:
+        return (
+            f"High-confidence match ({final_confidence}%) for paper {match['matchedPaperId']}. "
+            f"Verify with center {match.get('centerCode', 'N/A')} administration and cross-check printer/batch logs."
+        )
+
+    if final_confidence >= 70:
+        return (
+            f"Moderate-confidence match ({final_confidence}%) for paper {match['matchedPaperId']}. "
+            f"Recommend additional evidence collection or manual verification before escalation."
+        )
+
+    return (
+        f"Low-confidence match ({final_confidence}%) for paper {match['matchedPaperId']}. "
+        f"Manual review strongly recommended to confirm or rule out a leak."
+    )
 
 
 
@@ -1860,6 +2218,7 @@ AGENT_COLLECTIONS = (
     "agent-llm-configs",
     "agent-telegram-configs",
     "agent-knowledge-sources",
+    "agent-knowledge-chunks",
     "agent-conversations",
 )
 
@@ -1871,6 +2230,7 @@ def _next_agent_id() -> str:
 class AgentStore:
     def __init__(self, evidence_store: EvidenceStore) -> None:
         self._store = evidence_store
+        self._master_key = evidence_store.settings.master_key or None
 
     def _ensure(self) -> None:
         for name in AGENT_COLLECTIONS:
@@ -1879,6 +2239,16 @@ class AgentStore:
     def list_agents(self, status: str | None = None) -> list[JsonObject]:
         self._ensure()
         agents = self._store._read_json_dir("community-agents")
+        sources = self._store._read_json_dir("agent-knowledge-sources")
+        conversations = self._store._read_json_dir("agent-conversations")
+        agents = [
+            {
+                **agent,
+                "knowledgeCount": sum(1 for source in sources if source.get("agentId") == agent.get("id")),
+                "conversationCount": sum(1 for conversation in conversations if conversation.get("agentId") == agent.get("id")),
+            }
+            for agent in agents
+        ]
         if status:
             agents = [a for a in agents if a.get("status") == status]
         return sorted(agents, key=lambda a: a.get("createdAt", ""), reverse=True)
@@ -1891,16 +2261,19 @@ class AgentStore:
 
     def create_agent(self, data: JsonObject) -> JsonObject:
         self._ensure()
+        name = str(data.get("name") or "").strip()
+        if not name:
+            raise ValueError("Agent name is required.")
         agent_id = _next_agent_id()
         now = utc_now()
         agent = {
             "id": agent_id,
-            "name": data.get("name", "Untitled Agent"),
+            "name": name,
             "description": data.get("description", ""),
             "category": data.get("category", "general"),
             "visibility": data.get("visibility", "private"),
             "status": "draft",
-            "avatar": (data.get("name", "UA") or "UA")[:2].upper(),
+            "avatar": name[:2].upper(),
             "author": data.get("author", ""),
             "model": data.get("model", "gpt-4o"),
             "systemPrompt": data.get("systemPrompt", ""),
@@ -1930,26 +2303,36 @@ class AgentStore:
         agent = self.get_agent(agent_id)
         if not agent:
             return False
-        path = self._store.root / "community-agents" / f"{agent_id}.json"
-        try:
-            path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        for collection in AGENT_COLLECTIONS[1:]:
+            for record in self._store._read_json_dir(collection):
+                if record.get("agentId") == agent_id:
+                    record_id = str(record.get("id") or "")
+                    if record_id:
+                        self._delete_record(collection, f"{record_id}.json")
+        self._delete_record("community-agents", f"{agent_id}.json")
         return True
 
     def upsert_llm_config(self, agent_id: str, data: JsonObject) -> JsonObject:
         self._ensure()
+        if not self.get_agent(agent_id):
+            raise LookupError("Agent not found.")
         existing = next(
             (c for c in self._store._read_json_dir("agent-llm-configs") if c.get("agentId") == agent_id),
             None,
         )
         now = utc_now()
+        raw_key = data.get("apiKey") or ""
+        api_key_encrypted = (
+            encrypt_secret(raw_key, self._master_key)
+            if raw_key
+            else (existing or {}).get("apiKeyEncrypted", "")
+        )
         config = {
             "id": existing["id"] if existing else f"LLM-{uuid4().hex[:8]}",
             "agentId": agent_id,
             "provider": data.get("provider", "openai"),
             "model": data.get("model", ""),
-            "apiKeyEncrypted": data.get("apiKey", ""),
+            "apiKeyEncrypted": api_key_encrypted,
             "endpointUrl": data.get("endpointUrl", ""),
             "extraHeaders": data.get("extraHeaders", {}),
             "createdAt": existing["createdAt"] if existing else now,
@@ -1960,13 +2343,23 @@ class AgentStore:
         return config
 
     def get_llm_config(self, agent_id: str) -> JsonObject | None:
-        return next(
+        config = next(
             (c for c in self._store._read_json_dir("agent-llm-configs") if c.get("agentId") == agent_id),
             None,
         )
+        if not config:
+            return None
+        encrypted = config.get("apiKeyEncrypted", "")
+        if encrypted:
+            # Decrypt for internal use (provider calls). The plaintext is never
+            # returned to API clients — server.py strips this field from responses.
+            config = {**config, "apiKeyEncrypted": decrypt_secret(encrypted, self._master_key)}
+        return config
 
     def upsert_telegram_config(self, agent_id: str, data: JsonObject) -> JsonObject:
         self._ensure()
+        if not self.get_agent(agent_id):
+            raise LookupError("Agent not found.")
         existing = next(
             (c for c in self._store._read_json_dir("agent-telegram-configs") if c.get("agentId") == agent_id),
             None,
@@ -1975,7 +2368,7 @@ class AgentStore:
         config = {
             "id": existing["id"] if existing else f"TG-{uuid4().hex[:8]}",
             "agentId": agent_id,
-            "botToken": data.get("botToken", ""),
+            "botToken": data.get("botToken") or (existing or {}).get("botToken", ""),
             "botUsername": data.get("botUsername", ""),
             "botVerified": data.get("botVerified", False),
             "privacyModeDisabled": data.get("privacyModeDisabled", False),
@@ -1984,6 +2377,11 @@ class AgentStore:
             "messageReadingEnabled": data.get("messageReadingEnabled", False),
             "webhookUrl": data.get("webhookUrl", ""),
             "deploymentStatus": data.get("deploymentStatus", "disconnected"),
+            "telegramOffset": int(
+                data.get("telegramOffset")
+                if data.get("telegramOffset") not in (None, "")
+                else (existing or {}).get("telegramOffset", 0)
+            ),
             "metadata": data.get("metadata", {}),
             "createdAt": existing["createdAt"] if existing else now,
             "updatedAt": now,
@@ -1991,6 +2389,16 @@ class AgentStore:
         filename = f"{config['id']}.json"
         self._store._write_json("agent-telegram-configs", filename, config)
         return config
+
+    def update_telegram_config(self, agent_id: str, data: JsonObject) -> JsonObject:
+        existing = self.get_telegram_config(agent_id)
+        if not existing:
+            raise LookupError("Telegram configuration not found.")
+        return self.upsert_telegram_config(agent_id, {
+            **existing,
+            **data,
+            "botToken": existing.get("botToken", ""),
+        })
 
     def get_telegram_config(self, agent_id: str) -> JsonObject | None:
         return next(
@@ -2000,6 +2408,8 @@ class AgentStore:
 
     def create_knowledge_source(self, agent_id: str, data: JsonObject) -> JsonObject:
         self._ensure()
+        if not self.get_agent(agent_id):
+            raise LookupError("Agent not found.")
         source_id = f"KS-{uuid4().hex[:8]}"
         now = utc_now()
         source = {
@@ -2017,6 +2427,7 @@ class AgentStore:
             "updatedAt": now,
         }
         self._store._write_json("agent-knowledge-sources", f"{source_id}.json", source)
+        self._sync_agent_counts(agent_id)
         return source
 
     def list_knowledge_sources(self, agent_id: str) -> list[JsonObject]:
@@ -2045,14 +2456,47 @@ class AgentStore:
         source = self.get_knowledge_source(source_id)
         if not source:
             return False
-        path = self._store._data_dir / "agent-knowledge-sources" / f"{source_id}.json"
-        if path.exists():
-            path.unlink()
-            return True
-        return False
+        for chunk in self._store._read_json_dir("agent-knowledge-chunks"):
+            if chunk.get("sourceId") == source_id and chunk.get("id"):
+                self._delete_record("agent-knowledge-chunks", f"{chunk['id']}.json")
+        self._delete_record("agent-knowledge-sources", f"{source_id}.json")
+        self._sync_agent_counts(str(source.get("agentId") or ""))
+        return True
+
+    def replace_knowledge_chunks(self, source_id: str, agent_id: str, chunks: list[JsonObject]) -> int:
+        self._ensure()
+        for existing in self._store._read_json_dir("agent-knowledge-chunks"):
+            if existing.get("sourceId") == source_id and existing.get("id"):
+                self._delete_record("agent-knowledge-chunks", f"{existing['id']}.json")
+        for chunk in chunks:
+            chunk_id = f"KCH-{uuid4().hex[:10]}"
+            record = {**chunk, "id": chunk_id, "sourceId": source_id, "agentId": agent_id, "createdAt": utc_now()}
+            self._store._write_json("agent-knowledge-chunks", f"{chunk_id}.json", record)
+        return len(chunks)
+
+    def search_knowledge_chunks(self, agent_id: str, query: str, limit: int = 8) -> list[JsonObject]:
+        query_tokens = self._search_tokens(query)
+        if not query_tokens:
+            return []
+        ranked: list[tuple[float, JsonObject]] = []
+        for chunk in self._store._read_json_dir("agent-knowledge-chunks"):
+            if chunk.get("agentId") != agent_id:
+                continue
+            content_tokens = self._search_tokens(str(chunk.get("content") or ""))
+            if not content_tokens:
+                continue
+            overlap = len(query_tokens & content_tokens)
+            if overlap == 0:
+                continue
+            score = overlap / max(len(query_tokens), 1)
+            ranked.append((score, {**chunk, "similarity": round(score, 4)}))
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        return [item[1] for item in ranked[:limit]]
 
     def log_conversation(self, agent_id: str, user_message: str, agent_response: str, sources: list[JsonObject] | None = None, latency_ms: int = 0) -> JsonObject:
         self._ensure()
+        if not self.get_agent(agent_id):
+            raise LookupError("Agent not found.")
         conv_id = f"CONV-{uuid4().hex[:8]}"
         now = utc_now()
         conv = {
@@ -2075,16 +2519,17 @@ class AgentStore:
 
         return conv
 
-    def list_conversations(self, agent_id: str, limit: int = 50) -> list[JsonObject]:
+    def list_conversations(self, agent_id: str, limit: int | None = 50) -> list[JsonObject]:
         self._ensure()
         convs = [
             c for c in self._store._read_json_dir("agent-conversations")
             if c.get("agentId") == agent_id
         ]
-        return sorted(convs, key=lambda c: c.get("createdAt", ""), reverse=True)[:limit]
+        ordered = sorted(convs, key=lambda c: c.get("createdAt", ""), reverse=True)
+        return ordered[:limit] if limit is not None else ordered
 
     def get_agent_stats(self, agent_id: str) -> JsonObject:
-        conversations = self.list_conversations(agent_id)
+        conversations = self.list_conversations(agent_id, limit=None)
         sources = self.list_knowledge_sources(agent_id)
         agent = self.get_agent(agent_id)
 
@@ -2099,3 +2544,28 @@ class AgentStore:
             "avgLatencyMs": round(avg_latency, 1),
             "status": agent.get("status") if agent else "unknown",
         }
+
+    def _sync_agent_counts(self, agent_id: str) -> None:
+        if not agent_id or not self.get_agent(agent_id):
+            return
+        knowledge_count = len(self.list_knowledge_sources(agent_id))
+        conversation_count = len(self.list_conversations(agent_id, limit=None))
+        self.update_agent(agent_id, {"knowledgeCount": knowledge_count, "conversationCount": conversation_count})
+
+    @staticmethod
+    def _search_tokens(value: str) -> set[str]:
+        cleaned = "".join(char.lower() if char.isalnum() else " " for char in value)
+        return {token for token in cleaned.split() if len(token) > 2}
+
+    def _delete_record(self, collection: str, filename: str) -> None:
+        if self._store.supabase_enabled:
+            encoded_collection = urllib.parse.quote(collection)
+            encoded_key = urllib.parse.quote(filename)
+            self._store._supabase_json(
+                "DELETE",
+                f"/rest/v1/{self._store.settings.supabase_document_table}?collection=eq.{encoded_collection}&document_key=eq.{encoded_key}",
+                extra_headers={"Prefer": "return=minimal"},
+            )
+        else:
+            (self._store.root / collection / filename).unlink(missing_ok=True)
+        self._store._invalidate_collection_cache(collection)

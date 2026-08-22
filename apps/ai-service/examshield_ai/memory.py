@@ -7,12 +7,13 @@ import os
 import re
 import urllib.parse
 import urllib.request
+from datetime import datetime
 from html import escape
 from typing import Any
 from uuid import uuid4
 
 from .detect import get_alert_severity
-from .store import EvidenceStore, JsonObject, detection_confidence_score, utc_now
+from .store import EvidenceStore, JsonObject, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +164,7 @@ class MemoryManager:
         threshold: float = DEFAULT_MATCH_THRESHOLD,
         match_count: int = DEFAULT_MATCH_COUNT,
         exclude_source_ref: str | None = None,
+        created_after: str | None = None,
     ) -> JsonObject:
         redacted = redact_text(query)
         if not redacted:
@@ -180,6 +182,7 @@ class MemoryManager:
                             "match_threshold": threshold,
                             "match_count": match_count,
                             "exclude_source_ref": exclude_source_ref,
+                            "min_created_at": created_after,
                         },
                     )
                     if isinstance(rows, list):
@@ -194,6 +197,8 @@ class MemoryManager:
         query_tokens = content_tokens(redacted)
         for item in self._list_items(limit=200):
             if exclude_source_ref and item.get("sourceRef") == exclude_source_ref:
+                continue
+            if not _item_created_at_or_after(item, created_after):
                 continue
             similarity = jaccard(query_tokens, content_tokens(str(item.get("content") or "")))
             if similarity >= threshold:
@@ -730,6 +735,36 @@ def jaccard(left: list[str], right: list[str]) -> float:
     if not left_set or not right_set:
         return 0.0
     return len(left_set & right_set) / len(left_set | right_set)
+
+
+def _parse_iso(value: Any) -> datetime | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _item_created_at_or_after(item: JsonObject, created_after: str | None) -> bool:
+    """Pre-filter for vector memory search.
+
+    When ``created_after`` is set we keep only items created at/after that
+    instant. Items whose timestamp can't be parsed are *kept* (never silently
+    dropped) so a malformed record can't hide a real threat signal.
+    """
+    if not created_after:
+        return True
+    cutoff = _parse_iso(created_after)
+    if cutoff is None:
+        return True
+    ts = _parse_iso(item.get("createdAt") or item.get("created_at"))
+    if ts is None:
+        return True
+    return ts >= cutoff
 
 
 def stable_hash(value: str) -> str:
