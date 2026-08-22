@@ -6,11 +6,8 @@ import { motion } from "framer-motion";
 import { Mail, Lock, User, ArrowRight } from "lucide-react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
-<<<<<<< HEAD
-import { signupSchema, fieldErrors } from "@/lib/validation";
-=======
 import { useI18n } from "@/lib/i18n";
->>>>>>> origin/main
+import { signupSchema, fieldErrors } from "@/lib/validation";
 
 const GithubIcon = () => (
   <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
@@ -33,8 +30,8 @@ export default function SignupPage() {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
   const [fieldErrorsState, setFieldErrorsState] = useState<Record<string, string>>({});
+  const [success, setSuccess] = useState<string | null>(null);
   const router = useRouter();
   const { t } = useI18n();
   const supabase = createClient();
@@ -172,6 +169,9 @@ export default function SignupPage() {
             <form onSubmit={handleSubmit} className="space-y-5">
               <div className="space-y-2">
                 <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">{t("auth.fullName")}</label>
+                {fieldErrorsState.name && (
+                  <p className="text-xs text-red-400">{fieldErrorsState.name}</p>
+                )}
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
                     <User className="h-5 w-5 text-zinc-500" />
@@ -186,13 +186,13 @@ export default function SignupPage() {
                     disabled={loading}
                   />
                 </div>
-                {fieldErrorsState.name && (
-                  <p className="text-xs text-red-400">{fieldErrorsState.name}</p>
-                )}
               </div>
 
               <div className="space-y-2">
                 <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">{t("auth.email")}</label>
+                {fieldErrorsState.email && (
+                  <p className="text-xs text-red-400">{fieldErrorsState.email}</p>
+                )}
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
                     <Mail className="h-5 w-5 text-zinc-500" />
@@ -207,13 +207,13 @@ export default function SignupPage() {
                     disabled={loading}
                   />
                 </div>
-                {fieldErrorsState.email && (
-                  <p className="text-xs text-red-400">{fieldErrorsState.email}</p>
-                )}
               </div>
 
               <div className="space-y-2">
                 <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">{t("auth.password")}</label>
+                {fieldErrorsState.password && (
+                  <p className="text-xs text-red-400">{fieldErrorsState.password}</p>
+                )}
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
                     <Lock className="h-5 w-5 text-zinc-500" />
@@ -228,9 +228,6 @@ export default function SignupPage() {
                     disabled={loading}
                   />
                 </div>
-                {fieldErrorsState.password && (
-                  <p className="text-xs text-red-400">{fieldErrorsState.password}</p>
-                )}
               </div>
 
               <button

@@ -6,11 +6,8 @@ import { motion } from "framer-motion";
 import { Mail, Lock, ArrowRight } from "lucide-react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
-<<<<<<< HEAD
-import { loginSchema } from "@/lib/validation";
-=======
 import { useI18n } from "@/lib/i18n";
->>>>>>> origin/main
+import { loginSchema } from "@/lib/validation";
 
 const GithubIcon = () => (
   <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
