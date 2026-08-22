@@ -44,7 +44,7 @@ API_AUTH_HEADER = "X-Examshield-Api-Key"
 #  - /telegram/webhook and /telegram/events are called directly by Telegram's
 #    servers and carry their own TELEGRAM_WEBHOOK_SECRET validation; gating them
 #    here would break inbound Telegram delivery.
-API_AUTH_EXEMPT = {"/health", "/", "/telegram/webhook", "/telegram/events"}
+API_AUTH_EXEMPT = {"/health", "/", "/telegram/webhook"}
 
 
 def is_path_exempt(path: str) -> bool:
