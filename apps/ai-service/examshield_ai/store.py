@@ -871,11 +871,11 @@ class EvidenceStore:
     def remove_monitored_group(self, chat_id: str) -> JsonObject:
         existing = self._read_json_file("monitored-groups", f"{chat_id}.json")
         if not existing:
-            return {"message": "Group not found."}
+            return {"message": "Group not found.", "removed": False}
         existing["isActive"] = False
         existing["removedAt"] = utc_now()
         self._write_json("monitored-groups", f"{chat_id}.json", existing)
-        return {"message": "Group removed from monitoring.", "group": existing}
+        return {"message": "Group removed from monitoring.", "group": existing, "removed": True}
 
     # ------------------------------------------------------------------
     # Text-only evidence (for suspicious messages without files)
@@ -1372,12 +1372,15 @@ class EvidenceStore:
 
     def add_registry_paper(self, data: JsonObject) -> JsonObject:
         records = self.read_registry()
-        existing = next((p for p in records if p.get("paperId") == data.get("paperId")), None)
+        paper_id = str(data.get("paperId") or "").strip()
+        if not paper_id:
+            raise ValueError("paperId is required to register a paper.")
+        existing = next((p for p in records if p.get("paperId") == paper_id), None)
         if existing:
-            raise LookupError(f"Paper {data.get('paperId')} already exists.")
+            raise LookupError(f"Paper {paper_id} already exists.")
         paper = {
             "watermarkId": data.get("watermarkId", f"WMK-{len(records) + 1:03d}"),
-            "paperId": data["paperId"],
+            "paperId": paper_id,
             "exam": data.get("exam", ""),
             "year": data.get("year", 2026),
             "paperSet": data.get("paperSet", "A"),

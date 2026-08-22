@@ -1,0 +1,43 @@
+import type { Dictionary } from "./en";
+
+export const hi: Dictionary = {
+  nav: {
+    commandCenter: "कमांड सेंटर",
+    examshieldAi: "EXAMSHIELD AI",
+    evidenceCenter: "साक्ष्य केंद्र",
+    questionRegistry: "प्रश्न रजिस्ट्री",
+    threatIntelligence: "ख़तरा आसूचना",
+    investigation: "जांच",
+    examLifecycle: "परीक्षा जीवनचक्र",
+    alerts: "अलर्ट",
+    communityAgents: "सामुदायिक एजेंट",
+    settings: "सेटिंग्स",
+    systemExit: "सिस्टम से बाहर",
+    operationsGrid: "ऑपरेशंस ग्रिड",
+    skipToContent: "सामग्री पर जाएं",
+  },
+  auth: {
+    welcomeBack: "वापसी पर स्वागत है",
+    signInToContinue: "जारी रखने के लिए अपने खाते में साइन इन करें",
+    createAccount: "खाता बनाएं",
+    signUpToGetStarted: "ExamShield के साथ प्रारंभ करने हेतु साइन अप करें",
+    email: "ईमेल",
+    password: "पासवर्ड",
+    fullName: "पूरा नाम",
+    signIn: "साइन इन",
+    signingIn: "साइन इन हो रहा है...",
+    signUp: "साइन अप",
+    creatingAccount: "खाता बन रहा है...",
+    forgotPassword: "पासवर्ड भूल गए?",
+    orContinueWith: "या इसके साथ जारी रखें",
+    orSignUpWith: "या इसके साथ साइन अप करें",
+    dontHaveAccount: "खाता नहीं है?",
+    alreadyHaveAccount: "पहले से खाता है?",
+    google: "Google",
+    github: "GitHub",
+  },
+  dashboard: {
+    commandCenterTitle: "कमांड सेंटर",
+    commandCenterSubtitle: "राष्ट्रीय परीक्षा सुरक्षा ग्रिड का वास्तविक समय अवलोकन।",
+  },
+};

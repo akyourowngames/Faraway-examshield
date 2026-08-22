@@ -1,549 +1,223 @@
-<div align="center">
-  <br/>
-  <pre>
-███████╗██╗  ██╗ █████╗ ███╗   ███╗███████╗██╗  ██╗██╗███████╗██╗     ██████╗
-██╔════╝╚██╗██╔╝██╔══██╗████╗ ████║██╔════╝██║  ██║██║██╔════╝██║     ██╔══██╗
-█████╗   ╚███╔╝ ███████║██╔████╔██║███████╗███████║██║█████╗  ██║     ██║  ██║
-██╔══╝   ██╔██╗ ██╔══██║██║╚██╔╝██║╚════██║██╔══██║██║██╔══╝  ██║     ██║  ██║
-███████╗██╔╝ ██╗██║  ██║██║ ╚═╝ ██║███████║██║  ██║██║███████╗███████╗██████╔╝
-╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚═╝  ╚═╝╚═╝╚══════╝╚══════╝╚═════╝
-  </pre>
-  <h3>🔐 AI-Powered Paper Leak Prevention & Forensic Watermark Tracing</h3>
-  <p><i>Enterprise-grade examination security — zero-trust architecture, real-time threat intelligence</i></p>
-  <br/>
+# EXAMSHIELD (Faraway)
 
-  [![Live Demo](https://img.shields.io/badge/LIVE_DEMO-🔗_faraway--examshield.vercel.app-000000?style=for-the-badge&logo=vercel&logoColor=white)](https://faraway-examshield.vercel.app)
-  [![Next.js](https://img.shields.io/badge/Next.js_16-000000?style=for-the-badge&logo=next.js&logoColor=white)](https://nextjs.org)
-  [![Supabase](https://img.shields.io/badge/Supabase-3FCF8E?style=for-the-badge&logo=supabase&logoColor=white)](https://supabase.io)
-  [![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://typescriptlang.org)
-  [![Tailwind](https://img.shields.io/badge/Tailwind_CSS-06B6D4?style=for-the-badge&logo=tailwind-css&logoColor=white)](https://tailwindcss.com)
-  [![Python](https://img.shields.io/badge/Python_3.12-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
-  [![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://docker.com)
-  [![Vercel](https://img.shields.io/badge/Vercel-000000?style=for-the-badge&logo=vercel&logoColor=white)](https://vercel.com)
-  [![Render](https://img.shields.io/badge/Render-46E3B7?style=for-the-badge&logo=render&logoColor=black)](https://render.com)
+AI-powered examination-security platform: detect leaked question papers, trace them
+back to their source through forensic watermarks, and alert investigators in
+real time.
 
-  <br/>
-
-  [![Build Status](https://img.shields.io/github/actions/workflow/status/risuhfoundry/Faraway-examshield/ci.yml?branch=main&style=flat-square&label=BUILD&color=22c55e)](https://github.com/risuhfoundry/Faraway-examshield/actions)
-  [![Last Commit](https://img.shields.io/github/last-commit/risuhfoundry/Faraway-examshield?style=flat-square&label=LAST_UPDATED&color=6366f1)](https://github.com/risuhfoundry/Faraway-examshield/commits)
-  [![License](https://img.shields.io/badge/LICENSE-PROPRIETARY-ef4444?style=flat-square)]()
-  [![PRs](https://img.shields.io/badge/PRs-WELCOME-22c55e?style=flat-square)]()
-
-  <br/>
-</div>
+[![quality-gate](https://github.com/akyourowngames/Faraway-examshield/actions/workflows/quality-gate.yml/badge.svg?branch=main)](https://github.com/akyourowngames/Faraway-examshield/actions/workflows/quality-gate.yml)
+![Next.js 16](https://img.shields.io/badge/Next.js-16-000000?style=flat-square&logo=next.js)
+![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python)
 
 ---
 
-- **Evidence pipeline** — upload → OCR (Tesseract + OCR.space) → watermark extraction → paper attribution → forensic report → alerts.
-- **Question Paper Registry** (`apps/core`) — chain-of-custody records (watermark, paper, exam, center, print batch, risk, status) used to match leaked papers to their source.
-- **Community Agents** — per-agent system prompts, knowledge, and RAG (Supabase pgvector with a local fallback); agents reply with citations and can run as their own Telegram bots.
-- **Unified threat memory** — privacy-first, cross-case correlation of leaked-paper signals (Supabase pgvector, local JSON fallback).
-- **AI assistant** — streaming chat (Kilo Gateway by default; OpenAI / Anthropic / Grok / Groq / OpenCode Zen supported) with schema-driven tool routing.
-- **Forensic reports** — generate Markdown evidence reports and dashboard summaries, optionally delivered to a Telegram chat (`POST /reports/generate`).
-- **Multi-channel ingestion** — dashboard uploads, a Telegram webhook, and Telegram events feed the same pipeline.
-- **Security** — Supabase JWT auth (email/password, Google & GitHub OAuth), Next.js middleware route protection for the dashboard, and a configurable CORS origin (`EXAMSHIELD_AI_CORS_ORIGIN`).
+## What it does
 
-## 🎯 Mission Critical
+1. **Ingest** leaked-paper evidence from dashboard uploads or Telegram messages
+   (text, screenshots, photos).
+2. **Analyze** each item: OCR (OCR.space + Tesseract), leak-keyword detection,
+   watermark extraction, and matching against the question-paper registry.
+3. **Attribute** the leak to a paper / center / print batch and generate a
+   forensic report.
+4. **Alert** investigators via Telegram and the dashboard, and remember
+   correlated signals in unified threat memory for future cases.
+5. **Assist** with an LLM chat assistant that can query live evidence data
+   through schema-driven tools.
 
-> **Prevent academic integrity violations at scale** — detect paper leaks in real-time, trace watermark sources across the forensic chain, and alert authorities before compromised exams reach students.
-
-EXAMSHIELD is a **zero-trust, end-to-end secure examination platform** combining:
-
-- 🧠 **AI-Powered Forensics** — automatic OCR, watermark extraction, attribution matching
-- 🔍 **Real-time Threat Intelligence** — multi-channel monitoring (Telegram, manual uploads)
-- 🛡️ **Enterprise Security** — SOAR-grade encryption, session management, RBAC
-- 📱 **Omnichannel Experience** — fully responsive desktop & mobile dashboard
-
----
-
-## 🏗️ Architecture
+## Architecture
 
 ```
-examshield/
-├── web/                 # Next.js 16 frontend (Vercel)
-├── apps/
-│   ├── ai-service/      # Unified Python API: OCR, analysis, AI chat, agents, Telegram
-│   ├── core/            # TypeScript Paper Registry (chain of custody) + CLI
-│   ├── api/             # Local JSON fallback store (offline mode without Supabase)
-│   ├── broadcast-agent/ # Broadcast agent service
-│   └── vision/          # Vision service
-├── supabase/
-│   ├── schema.sql       # Tables, indexes, and policies
-│   └── functions/       # Edge Functions (e.g. the text-embedding endpoint)
-├── docs/                # Deployment, tech-stack, roadmap, audits
-├── Dockerfile           # Python 3.12 + Tesseract
-├── render.yaml          # Render backend service
-└── vercel.json          # Vercel frontend config
+┌─────────────────────────────┐        ┌──────────────────────────────────┐
+│  web/  (Next.js 16, Vercel) │  HTTP  │ apps/ai-service (Python, Render) │
+│                             ├───────▶│                                  │
+│  • Auth (Supabase JWT +     │        │  • Evidence API + local store    │
+│    OAuth, middleware guard) │        │  • OCR pipeline (async workers)  │
+│  • Dashboard: evidence,     │        │  • Leak detection + attribution  │
+│    threat map, lifecycle    │        │  • AI chat (SSE) + tools + RAG   │
+│  • Proxies /api/* to the    │        │  • Telegram webhook + pollers    │
+│    backend                  │        │  • Reports, agents, memory       │
+└──────────────┬──────────────┘        └──────────┬───────────┬───────────┘
+               │                                  │           │
+               ▼                                  ▼           ▼
+      ┌─────────────────┐              ┌──────────────┐  ┌──────────┐
+      │ Supabase        │              │ Tesseract +  │  │ LLM      │
+      • Auth/Postgres/   │              │ OCR.space    │  │ Kilo GW  │
+      • Storage/pgvector │              └──────────────┘  └──────────┘
+      └─────────────────┘
 ```
 
-### 🔄 Data Flow
+### Repository layout
 
-```
-                  ┌──────────┐     ┌─────────────┐     ┌──────────┐
-                  │  USER    │────▶│  NEXT.JS    │────▶│ SUPABASE │
-                  │  ACTION  │     │  MIDDLEWARE  │     │   AUTH   │
-                  └──────────┘     └──────┬──────┘     └────┬─────┘
-                                          │                  │
-                                          ▼                  ▼
-                                   ┌────────────┐    ┌────────────┐
-                                   │  DASHBOARD  │    │ PostgreSQL │
-                                   │  PAGES      │    │  Database  │
-                                   └──────┬──────┘    └────┬──────┘
-                                          │                  │
-                                          ▼                  ▼
-                                   ┌────────────┐    ┌────────────┐
-                                   │  BACKEND   │    │   EVIDENCE │
-                                   │  API/PY    │    │   STORAGE  │
-                                   └────────────┘    └────────────┘
-```
+| Path | Purpose |
+|------|---------|
+| `web/` | Next.js 16 frontend — auth, dashboard, AI chat UI, agent studio |
+| `apps/ai-service/` | Python 3.12 service: REST API, OCR pipeline, detection, chat, agents, Telegram |
+| `apps/core/` | TypeScript question-paper registry + CLI (chain-of-custody records) |
+| `apps/api/` | Local JSON fallback store used when Supabase is not configured |
+| `supabase/` | `schema.sql` (tables/indexes) and Edge Functions |
+| `docs/` | Deployment guide, tech-stack deep dive, strengths/weaknesses audits, roadmap |
+| `Dockerfile` / `render.yaml` | Backend container + Render blueprint |
+| `vercel.json` | Frontend deployment config |
 
----
+### Key flows
 
-## ⚡ Core Features
+- **Upload → alert**: upload → queued analysis job (`AnalysisWorkerPool`) → OCR →
+  `scan_text()` leak scoring → registry match → forensic report → Telegram/dashboard alert.
+- **Chat**: intent classified locally (zero LLM cost) → tool schemas attached only for
+  live-data requests → model streams an answer grounded in real tool results →
+  hallucination check flags claims unsupported by that data.
+- **Guardrails**: per-request/per-session token budgets (`examshield_ai/budget.py`),
+  transient-error retry/backoff on every LLM call, bounded OCR worker pool.
 
-### 🔐 Authentication & Security
-<table>
-<tr>
-<td width="50%">
-<h4>🔑 Multi-Provider Auth</h4>
-<ul>
-<li>✅ Email/Password with confirmation</li>
-<li>✅ Google OAuth (enterprise SSO)</li>
-<li>✅ GitHub OAuth (developer access)</li>
-<li>✅ JWT sessions via Supabase</li>
-<li>✅ Cookie-based middleware protection</li>
-</ul>
-</td>
-<td width="50%">
-<h4>🛡️ Route Protection</h4>
-<ul>
-<li>✅ Auto-redirect unauthenticated → /login</li>
-<li>✅ Auto-redirect authenticated → /dashboard</li>
-<li>✅ Session refresh in middleware</li>
-<li>✅ Secure cookie management</li>
-<li>✅ Auth state listener</li>
-</ul>
-</td>
-</tr>
-</table>
+## Setup
 
-### 🖥️ Dashboard Experience
-<table>
-<tr>
-<td width="50%">
+Prerequisites: **Node.js ≥ 20**, **Python ≥ 3.12**, a **Supabase project**
+(optional — the stack runs offline against local JSON without one).
 
-| Feature | Status |
-|---------|--------|
-| Command Center | ✅ Live |
-| Real-time Threat Map | ✅ Active |
-| Evidence Center | ✅ Active |
-| AI Chat Interface | ✅ Live |
-| Investigation Tools | ✅ Ready |
-| Alert Center | ✅ Active |
-
-</td>
-<td width="50%">
-
-| Feature | Status |
-|---------|--------|
-| Exam Lifecycle | ✅ Active |
-| Settings & Profile | ✅ Active |
-| Mobile Hamburger Nav | ✅ Optimized |
-| Upload FAB (Mobile) | ✅ Optimized |
-| Touch-Friendly UI | ✅ Implemented |
-| System Reset | ✅ Active |
-
-</td>
-</tr>
-</table>
-
-### 📱 Mobile-First Experience
-```
-┌─────────────────────────────────────┐
-│  ☰ EXAMSHIELD          🔄 🔒       │
-├─────────────────────────────────────┤
-│                                     │
-│   ╔═══════════════════════════════╗ │
-│   ║     COMMAND CENTER           ║ │
-│   ║   142 Active   3 Critical    ║ │
-│   ╚═══════════════════════════════╝ │
-│                                     │
-│   ┌────┐ ┌────┐ ┌────┐ ┌────┐     │
-│   │ 12 │ │ 45 │ │ 3  │ │ 1  │     │
-│   │ Ex │ │ Ct │ │ Tg │ │ Cn │     │
-│   └────┘ └────┘ └────┘ └────┘     │
-│                                     │
-│   ┌──────────────────────────────┐  │
-│   │ ▶ Evidence #142 Processed   │  │
-│   │ ▶ Telegram Alert: Center 12 │  │
-│   │ ▶ Critical: Match Found     │  │
-│   └──────────────────────────────┘  │
-│                                     │
-│  ─────────────────────────────────  │
-│      📱 + 🔵 (Upload FAB)          │
-└─────────────────────────────────────┘
-```
-
-### 🧠 Evidence Processing Pipeline
-```
-📄 Upload ──▶ 🔬 OCR (Tesseract) ──▶ 🔍 Watermark Extraction
-                │                           │
-                ▼                           ▼
-         📊 Confidence Score         📝 Paper Attribution
-                │                           │
-                └───────────┬───────────────┘
-                            ▼
-                  📋 Forensic Report
-                            │
-                            ▼
-                  🚨 Alert Generation
-```
-
----
-
-## 🤖 AI Service & Community Agents
-
-The `apps/ai-service` Python backend powers the in-app **EXAMSHIELD AI** assistant and the **community agent** system.
-
-- 💬 **Streaming chat** — `POST /chat` streams token-by-token answers (SSE) from the Kilo Gateway LLM (`stepfun/step-3.7-flash:free`, a non-reasoning model, by default).
-- 🤖 **Community agents** — each agent has its own system prompt, knowledge sources, response style, and citations. Test any agent live from the dashboard *Test Agent* panel (`POST /agents/{id}/test`).
-- 📱 **Per-agent Telegram bots** — a deployed agent with its own `botToken` is polled independently and replies **as that agent** in Telegram DMs, using the agent's own LLM provider + knowledge. The global EXAMSHIELD bot keeps answering as EXAMSHIELD AI.
-- 🔍 **RAG** — agent replies are grounded in their knowledge base (Supabase pgvector with a local-chunk fallback).
-
-| Capability | Endpoint | Notes |
-|------------|----------|-------|
-| Chat (stream) | `POST /chat` | SSE token stream |
-| Test agent | `POST /agents/{id}/test` | Dashboard "Test Agent" |
-| Agent Telegram | polled per `botToken` | Replies as the agent |
-
----
-
-## 🛠️ Technology Stack
-
-<div align="center">
-
-### 🎨 Frontend
-```
-┌──────────────────────────────────────────────────────────────┐
-│  Next.js 16  │  React 19  │  TypeScript  │  Tailwind CSS    │
-│  Framer Motion  │  Lucide Icons  │  @supabase/ssr          │
-│  recharts  │  react-simple-maps  │  clsx  │  tailwind-merge │
-└──────────────────────────────────────────────────────────────┘
-```
-
-### ⚙️ Backend
-```
-┌──────────────────────────────────────────────────────────────┐
-│  Python 3.12  │  Tesseract OCR  │  Supabase (Auth + DB)    │
-│  NVIDIA AI  │  Docker  │  Telegram Bot API                 │
-└──────────────────────────────────────────────────────────────┘
-```
-
-### 🚀 Deployment
-```
-┌──────────────────────────────────────────────────────────────┐
-│  🌐 Vercel (Frontend)          │  🐳 Render (Backend)      │
-│  https://faraway-examshield    │  docker + python api       │
-│  .vercel.app                   │                            │
-└──────────────────────────────────────────────────────────────┘
-```
-
-</div>
-
----
-
-## Performance and scalability
-
-- **Bounded OCR worker pool** — analysis jobs run on a fixed thread pool (`AnalysisWorkerPool`, default 2 workers via `EXAMSHIELD_OCR_WORKERS`); Telegram webhooks and REST uploads submit jobs to the pool so HTTP responses never block on OCR.
-- **Read-response caching** — list/read endpoints are cached briefly (`EXAMSHIELD_LIST_CACHE_TTL_SECONDS`) and served with `Cache-Control`, so dashboard polling and Telegram status checks don't re-hit Supabase or Telegram every tick.
-- **Streaming chat with a cheap planner** — the assistant runs a separate, short planner LLM call (`EXAMSHIELD_TOOL_PLANNER_TIMEOUT_SECONDS`) only when a tool may be needed, then streams the answer.
-- **Token-budget guardrails** — per-request and per-session LLM token ceilings keep one chatty session from exhausting provider quota.
-- **Local fallback mode** — without Supabase the backend stores everything as JSON under `apps/api/uploads/evidence/` and uses a local chunk index for agent RAG, so the whole stack runs offline.
-
-## Tech Stack
-
-| Area | Stack |
-|------|-------|
-| Frontend | Next.js 16 · React 19 · TypeScript · Tailwind CSS 4 · Supabase SSR |
-| Backend | Python 3.12 · Tesseract + OCR.space · Supabase (Auth / Postgres / Storage / pgvector) · LLM via Kilo Gateway / OpenAI / Anthropic / Grok / Groq / OpenCode Zen · Telegram Bot API |
-| Infra | Supabase · Render (Docker) · Vercel · GitHub Actions |
-| Testing & tooling | ruff · pytest (backend) |
-
-## 🚀 Getting Started in 60 Seconds
-
-### 🔧 Prerequisites
-```
-✔ Node.js ≥ 18
-✔ Python ≥ 3.12
-✔ Docker (optional)
-✔ Supabase project
-```
-
-### 📦 Installation
-
-<details>
-<summary><b>📱 Frontend Setup</b></summary>
+### Frontend (`web/`)
 
 ```bash
-# Navigate to web directory
 cd web
-
-# Install dependencies
 npm install --legacy-peer-deps
 
-# Create .env.local
 cat > .env.local << EOF
 NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 EXAMSHIELD_API_URL=http://localhost:8790
 EOF
 
-# Start development server
-npm run dev
+npm run dev          # http://localhost:3000
 ```
-</details>
 
-<details>
-<summary><b>🐍 Backend Setup</b></summary>
+### Backend (`apps/ai-service/`)
 
 ```bash
-# Navigate to the AI service directory
 cd apps/ai-service
-
-# Create a virtual environment (uv or venv)
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-
-# Install Python dependencies
 pip install -r requirements.txt
 
-# Configure environment (see apps/ai-service/.env)
 export SUPABASE_URL=https://your-project.supabase.co
-export SUPABASE_SERVICE_ROLE_KEY=your-service-key
+export SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 export KILO_API_KEY=your-kilo-gateway-key
-export EXAMSHIELD_AI_MODEL=stepfun/step-3.7-flash:free
+export EXAMSHIELD_AI_CORS_ORIGIN=http://localhost:3000
 
-# Run the AI service (SSE chat + Telegram pollers)
-python run.py
+python run.py        # serves http://0.0.0.0:8790 (health at /health)
 ```
-</details>
 
-<details>
-<summary><b>🐳 Docker Setup</b></summary>
+Without Supabase/KILO variables the service still boots: evidence goes to the
+local JSON store and chat answers degrade to a visible local fallback.
+
+### Docker
 
 ```bash
-# Build and run with Docker
 docker build -t examshield-api .
-docker run -p 8790:8790 examshield-api
+docker run -p 8790:8790 --env-file apps/ai-service/.env examshield-api
 ```
-</details>
 
-**Environment variables**
+## Environment variables
+
+### Frontend (Vercel / `web/.env.local`)
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
-| `SUPABASE_URL` | yes* | Supabase project URL |
-| `SUPABASE_SERVICE_ROLE_KEY` | yes* | Supabase service-role key (backend fallback when RLS context is unavailable) |
-| `KILO_API_KEY` | yes* | Kilo Gateway API key (AI chat) |
-| `EXAMSHIELD_AI_CORS_ORIGIN` | yes* | Frontend origin allowed by CORS |
-| `EXAMSHIELD_PUBLIC_URL` | no | Public backend URL (Telegram webhook) |
-| `TELEGRAM_BOT_TOKEN` | no | Global EXAMSHIELD Telegram bot |
-| `TELEGRAM_WEBHOOK_SECRET` | no | Telegram webhook secret |
-| `EXAMSHIELD_AI_MODEL` | no | Chat model (default `tencent/hy3:free`) |
-| `OCR_SPACE_API_KEY` | no | Enables the OCR.space engine |
-| `EXAMSHIELD_OCR_WORKERS` | no | OCR worker-pool size (default 2) |
+| `NEXT_PUBLIC_SUPABASE_URL` | yes | Supabase project URL |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | yes | Public anon key |
+| `EXAMSHIELD_API_URL` | no | Backend base URL for `/api` proxying (defaults to same-origin) |
+| `EXAMSHIELD_API_TIMEOUT_MS` / `EXAMSHIELD_API_RETRIES` | no | Proxy timeout/retry tuning |
 
-\* Required for production (Supabase-backed) deployments; without them the backend runs in offline mode.
+### Backend (Render / `apps/ai-service/.env`)
 
-The full variable list is in [`render.yaml`](render.yaml). See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for setup details.
+Core:
 
-## Testing & CI
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `SUPABASE_URL` | prod* | Supabase project URL |
+| `SUPABASE_SERVICE_ROLE_KEY` | prod* | Service-role key |
+| `KILO_API_KEY` | no* | LLM gateway key (chat/planner disabled without it) |
+| `EXAMSHIELD_AI_CORS_ORIGIN` | yes | Allowed browser origin |
+| `EXAMSHIELD_PUBLIC_URL` | no | Public backend URL (Telegram webhooks) |
+| `PORT` | no | Listen port (default `8790`) |
 
-```bash
-# Backend (ruff + pytest)
-cd apps/ai-service && pip install -r requirements.txt && ruff check . && pytest tests -q
+LLM & guardrails:
 
-# Frontend (typecheck + build)
-cd web && npm ci && npx tsc --noEmit && npm run build
-```
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `EXAMSHIELD_AI_MODEL` | `tencent/hy3:free` | Chat model |
+| `EXAMSHIELD_AI_FALLBACK_MODELS` | comma list | Fallback chain |
+| `EXAMSHIELD_AI_PLANNER_MODEL` | `tencent/hy3:free` | Tool-planning model |
+| `EXAMSHIELD_AI_LLM_RETRY_ATTEMPTS` | `2` | Retries per transient LLM failure |
+| `EXAMSHIELD_AI_LLM_RETRY_BACKOFF_SECONDS` | `0.5` | Base exponential backoff |
+| `EXAMSHIELD_AI_BUDGET_PER_REQUEST_TOKENS` | `4000` | Per-request token ceiling |
+| `EXAMSHIELD_AI_BUDGET_PER_SESSION_TOKENS` | `50000` | Per-session token ceiling |
+| `EXAMSHIELD_AI_CHAT_MAX_TOKENS` | `350` | Max completion tokens |
 
-CI runs on GitHub Actions (`.github/workflows/quality-gate.yml`) on every push/PR to `main`:
+OCR & workers:
 
-- **Backend job** (from `apps/ai-service`): `ruff check .` → `pytest tests -q`.
-- **Frontend job** (from `web`): `npm ci` → `npx tsc --noEmit` → `npm run build`.
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `EXAMSHIELD_OCR_CHAIN` | `ocrspace,tesseract` | Engine order |
+| `OCR_SPACE_API_KEY` | — | Enables OCR.space |
+| `EXAMSHIELD_OCR_MODE` | `sequential` | `sequential` \| `parallel` PSM sweep |
+| `EXAMSHIELD_OCR_WORKERS` | `2` | Analysis worker-pool size |
+| `EXAMSHIELD_OCR_TOTAL_BUDGET_SECONDS` | `120` | Whole-analysis deadline |
 
-### 🌐 Environment Variables
+Telegram:
 
-<details>
-<summary><b>Vercel (Frontend)</b></summary>
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `TELEGRAM_BOT_TOKEN` | no | Global EXAMSHIELD bot |
+| `TELEGRAM_WEBHOOK_SECRET` | no | Webhook auth |
+| `TELEGRAM_CHAT_ID` / `TELEGRAM_ADMIN_CHAT_ID` | no | Alert destinations |
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `NEXT_PUBLIC_SUPABASE_URL` | ✅ | Supabase project URL |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | ✅ | Public anon key |
+\* Required for production (Supabased-backed) deployments; omit them for the
+offline/local fallback mode. The operational list lives in [`render.yaml`](render.yaml).
 
-</details>
-
-<details>
-<summary><b>Render (Backend)</b></summary>
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `SUPABASE_URL` | ✅ | Supabase project URL |
-| `SUPABASE_SERVICE_ROLE_KEY` | ✅ | Service role key |
-| `KILO_API_KEY` | ⚠️ | For AI service (Kilo Gateway) |
-| `TELEGRAM_BOT_TOKEN` | ⚠️ | Telegram bot |
-| `TELEGRAM_WEBHOOK_SECRET` | ⚠️ | Webhook secret |
-| `EXAMSHIELD_AI_MASTER_KEY` | ✅ | Master key (Fernet) used to encrypt agent LLM API keys at rest. Generate with `python -c "from examshield_ai.secrets_crypto import generate_master_key; print(generate_master_key())"`. Must NOT be stored in the database. |
-| `TELEGRAM_CHAT_ID` | ⚠️ | Chat ID |
-| `EXAMSHIELD_AI_CORS_ORIGIN` | ✅ | Frontend URL |
-| `EXAMSHIELD_PUBLIC_URL` | ✅ | Backend URL |
-| `EXAMSHIELD_AI_MODEL` | ⚠️ | Chat model (Kilo Gateway, e.g. `stepfun/step-3.7-flash:free`) |
-| `EXAMSHIELD_AI_FALLBACK_MODELS` | ⚠️ | Comma-separated fallback models |
-| `EXAMSHIELD_AI_PLANNER_MODEL` | ⚠️ | Model used for tool planning |
-
-</details>
-
----
-
-## 📡 Deployment
-
-<div align="center">
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                                                                     │
-│   🚀 DEPLOYMENT PIPELINE                                            │
-│                                                                     │
-│   ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌────────┐   │
-│   │  GIT     │────▶│  VERCEL  │────▶│  LIVE    │────▶│  TEST  │   │
-│   │  PUSH    │     │  BUILD   │     │  SITE    │     │  PASS  │   │
-│   └──────────┘     └──────────┘     └──────────┘     └────────┘   │
-│         │                                                            │
-│         ▼                                                            │
-│   ┌──────────┐     ┌──────────┐     ┌──────────┐                   │
-│   │  RENDER  │────▶│  DOCKER  │────▶│  BACKEND │                   │
-│   │  DEPLOY  │     │  BUILD   │     │  API     │                   │
-│   └──────────┘     └──────────┘     └──────────┘                   │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-</div>
-
-### 🎯 Quick Deploy
-
-EXAMSHIELD runs as one Python backend on Render (Docker) and a Next.js frontend on Vercel, with Supabase for auth, database, storage, and pgvector. For the full walkthrough (Supabase schema, Render blueprint, Vercel env, Telegram webhook), see [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
+## Run commands
 
 ```bash
-# Deploy frontend to Vercel
-cd web && npx vercel --prod
+# Backend
+cd apps/ai-service
+python run.py                 # serve API + SSE chat + Telegram pollers
+ruff check .                  # lint
+pytest tests -q               # tests
 
-# Deploy backend to Render
-# (Configure via render.yaml or dashboard)
+# Frontend
+cd web
+npm run dev                   # dev server
+npm run build                 # production build
+npm test                      # Vitest suite
+npx tsc --noEmit              # typecheck
 ```
 
-**Live Demo:** [https://faraway-examshield.vercel.app](https://faraway-examshield.vercel.app)
+CI (`.github/workflows/quality-gate.yml`) gates every push/PR to `main` with:
+ruff + pytest (backend job) and typecheck + Vitest + build (frontend job).
+Direct pushes to `main` are discouraged — open a PR instead.
 
----
+## API surface (backend)
 
-## 🔒 Security Architecture
+| Area | Endpoint |
+|------|----------|
+| Health/config | `GET /health`, `GET /` |
+| Evidence | `POST /evidence/upload`, `GET /evidence/list`, `GET /evidence/{id}` |
+| Chat | `POST /chat` (SSE stream) |
+| Tools/planner | `POST /plan`, `GET /tools` |
+| Agents | `POST /agents/{id}/test`, knowledge CRUD, deploy/status |
+| Reports | `POST /reports/generate` |
+| Telegram | `POST /telegram/webhook`, `GET /telegram/events` |
 
-<table>
-<tr>
-<th>Layer</th>
-<th>Implementation</th>
-<th>Status</th>
-</tr>
-<tr>
-<td>🔐 Authentication</td>
-<td>Supabase JWT + Cookie Sessions</td>
-<td>✅ Active</td>
-</tr>
-<tr>
-<td>🛡️ Route Protection</td>
-<td>Next.js Middleware (Edge Runtime)</td>
-<td>✅ Active</td>
-</tr>
-<tr>
-<td>🔑 OAuth Providers</td>
-<td>Google + GitHub SSO</td>
-<td>✅ Active</td>
-</tr>
-<tr>
-<td>📝 Audit Logging</td>
-<td>Supabase Activity Tracking</td>
-<td>✅ Active</td>
-</tr>
-<tr>
-<td>🔒 Session Management</td>
-<td>Secure, HTTP-only Cookies</td>
-<td>✅ Active</td>
-</tr>
-<tr>
-<td>🚫 Rate Limiting</td>
-<td>Planned (API Gateway)</td>
-<td>🔄 Planned</td>
-</tr>
-<tr>
-<td>🧪 Security Audits</td>
-<td>Regular Review Cycle</td>
-<td>🔄 Planned</td>
-</tr>
-</table>
+## Documentation
 
----
+- [Deployment walkthrough](docs/DEPLOYMENT.md)
+- [Tech stack & architecture](docs/TECH_STACK_ARCHITECTURE.md)
+- [Strengths audit](docs/PROJECT_STRENGTHS.md) · [Weaknesses audit](docs/PROJECT_WEAKNESSES_AUDIT.md)
+- [Learning roadmap](docs/LEARNING_ROADMAP.md)
 
-## 📈 Roadmap
+## Contributing
 
-```
-Q2 2026                    Q3 2026                    Q4 2026
-┌──────────────────┐      ┌──────────────────┐      ┌──────────────────┐
-│ ✅ Auth Complete  │      │ 🔄 AI Enhance    │      │ 🔄 Enterprise    │
-│ ✅ Dashboard V1   │      │ 🔄 Performance   │      │ 🔄 Compliance    │
-│ ✅ Mobile V1      │      │ 🔄 Analytics V2  │      │ 🔄 Scale        │
-│ ✅ Deploy V1      │      │ 🔄 Monitoring    │      │ 🔄 SLA           │
-└──────────────────┘      └──────────────────┘      └──────────────────┘
-```
+1. Branch from `main` (one branch per PR); never push directly to `main`.
+2. Keep CI green — ruff, pytest, typecheck, Vitest, and build must pass.
+3. Open a PR with a short description of what changed and why.
 
-- **[x] Phase 1: Foundation** — Auth, Dashboard, Mobile, Deploy ✅
-- **[ ] Phase 2: Intelligence** — Advanced AI, Analytics, Monitoring
-- **[ ] Phase 3: Enterprise** — Compliance, SLA, Scale
+## License
 
----
-
-## 🤝 Contributing
-
-<div align="center">
-
-[![PRs Welcome](https://img.shields.io/badge/PRs-WELCOME-22c55e?style=for-the-badge)](https://github.com/risuhfoundry/Faraway-examshield/pulls)
-[![Issues](https://img.shields.io/badge/Issues-OPEN-6366f1?style=for-the-badge)](https://github.com/risuhfoundry/Faraway-examshield/issues)
-[![Forks](https://img.shields.io/github/forks/risuhfoundry/Faraway-examshield?style=for-the-badge&color=22c55e)](https://github.com/risuhfoundry/Faraway-examshield/forks)
-[![Stars](https://img.shields.io/github/stars/risuhfoundry/Faraway-examshield?style=for-the-badge&color=f59e0b)](https://github.com/risuhfoundry/Faraway-examshield/stargazers)
-
-</div>
-
-1. 🍴 **Fork** the repository
-2. 🌿 **Create** a feature branch (`git checkout -b feature/amazing`)
-3. 💻 **Commit** your changes (`git commit -m 'feat: add something amazing'`)
-4. 📤 **Push** to the branch (`git push origin feature/amazing`)
-5. 🎯 **Open** a Pull Request
-
----
-
-## 📜 License
-
-```
-EXAMSHIELD — Proprietary Software
-Copyright © 2026 Faraway Technologies
+EXAMSHIELD — proprietary software. Copyright © 2026 Faraway Technologies.
 All rights reserved.
-```
-
----
-
-<div align="center">
-  <sub>Built with ❤️, 🦀, and ☕ for academic integrity</sub>
-  <br/>
-  <sub>EXAMSHIELD — The new standard in examination security</sub>
-  <br/><br/>
-  <img src="https://img.shields.io/badge/END_OF_README-🔒_SYSTEM_SECURE-000000?style=for-the-badge" />
-</div>
