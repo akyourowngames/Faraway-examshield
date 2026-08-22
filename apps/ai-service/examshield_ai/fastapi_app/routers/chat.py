@@ -84,6 +84,8 @@ async def plan(
     if not core.client.configured:
         return json_response({"tool": None, "error": "KILO_API_KEY is not configured."}, request=request)
 
+    core.registry.owner_id = resolve_owner_id(request)
+
     try:
         command = ToolPlanner(core.client, core.registry).plan(prompt, current_evidence_id, history)
     except Exception as exc:

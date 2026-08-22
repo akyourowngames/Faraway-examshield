@@ -51,7 +51,13 @@ def _validate_image_magic(data: bytes, content_type: str) -> str | None:
 @router.get("/evidence")
 async def list_evidence(request: Request, _secret: None = Depends(backend_secret)) -> dict:
     core = _core(request)
-    payload = cached_get(core.read_cache, request.url.path, core.store.list_evidence)
+    owner_id = resolve_owner_id(request)
+    cache_key = f"{request.url.path}|{owner_id or 'public'}"
+    payload = cached_get(
+        core.read_cache,
+        cache_key,
+        lambda: core.store.list_evidence(owner_id=owner_id),
+    )
     return json_response(payload, request=request, cache=True)
 
 
@@ -62,19 +68,27 @@ async def get_evidence(
     _secret: None = Depends(backend_secret),
 ) -> dict:
     core = _core(request)
-    bundle = core.store.get_bundle(evidence_id)
-    if bundle:
-        return json_response(bundle, request=request, cache=True)
+    owner_id = resolve_owner_id(request)
+    cache_key = f"{request.url.path}|{owner_id or 'public'}"
+    payload = cached_get(
+        core.read_cache,
+        cache_key,
+        lambda: core.store.get_bundle(evidence_id, owner_id=owner_id),
+    )
+    if payload:
+        return json_response(payload, request=request, cache=True)
     return json_response({"error": "Evidence not found."}, status=404, request=request, cache=True)
 
 
 @router.get("/alerts")
 async def list_alerts(request: Request, _secret: None = Depends(backend_secret)) -> dict:
     core = _core(request)
+    owner_id = resolve_owner_id(request)
+    cache_key = f"{request.url.path}|{owner_id or 'public'}"
     payload = cached_get(
         core.read_cache,
-        request.url.path,
-        lambda: {"alerts": core.store.list_evidence()["alerts"]},
+        cache_key,
+        lambda: {"alerts": core.store.list_evidence(owner_id=owner_id)["alerts"]},
     )
     return json_response(payload, request=request, cache=True)
 

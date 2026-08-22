@@ -196,7 +196,7 @@ class ExamshieldToolRegistry:
         return tool.handler(arguments or {})
 
     def planner_context(self, current_evidence_id: str | None = None) -> JsonObject:
-        data = self.store.list_evidence()
+        data = self.store.list_evidence(owner_id=self.owner_id)
         return {
             "currentEvidenceId": current_evidence_id,
             "recentEvidence": [
@@ -234,7 +234,7 @@ class ExamshieldToolRegistry:
 
     def _list_evidence(self, arguments: JsonObject) -> ToolExecution:
         filter_value = "today" if arguments.get("filter") == "today" else "recent"
-        data = self.store.list_evidence()
+        data = self.store.list_evidence(owner_id=self.owner_id)
         scoped = [item for item in data["evidence"] if is_today(item.get("uploadedAt"))] if filter_value == "today" else data["evidence"]
         latest = scoped[:5]
         critical_alerts = len([item for item in data["alerts"] if item.get("risk") == "critical"])
@@ -421,7 +421,7 @@ class ExamshieldToolRegistry:
         return with_context(result)
 
     def _list_threats(self, arguments: JsonObject) -> ToolExecution:
-        data = self.store.list_evidence()
+        data = self.store.list_evidence(owner_id=self.owner_id)
         registry = self.store.read_registry()
         registry_threats = [
             item
@@ -519,7 +519,7 @@ class ExamshieldToolRegistry:
                 if matches
                 else "No similar threat memory is currently stored for that signal."
             ),
-            current_investigation=current_investigation(self.store.list_evidence()),
+            current_investigation=current_investigation(self.store.list_evidence(owner_id=self.owner_id)),
             metrics=[
                 metric("Matches", len(matches)),
                 metric("Storage", self.memory.status()["storage"]),
@@ -544,7 +544,7 @@ class ExamshieldToolRegistry:
         return with_context(result)
 
     def _generate_report(self, arguments: JsonObject) -> ToolExecution:
-        data = self.store.list_evidence()
+        data = self.store.list_evidence(owner_id=self.owner_id)
         registry = self.store.read_registry()
         active_alerts = [item for item in data["alerts"] if item.get("status") == "open"]
         memory_correlations = [
