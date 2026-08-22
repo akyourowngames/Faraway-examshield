@@ -251,7 +251,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       </AnimatePresence>
 
       {/* ─── Main Content Area ─── */}
-      <main className="flex-1 min-w-0 flex flex-col relative z-10 overflow-hidden bg-[#050505]">
+      <main id="main-content" className="flex-1 min-w-0 flex flex-col relative z-10 overflow-hidden bg-[#050505]">
         {/* Topbar */}
         <header className="h-14 lg:h-20 border-b border-white/10 bg-black/80 backdrop-blur-xl flex items-center justify-between gap-3 px-3 lg:px-8 shrink-0 relative z-20">
           <div className="flex items-center gap-3 min-w-0">
