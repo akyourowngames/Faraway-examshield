@@ -245,7 +245,7 @@ def ingest_knowledge_source(
         try:
             _supabase_request(
                 "POST",
-                f"/agent_knowledge_chunks?on_conflict=source_id,content_hash",
+                "/agent_knowledge_chunks?on_conflict=source_id,content_hash",
                 config,
                 record,
             )
@@ -288,7 +288,7 @@ def search_agent_knowledge(
     try:
         results = _supabase_request(
             "POST",
-            f"/rpc/match_agent_knowledge",
+            "/rpc/match_agent_knowledge",
             config,
             {
                 "query_embedding": query_embedding,

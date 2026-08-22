@@ -4,7 +4,6 @@ import subprocess
 from unittest.mock import patch
 
 import pytest
-
 from examshield_ai.ocr import analyze_image, prepare_ocr_image
 
 
