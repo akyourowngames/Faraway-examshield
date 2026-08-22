@@ -16,7 +16,7 @@ from examshield_ai.operator import resolve_operator
 from examshield_ai.planner import ToolPlanner
 from examshield_ai.tools import ExamshieldToolRegistry
 
-from ..deps import backend_secret, body_size_guard, client_ip
+from ..deps import backend_secret, body_size_guard, client_ip, resolve_owner_id
 from ..responses import json_response
 from ..sse import sse_from_chat_session
 
@@ -49,6 +49,7 @@ async def chat(
     operator = resolve_operator(payload, request.headers.get("Authorization"), core.settings)
     registry = ExamshieldToolRegistry(core.store)
     registry.operator = operator
+    registry.owner_id = resolve_owner_id(request)
 
     def run_session(write_event):
         session = ChatSession(client=core.client, registry=registry, write=write_event)

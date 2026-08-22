@@ -408,6 +408,7 @@ class EvidenceStore:
         source: str = "manual-upload",
         telegram: JsonObject | None = None,
         detection: JsonObject | None = None,
+        owner_id: str | None = None,
     ) -> JsonObject:
         self.ensure_storage()
         self.validate_upload(uploaded)
@@ -439,6 +440,7 @@ class EvidenceStore:
             "storedFilename": stored_filename,
             "storedAt": uploaded_at,
             **detection_record_fields(detection),
+            "ownerId": owner_id,
             "telegramAlertSent": False,
         }
         self._write_file_bytes(stored_filename, uploaded.data, uploaded.content_type)

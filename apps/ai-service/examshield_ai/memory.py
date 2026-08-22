@@ -84,11 +84,14 @@ class MemoryManager:
         detection: JsonObject | None = None,
         text: str | None = None,
         notify: bool = True,
+        owner_id: str | None = None,
     ) -> JsonObject:
         evidence = analysis.get("evidence") if isinstance(analysis.get("evidence"), dict) else None
         if not evidence:
             return {"stored": False, "reason": "missing_evidence"}
-        return self.ingest_evidence(evidence, detection=detection, analysis=analysis, text=text, notify=notify)
+        return self.ingest_evidence(
+            evidence, detection=detection, analysis=analysis, text=text, notify=notify, owner_id=owner_id
+        )
 
     def ingest_evidence(
         self,
@@ -98,15 +101,18 @@ class MemoryManager:
         analysis: JsonObject | None = None,
         text: str | None = None,
         notify: bool = True,
+        owner_id: str | None = None,
     ) -> JsonObject:
         item = self._build_item(evidence, detection=detection, analysis=analysis or {}, text=text)
         if not item["content"].strip():
             return {"stored": False, "reason": "empty_content"}
-        stored = self._upsert_item(item)
-        correlation = self.correlate_item(stored, notify=notify)
+        item["owner_id"] = owner_id
+        item["ownerId"] = owner_id
+        stored = self._upsert_item(item, owner_id=owner_id)
+        correlation = self.correlate_item(stored, notify=notify, owner_id=owner_id)
         return {"stored": True, "item": stored, "correlation": correlation}
 
-    def ingest_manual(self, payload: JsonObject) -> JsonObject:
+    def ingest_manual(self, payload: JsonObject, *, owner_id: str | None = None) -> JsonObject:
         evidence_id = str(payload.get("evidenceId") or "").strip()
         if evidence_id:
             bundle = self.store.get_bundle(evidence_id)
@@ -118,7 +124,7 @@ class MemoryManager:
                 "categories": bundle["evidence"].get("detectionCategories") or [],
                 "matches": bundle["evidence"].get("detectionMatches") or [],
             }
-            return self.ingest_evidence(bundle["evidence"], detection=detection, analysis=bundle)
+            return self.ingest_evidence(bundle["evidence"], detection=detection, analysis=bundle, owner_id=owner_id)
 
         content = redact_text(str(payload.get("content") or ""))
         if not content:
@@ -154,13 +160,16 @@ class MemoryManager:
             "updated_at": now,
             "updatedAt": now,
         }
-        stored = self._upsert_item(item)
-        return {"stored": True, "item": stored, "correlation": self.correlate_item(stored)}
+        item["owner_id"] = owner_id
+        item["ownerId"] = owner_id
+        stored = self._upsert_item(item, owner_id=owner_id)
+        return {"stored": True, "item": stored, "correlation": self.correlate_item(stored, owner_id=owner_id)}
 
     def search(
         self,
         query: str,
         *,
+        owner_id: str | None = None,
         threshold: float = DEFAULT_MATCH_THRESHOLD,
         match_count: int = DEFAULT_MATCH_COUNT,
         exclude_source_ref: str | None = None,
@@ -183,6 +192,7 @@ class MemoryManager:
                             "match_count": match_count,
                             "exclude_source_ref": exclude_source_ref,
                             "min_created_at": created_after,
+                            "p_owner_id": owner_id,
                         },
                     )
                     if isinstance(rows, list):
@@ -195,7 +205,7 @@ class MemoryManager:
 
         matches: list[JsonObject] = []
         query_tokens = content_tokens(redacted)
-        for item in self._list_items(limit=200):
+        for item in self._list_items(limit=200, owner_id=owner_id):
             if exclude_source_ref and item.get("sourceRef") == exclude_source_ref:
                 continue
             if not _item_created_at_or_after(item, created_after):
@@ -206,27 +216,30 @@ class MemoryManager:
         matches.sort(key=lambda row: float(row.get("similarity") or 0), reverse=True)
         return {"query": redacted, "matches": matches[:match_count]}
 
-    def get_memory(self, memory_id: str) -> JsonObject | None:
-        for item in self._list_items(limit=500):
+    def get_memory(self, memory_id: str, *, owner_id: str | None = None) -> JsonObject | None:
+        for item in self._list_items(limit=500, owner_id=owner_id):
             if str(item.get("id")) == str(memory_id):
-                related = self.correlate_item(item, notify=False)
+                related = self.correlate_item(item, notify=False, owner_id=owner_id)
                 return {"item": item, "correlation": related}
         return None
 
-    def correlate_memory_id(self, memory_id: str) -> JsonObject:
-        found = self.get_memory(memory_id)
+    def correlate_memory_id(self, memory_id: str, *, owner_id: str | None = None) -> JsonObject:
+        found = self.get_memory(memory_id, owner_id=owner_id)
         if not found:
             raise LookupError("Memory item not found.")
         return found["correlation"] or {"correlated": False, "reason": "insufficient_sources"}
 
-    def correlate_item(self, item: JsonObject, *, notify: bool = True) -> JsonObject | None:
+    def correlate_item(self, item: JsonObject, *, notify: bool = True, owner_id: str | None = None) -> JsonObject | None:
         matches = self.search(
             str(item.get("content") or ""),
+            owner_id=owner_id,
             threshold=DEFAULT_MATCH_THRESHOLD,
             match_count=DEFAULT_MATCH_COUNT,
             exclude_source_ref=str(item.get("sourceRef") or item.get("source_ref") or ""),
         )["matches"]
-        exact_matches = self._items_by_fingerprint(str(item.get("fingerprintHash") or item.get("fingerprint_hash") or ""))
+        exact_matches = self._items_by_fingerprint(
+            str(item.get("fingerprintHash") or item.get("fingerprint_hash") or ""), owner_id=owner_id
+        )
         combined = combine_matches(item, matches, exact_matches)
         confirmed = bool((item.get("metadata") or {}).get("confirmed"))
 
@@ -252,10 +265,12 @@ class MemoryManager:
             severity = highest_severity([severity, "critical"])
 
         now = utc_now()
-        existing = self._read_correlation(correlation_key)
+        existing = self._read_correlation(correlation_key, owner_id=owner_id)
         correlation = {
             **(existing or {}),
             "id": (existing or {}).get("id") or str(uuid4()),
+            "owner_id": owner_id,
+            "ownerId": owner_id,
             "correlation_key": correlation_key,
             "correlationKey": correlation_key,
             "trigger_memory_id": item.get("id"),
@@ -283,7 +298,7 @@ class MemoryManager:
             "updated_at": now,
             "updatedAt": now,
         }
-        alert = self._create_memory_alert(correlation, item, notify=notify and not existing)
+        alert = self._create_memory_alert(correlation, item, notify=notify and not existing, owner_id=owner_id)
         if alert:
             correlation["alert_id"] = alert.get("alertId")
             correlation["alertId"] = alert.get("alertId")
@@ -341,8 +356,11 @@ class MemoryManager:
             "updatedAt": now,
         }
 
-    def _upsert_item(self, item: JsonObject) -> JsonObject:
-        existing = self._read_item_by_source_ref(str(item.get("sourceRef") or item.get("source_ref") or ""))
+    def _upsert_item(self, item: JsonObject, *, owner_id: str | None = None) -> JsonObject:
+        item = {**item, "owner_id": owner_id, "ownerId": owner_id}
+        existing = self._read_item_by_source_ref(
+            str(item.get("sourceRef") or item.get("source_ref") or ""), owner_id=owner_id
+        )
         if existing:
             item = {
                 **existing,
@@ -375,7 +393,8 @@ class MemoryManager:
         self.store._write_json(MEMORY_ITEMS, filename, normalize_item(item))
         return normalize_item(item)
 
-    def _upsert_correlation(self, correlation: JsonObject) -> JsonObject:
+    def _upsert_correlation(self, correlation: JsonObject, *, owner_id: str | None = None) -> JsonObject:
+        correlation = {**correlation, "owner_id": owner_id, "ownerId": owner_id}
         if self.vector_enabled:
             try:
                 rows = self.store._supabase_json(
@@ -394,30 +413,38 @@ class MemoryManager:
         self.store._write_json(MEMORY_CORRELATIONS, filename, normalize_correlation(correlation))
         return normalize_correlation(correlation)
 
-    def _read_item_by_source_ref(self, source_ref: str) -> JsonObject | None:
+    def _read_item_by_source_ref(self, source_ref: str, *, owner_id: str | None = None) -> JsonObject | None:
         if not source_ref:
             return None
         if self.vector_enabled:
             try:
                 encoded = urllib.parse.quote(source_ref)
-                rows = self.store._supabase_json(
-                    "GET",
-                    f"/rest/v1/examshield_memory_items?source_ref=eq.{encoded}&select=*&limit=1",
-                )
+                url = f"/rest/v1/examshield_memory_items?source_ref=eq.{encoded}&select=*&limit=1"
+                if owner_id is not None:
+                    url += f"&owner_id=eq.{urllib.parse.quote(str(owner_id))}"
+                rows = self.store._supabase_json("GET", url)
                 if isinstance(rows, list) and rows:
                     return normalize_item(rows[0])
             except Exception as exc:
                 logger.warning("Supabase memory lookup failed: %s", exc)
-        return next((item for item in self.store._read_json_dir(MEMORY_ITEMS) if item.get("sourceRef") == source_ref), None)
+        return next(
+            (
+                item
+                for item in self.store._read_json_dir(MEMORY_ITEMS)
+                if item.get("sourceRef") == source_ref
+                and (owner_id is None or item.get("ownerId") == owner_id)
+            ),
+            None,
+        )
 
-    def _read_correlation(self, correlation_key: str) -> JsonObject | None:
+    def _read_correlation(self, correlation_key: str, *, owner_id: str | None = None) -> JsonObject | None:
         if self.vector_enabled:
             try:
                 encoded = urllib.parse.quote(correlation_key)
-                rows = self.store._supabase_json(
-                    "GET",
-                    f"/rest/v1/examshield_memory_correlations?correlation_key=eq.{encoded}&select=*&limit=1",
-                )
+                url = f"/rest/v1/examshield_memory_correlations?correlation_key=eq.{encoded}&select=*&limit=1"
+                if owner_id is not None:
+                    url += f"&owner_id=eq.{urllib.parse.quote(str(owner_id))}"
+                rows = self.store._supabase_json("GET", url)
                 if isinstance(rows, list) and rows:
                     return normalize_correlation(rows[0])
             except Exception as exc:
@@ -427,33 +454,37 @@ class MemoryManager:
                 item
                 for item in self.store._read_json_dir(MEMORY_CORRELATIONS)
                 if item.get("correlationKey") == correlation_key
+                and (owner_id is None or item.get("ownerId") == owner_id)
             ),
             None,
         )
 
-    def _list_items(self, *, limit: int = 100) -> list[JsonObject]:
+    def _list_items(self, *, limit: int = 100, owner_id: str | None = None) -> list[JsonObject]:
         if self.vector_enabled:
             try:
-                rows = self.store._supabase_json(
-                    "GET",
-                    f"/rest/v1/examshield_memory_items?select=*&order=created_at.desc&limit={limit}",
-                )
+                url = f"/rest/v1/examshield_memory_items?select=*&order=created_at.desc&limit={limit}"
+                if owner_id is not None:
+                    url += f"&owner_id=eq.{urllib.parse.quote(str(owner_id))}"
+                rows = self.store._supabase_json("GET", url)
                 if isinstance(rows, list):
                     return [normalize_item(row) for row in rows if isinstance(row, dict)]
             except Exception as exc:
                 logger.warning("Supabase memory list failed; using local fallback: %s", exc)
+        items = self.store._read_json_dir(MEMORY_ITEMS)
+        if owner_id is not None:
+            items = [i for i in items if i.get("ownerId") == owner_id]
         return sorted(
-            self.store._read_json_dir(MEMORY_ITEMS),
+            items,
             key=lambda row: str(row.get("createdAt") or ""),
             reverse=True,
         )[:limit]
 
-    def _items_by_fingerprint(self, fingerprint_hash: str) -> list[JsonObject]:
+    def _items_by_fingerprint(self, fingerprint_hash: str, *, owner_id: str | None = None) -> list[JsonObject]:
         if not fingerprint_hash:
             return []
         return [
             {**item, "similarity": 1.0}
-            for item in self._list_items(limit=200)
+            for item in self._list_items(limit=200, owner_id=owner_id)
             if str(item.get("fingerprintHash") or item.get("fingerprint_hash")) == fingerprint_hash
         ]
 
@@ -495,6 +526,7 @@ class MemoryManager:
         trigger_item: JsonObject,
         *,
         notify: bool,
+        owner_id: str | None = None,
     ) -> JsonObject | None:
         existing = next(
             (
@@ -512,6 +544,7 @@ class MemoryManager:
         now = utc_now()
         alert = {
             "alertId": "MEM-" + stable_hash(str(correlation.get("correlationKey")))[:12].upper(),
+            "ownerId": owner_id,
             "evidenceId": (evidence_ids or [trigger_item.get("sourceEvidenceId") or "MEMORY"])[0],
             "paperId": metadata.get("paperId"),
             "centerCode": metadata.get("centerCode"),
@@ -538,6 +571,12 @@ class MemoryManager:
         if notify:
             self._notify_team(alert, correlation)
         return alert
+
+    def list_memory_alerts(self, *, owner_id: str | None = None) -> list[JsonObject]:
+        alerts = self.store._read_json_dir("alerts")
+        if owner_id is not None:
+            alerts = [a for a in alerts if a.get("ownerId") == owner_id]
+        return sorted(alerts, key=lambda a: str(a.get("createdAt") or ""), reverse=True)
 
     def _notify_team(self, alert: JsonObject, correlation: JsonObject) -> None:
         if not self.telegram:
@@ -778,6 +817,7 @@ def dict_value(value: Any) -> JsonObject:
 def normalize_item(row: JsonObject) -> JsonObject:
     return {
         "id": str(row.get("id") or uuid4()),
+        "ownerId": row.get("ownerId") or row.get("owner_id"),
         "memoryType": row.get("memoryType") or row.get("memory_type"),
         "source": row.get("source") or "examshield",
         "sourceRef": row.get("sourceRef") or row.get("source_ref"),
@@ -797,6 +837,7 @@ def normalize_item(row: JsonObject) -> JsonObject:
 def denormalize_item(row: JsonObject) -> JsonObject:
     return {
         "id": row.get("id"),
+        "owner_id": row.get("owner_id") or row.get("ownerId"),
         "memory_type": row.get("memoryType") or row.get("memory_type"),
         "source": row.get("source") or "examshield",
         "source_ref": row.get("sourceRef") or row.get("source_ref"),
@@ -816,6 +857,7 @@ def denormalize_item(row: JsonObject) -> JsonObject:
 def normalize_correlation(row: JsonObject) -> JsonObject:
     return {
         "id": str(row.get("id") or uuid4()),
+        "ownerId": row.get("ownerId") or row.get("owner_id"),
         "correlationKey": row.get("correlationKey") or row.get("correlation_key"),
         "triggerMemoryId": row.get("triggerMemoryId") or row.get("trigger_memory_id"),
         "memoryIds": row.get("memoryIds") or row.get("memory_ids") or [],
@@ -835,6 +877,7 @@ def normalize_correlation(row: JsonObject) -> JsonObject:
 def denormalize_correlation(row: JsonObject) -> JsonObject:
     return {
         "id": row.get("id"),
+        "owner_id": row.get("owner_id") or row.get("ownerId"),
         "correlation_key": row.get("correlationKey") or row.get("correlation_key"),
         "trigger_memory_id": row.get("triggerMemoryId") or row.get("trigger_memory_id"),
         "memory_ids": row.get("memoryIds") or row.get("memory_ids") or [],

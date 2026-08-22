@@ -154,7 +154,9 @@ The in-app assistant (`POST /chat`, SSE token streaming) is backed by an LLM pro
 - **Rate limiting** (`ratelimit.py`) — sliding-window limiter on `/ocr/analyze` and `/evidence/upload` (paid external calls); off unless `EXAMSHIELD_RATE_LIMIT_*` vars are set.
 - **Encryption at rest** — agent LLM keys encrypted with Fernet (see [Community Agents](#community-agents)).
 - **Unified threat memory** (`memory.py`) — privacy-first: emails, phones, URLs, and IDs are redacted before storage; signals are embedded (pgvector) and correlated by similarity plus fingerprint, raising memory alerts on multi-source matches. Falls back to local JSON when Supabase is unavailable.
+- **Per-user memory isolation** — every memory item, correlation, and memory alert is scoped by `owner_id`, resolved from the verified Supabase session forwarded by the Next.js proxy (`X-Examshield-User-Id`). Ingest, search, correlate, get, the chat `searchMemory` tool, and the upload→analysis→memory pipeline all filter by owner, so one account can never read another account's memory. Supabase RLS adds a second, defense-in-depth layer for direct clients.
 - **Backend API authentication** — every non-health backend call is gated by a shared secret (`EXAMSHIELD_API_AUTH_SECRET`); the frontend proxy forwards it as `X-Examshield-Api-Key`. When the secret is unset the gate is disabled (with a startup warning), which is acceptable for local offline development but never for production.
+- **Private caching** — user-scoped GET responses (evidence, alerts, memory) are emitted as `private, no-store`, and the frontend proxy overrides upstream cache headers, so a shared CDN can never serve one account's data to another.
 
 ## Tech Stack
 
@@ -222,11 +224,21 @@ python service.py   # http://127.0.0.1:8790
 
 The full variable list (OCR chain, timeouts, planner models, rate limits, token budget, etc.) is in [`render.yaml`](render.yaml). See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for setup details.
 
+### Database migration (required for multi-user memory isolation)
+
+The per-user memory fix adds an `owner_id` column and RLS policies to `examshield_memory_items` / `examshield_memory_correlations`, and changes the `match_examshield_memory` RPC to accept `p_owner_id`. Apply it to your Supabase database once:
+
+```bash
+psql "$SUPABASE_DB_URL" -f supabase/migrations/20260813000001_memory_owner_scope.sql
+```
+
+Or run `supabase/migrations/20260813000001_memory_owner_scope.sql` from the Supabase SQL editor. Without this migration the application still filters memory by owner in Python, but the vector-search RPC and database-level RLS will not be owner-aware.
+
 ## Testing & CI
 
 ```bash
 # Frontend
-cd web && npm run lint && npm run build
+cd web && npm test && npm run lint && npm run build
 
 # Core (Paper Registry)
 cd apps/core && npm test
@@ -235,7 +247,7 @@ cd apps/core && npm test
 cd apps/ai-service && ruff check . && pytest -q
 ```
 
-CI runs on GitHub Actions (`.github/workflows/ci.yml`): backend lint + tests and frontend lint + build on every push/PR to `main`.
+CI runs on GitHub Actions (`.github/workflows/ci.yml`): backend lint + tests and frontend lint + build on every push/PR to `main`. Vitest forces `NODE_ENV=test` in `web/vitest.config.ts` so React 19's development build (which includes `React.act`) is used even when the shell has a global `NODE_ENV=production`.
 
 ## Deployment
 

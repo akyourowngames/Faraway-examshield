@@ -120,7 +120,7 @@ def test_memory_search_filters_local_fallback_by_created_after(tmp_settings, mon
         {"id": "1", "content": "neet leak", "createdAt": "2026-01-01T00:00:00Z"},
         {"id": "2", "content": "neet leak exam", "createdAt": "2026-09-01T00:00:00Z"},
     ]
-    monkeypatch.setattr(memory, "_list_items", lambda *, limit=100: items)
+    monkeypatch.setattr(memory, "_list_items", lambda *, limit=100, owner_id=None: items)
 
     recent = memory.search("neet leak", created_after="2026-06-01T00:00:00Z")
     assert [m["id"] for m in recent["matches"]] == ["2"]
