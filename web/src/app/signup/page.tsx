@@ -82,7 +82,7 @@ export default function SignupPage() {
   };
 
   return (
-    <div className="min-h-screen w-full flex flex-col lg:flex-row bg-black text-white font-sans overflow-hidden">
+    <main id="main-content" className="min-h-screen w-full flex flex-col lg:flex-row bg-black text-white font-sans overflow-hidden">
       {/* LEFT PANE - Clean Visuals */}
       <div className="hidden lg:flex relative w-1/2 h-screen flex-col items-center justify-center bg-zinc-950 border-r border-white/5 overflow-hidden">
         <div className="absolute inset-0 bg-[linear-gradient(to_right,#ffffff05_1px,transparent_1px),linear-gradient(to_bottom,#ffffff05_1px,transparent_1px)] bg-[size:64px_64px]" />
@@ -257,6 +257,6 @@ export default function SignupPage() {
           </motion.div>
         </div>
       </div>
-    </div>
+    </main>
   );
 }

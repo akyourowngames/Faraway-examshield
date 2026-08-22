@@ -62,7 +62,9 @@ export function Navbar() {
             </Link>
           </div>
 
-          <button 
+          <button
+            aria-label="Toggle navigation menu"
+            aria-expanded={mobileMenuOpen}
             className="md:hidden relative z-50 text-white"
             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
           >
