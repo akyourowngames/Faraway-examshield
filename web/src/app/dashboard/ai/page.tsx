@@ -99,7 +99,7 @@ export default function ExamshieldAiPage() {
   const [currentInvestigation, setCurrentInvestigation] = useState<AiToolResult["currentInvestigation"]>({
     evidenceId: null,
     paperId: null,
-    status: "Standby",
+    status: "Idle",
     confidence: null,
     risk: null,
     centerCode: null,
@@ -213,8 +213,7 @@ export default function ExamshieldAiPage() {
           message.id === assistantId
             ? {
                 ...message,
-                content:
-                  "ANALYSIS FAILED.\n\nEXAMSHIELD AI could not reach the service.",
+                content: "Request failed. Check the service status and retry.",
                 stages: [...(message.stages ?? []), error instanceof Error ? error.message : "Stream failed."],
                 streaming: false,
               }
@@ -890,14 +889,14 @@ function applyStreamEvent(messages: ChatMessage[], assistantId: string, event: A
     if (event.type === "error") {
       return {
         ...message,
-        content: message.content || `EXAMSHIELD AI could not complete this response.\n\n${event.message}`,
+        content: message.content || `Request failed.\n\n${event.message}`,
         stages: [...(message.stages ?? []), event.message],
       };
     }
     if (event.type === "done") {
       return {
         ...message,
-        content: message.content || "EXAMSHIELD AI ended the stream without a response. Please retry.",
+        content: message.content || "No response received. Please retry.",
         streaming: false,
       };
     }

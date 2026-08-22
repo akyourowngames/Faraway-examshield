@@ -1,19 +1,10 @@
 from __future__ import annotations
 
-import threading
-import urllib.error
-import urllib.request
 from dataclasses import replace
-from http.server import ThreadingHTTPServer
 
-from examshield_ai.server import (
-    _UNAUTHORIZED_BODY,
-    API_AUTH_HEADER,
-    build_handler,
-    is_authorized,
-    is_path_exempt,
-)
-from examshield_ai.settings import Settings
+from examshield_ai.auth import API_AUTH_HEADER, is_authorized, is_path_exempt
+from examshield_ai.fastapi_app.app import create_app
+from fastapi.testclient import TestClient
 
 
 def _headers(secret: str | None = None) -> dict[str, str]:
@@ -25,14 +16,11 @@ def _headers(secret: str | None = None) -> dict[str, str]:
 def test_exempt_paths_open_regardless_of_secret():
     for path in ["/health", "/", "/telegram/webhook", "/telegram/events"]:
         assert is_path_exempt(path) is True
-        # Exempt even when a secret is configured.
         assert is_authorized(_headers("x"), "topsecret", path) is True
-        # And when no secret is configured.
         assert is_authorized({}, "", path) is True
 
 
 def test_disabled_when_secret_empty():
-    # With no secret set, every route is authorized (offline/dev parity).
     assert is_authorized({}, "", "/evidence") is True
     assert is_authorized(_headers("whatever"), "", "/agents") is True
 
@@ -60,52 +48,24 @@ def test_protected_paths_rejected_without_key():
     assert is_authorized({}, "topsecret", "/chat") is False
 
 
-def _start_server(settings: Settings):
-    handler_cls = build_handler(settings)
-    server = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    return server, handler_cls, server.server_address[1]
-
-
-def test_live_server_enforces_auth(tmp_settings: Settings) -> None:
+def test_fastapi_live_auth_gate(tmp_settings):
     settings = replace(tmp_settings, api_auth_secret="test-secret")
-    server, handler_cls, port = _start_server(settings)
-    base = f"http://127.0.0.1:{port}"
-    try:
-        handler_cls.store.ensure_storage()
+    app = create_app(settings)
+    client = TestClient(app)
 
-        # /health is exempt -> 200 even without the key.
-        with urllib.request.urlopen(f"{base}/health") as resp:
-            assert resp.status == 200
+    # /health is exempt -> 200 even without the key.
+    assert client.get("/health").status_code == 200
 
-        # A protected route without the key -> 401 with our exact body.
-        try:
-            urllib.request.urlopen(urllib.request.Request(f"{base}/evidence"))
-            raise AssertionError("expected 401 without key")
-        except urllib.error.HTTPError as exc:
-            assert exc.code == 401
-            assert exc.read() == _UNAUTHORIZED_BODY
+    # A protected route without the key -> 401 with the exact body shape.
+    unauthorized = client.get("/evidence")
+    assert unauthorized.status_code == 401
+    assert unauthorized.json() == {"error": "Unauthorized."}
 
-        # The same route WITH the key is not rejected by the auth gate.
-        with urllib.request.urlopen(
-            urllib.request.Request(f"{base}/evidence", headers=_headers("test-secret"))
-        ) as resp:
-            assert resp.status != 401
+    # The same route WITH the key is not rejected by the auth gate.
+    authorized = client.get("/evidence", headers=_headers("test-secret"))
+    assert authorized.status_code != 401
 
-        # Inbound Telegram paths are exempt from the backend secret, so they
-        # must never return our auth 401 (their own validation still applies).
-        req = urllib.request.Request(
-            f"{base}/telegram/events",
-            data=b"{}",
-            headers={"Content-Type": "application/json"},
-        )
-        try:
-            with urllib.request.urlopen(req) as resp:
-                body = resp.read()
-        except urllib.error.HTTPError as exc:
-            body = exc.read()
-        assert body != _UNAUTHORIZED_BODY
-    finally:
-        server.shutdown()
-        server.server_close()
+    # Inbound Telegram paths are exempt from the backend secret, so they must
+    # not return the auth 401 body (their own validation still applies).
+    inbound = client.post("/telegram/events", json={})
+    assert inbound.json() != {"error": "Unauthorized."}

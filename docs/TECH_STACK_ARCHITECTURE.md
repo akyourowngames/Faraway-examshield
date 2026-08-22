@@ -254,9 +254,9 @@ references, advantages, limitations, and alternatives.
 
 ### 3.5 Backend (Python)
 
-* **Standard library only** for HTTP (`http.server.ThreadingHTTPServer`, `BaseHTTPRequestHandler`),
-  JSON, multipart parsing (`cgi.FieldStorage`), URL fetch (`urllib.request`), SSE.
-  Entrypoint: `apps/ai-service/service.py` → `examshield_ai.server.main`.
+* **FastAPI/uvicorn** for HTTP (`fastapi_app.app`), `python-multipart` for multipart
+  parsing, `urllib.request` for outbound fetches, SSE via `fastapi_app.sse`.
+  Entrypoint: `apps/ai-service/service.py` → `examshield_ai.fastapi_app.app:app`.
 * **opencv-python-headless `>=4.8.0`** (`requirements.txt`) — used by `ocr.py`/`ocrspace.py` to
   downscale/compress images before OCR.
 * **pytest `>=8.0`** — tests under `apps/ai-service/tests/`.
@@ -1155,8 +1155,10 @@ when `similarityScore > 70`.
 
 | File | Technology | Responsibilities |
 |------|-----------|-----------------|
-| `apps/ai-service/service.py` | Python | Entrypoint → `server.main` |
-| `examshield_ai/server.py` | `http.server` | HTTP routing, CORS, SSE, multipart, all endpoints |
+| `apps/ai-service/service.py` | Python | Entrypoint → uvicorn `fastapi_app.app:app` |
+| `examshield_ai/fastapi_app/` | FastAPI | HTTP routing, CORS, SSE, multipart, all endpoints |
+| `examshield_ai/auth.py` | stdlib `hmac` | Shared-secret API gate helpers |
+| `examshield_ai/runtime.py` | stdlib `threading` | Background sweepers + Telegram receiver setup |
 | `examshield_ai/settings.py` | stdlib `dataclasses` | Env-driven `Settings` singleton |
 | `examshield_ai/store.py` | Supabase REST + JSON | Persistence, watermark, attribution, registry, agents |
 | `examshield_ai/ocr.py` | subprocess + OpenCV | Tesseract orchestration, downscale, quality scoring |

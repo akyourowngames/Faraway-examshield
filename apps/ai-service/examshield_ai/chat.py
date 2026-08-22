@@ -52,9 +52,8 @@ class ChatSession:
         self.write({"type": "stage", "message": "Connecting to EXAMSHIELD intelligence..."})
 
         if not self.client.configured:
-            self._write_local_fallback(
-                "EXAMSHIELD AI is online, but no language-model key is configured. "
-                "Live evidence tools remain available from the dashboard.",
+            self._write_local_error(
+                "No language model is configured. Add a model key or retry once the backend is configured.",
                 started,
             )
             return
@@ -210,19 +209,18 @@ class ChatSession:
         else:
             self.write({"type": "stage", "message": f"Language model unavailable: {error_name}."})
         if not emitted_text:
-            fallback = last_content or (
-                "EXAMSHIELD AI is online, but the language model did not respond in time. "
-                "You can retry, or use a direct command such as “show recent evidence”, "
-                "“list threats”, or “generate a report”."
+            self._write_local_error(
+                "The language model did not respond. Retry, or use a direct command such as "
+                "“show recent evidence”, “list threats”, or “generate a report”.",
+                started,
             )
-            self._write_local_fallback(fallback, started)
         else:
             self._write_meta(started, first_token_at)
             self.write({"type": "done", "latencyMs": self._latency_ms(started)})
 
-    def _write_local_fallback(self, text: str, started: float) -> None:
+    def _write_local_error(self, message: str, started: float) -> None:
         self.write({"type": "meta", "model": "local-operational-fallback", "provider": "local-fallback"})
-        self.write({"type": "token", "token": text})
+        self.write({"type": "error", "message": message})
         self.write({"type": "done", "latencyMs": self._latency_ms(started)})
 
     def _write_meta(self, started: float, first_token_at: float | None = None) -> None:

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import {
@@ -13,8 +13,9 @@ import {
   BookOpen,
   ChevronRight,
   Filter,
+  Loader2,
 } from "lucide-react";
-import { MOCK_AGENTS, CATEGORY_META } from "@/lib/agent-mock-data";
+import { listAgents } from "@/lib/agent-api";
 import type { Agent, AgentCategory } from "@/lib/agent-types";
 
 const containerVariants = {
@@ -120,16 +121,46 @@ function AgentCard({ agent }: { agent: Agent }) {
 }
 
 export default function DiscoverPage() {
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<"featured" | "trending" | "recent" | "rating">("featured");
 
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    listAgents()
+      .then((result) => {
+        if (!cancelled) setAgents(result.agents);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load agents.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const categoryMeta = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const agent of agents) {
+      counts[agent.category] = (counts[agent.category] || 0) + 1;
+    }
+    return counts;
+  }, [agents]);
+
   const filtered = useMemo(() => {
-    let agents = [...MOCK_AGENTS];
+    let result = [...agents];
 
     if (search) {
       const q = search.toLowerCase();
-      agents = agents.filter(
+      result = result.filter(
         (a) =>
           a.name.toLowerCase().includes(q) ||
           a.description.toLowerCase().includes(q) ||
@@ -138,26 +169,26 @@ export default function DiscoverPage() {
     }
 
     if (selectedCategory) {
-      agents = agents.filter((a) => a.category === selectedCategory);
+      result = result.filter((a) => a.category === selectedCategory);
     }
 
     switch (sortBy) {
       case "featured":
-        agents.sort((a, b) => (b.visibility === "public" ? 1 : 0) - (a.visibility === "public" ? 1 : 0));
+        result.sort((a, b) => (b.visibility === "public" ? 1 : 0) - (a.visibility === "public" ? 1 : 0));
         break;
       case "trending":
-        agents.sort((a, b) => b.conversationCount - a.conversationCount);
+        result.sort((a, b) => b.conversationCount - a.conversationCount);
         break;
       case "recent":
-        agents.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        result.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
         break;
       case "rating":
-        agents.sort((a, b) => b.rating - a.rating);
+        result.sort((a, b) => b.rating - a.rating);
         break;
     }
 
-    return agents;
-  }, [search, selectedCategory, sortBy]);
+    return result;
+  }, [agents, search, selectedCategory, sortBy]);
 
   const featured = filtered.filter((a) => a.visibility === "public");
   const trending = filtered.filter((a) => a.conversationCount > 200);
@@ -223,9 +254,9 @@ export default function DiscoverPage() {
               : "border-white/10 text-white/40 hover:text-white/60 hover:border-white/20"
           }`}
         >
-          All ({MOCK_AGENTS.length})
+          All ({agents.length})
         </button>
-        {Object.entries(CATEGORY_META).map(([key, meta]) => (
+        {Object.entries(categoryMeta).map(([key, count]) => (
           <button
             key={key}
             onClick={() => setSelectedCategory(selectedCategory === key ? null : key)}
@@ -235,7 +266,7 @@ export default function DiscoverPage() {
                 : "border-white/10 text-white/40 hover:text-white/60 hover:border-white/20"
             }`}
           >
-            {meta.label} ({meta.count})
+            {key} ({count})
           </button>
         ))}
       </div>
@@ -301,7 +332,20 @@ export default function DiscoverPage() {
       )}
 
       {/* Empty state */}
-      {filtered.length === 0 && (
+      {loading && (
+        <div className="border border-dashed border-white/10 bg-white/[0.02] flex flex-col items-center justify-center text-center py-20">
+          <Loader2 className="w-8 h-8 text-white/25 mb-4 animate-spin" />
+          <div className="text-xl font-heading uppercase tracking-widest text-white">Loading Agents</div>
+        </div>
+      )}
+      {!loading && error && (
+        <div className="border border-dashed border-white/10 bg-white/[0.02] flex flex-col items-center justify-center text-center py-20">
+          <Search className="w-8 h-8 text-white/25 mb-4" />
+          <div className="text-xl font-heading uppercase tracking-widest text-white">Could Not Load Agents</div>
+          <p className="text-sm text-white/45 mt-3 max-w-sm">{error}</p>
+        </div>
+      )}
+      {!loading && !error && filtered.length === 0 && (
         <div className="border border-dashed border-white/10 bg-white/[0.02] flex flex-col items-center justify-center text-center py-20">
           <Search className="w-8 h-8 text-white/25 mb-4" />
           <div className="text-xl font-heading uppercase tracking-widest text-white">No Agents Found</div>

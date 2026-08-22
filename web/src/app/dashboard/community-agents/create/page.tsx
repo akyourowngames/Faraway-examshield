@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
@@ -30,7 +30,6 @@ import { createAgent, deleteAgent, validateLLMKey, upsertLLMConfig, upsertTelegr
 import { useApiQuery } from "@/lib/use-api";
 import type { LLMProviderInfo, LLMProvider, AgentCategory, ResponseStyle } from "@/lib/agent-types";
 import { agentBasicsSchema, agentLlmSchema } from "@/lib/validation";
-import { MOCK_AGENTS } from "@/lib/agent-mock-data";
 
 const STEPS = ["Basics", "LLM Provider", "Telegram", "Knowledge", "Behavior", "Review"];
 
@@ -125,19 +124,6 @@ export default function CreateAgentPage() {
   const [verifyingBot, setVerifyingBot] = useState(false);
   const [botVerified, setBotVerified] = useState(false);
   const [botVerifyInfo, setBotVerifyInfo] = useState<{ firstName?: string; canJoinGroups?: boolean; canReadAllGroupMessages?: boolean } | null>(null);
-
-  useEffect(() => {
-    const templateId = new URLSearchParams(window.location.search).get("template");
-    const template = MOCK_AGENTS.find((agent) => agent.id === templateId);
-    if (!template) return;
-    setName(`${template.name} Copy`);
-    setDescription(template.description);
-    setCategory(template.category);
-    setVisibility("private");
-    setSystemPrompt(template.systemPrompt);
-    setResponseStyle(template.responseStyle);
-    setCitationMode(template.citationMode);
-  }, []);
 
   const currentProvider = providers.find((p) => p.id === selectedProvider);
   const modelOptions = currentProvider?.models ?? [];

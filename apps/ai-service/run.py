@@ -76,7 +76,7 @@ atexit.register(_release_lock)
 if __name__ == "__main__":
     _acquire_lock()
     try:
-        from examshield_ai.server import main
+        from examshield_ai.service import main
         main()
     finally:
         _release_lock()
