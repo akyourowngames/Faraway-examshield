@@ -14,6 +14,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .agent_telegram import AgentTelegramService
+from .budget import TokenBudget
 from .chat import ChatSession
 from .detect import is_suspicious, scan_text
 from .events import sse_bytes
@@ -48,6 +49,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
     pipeline: EvidencePipeline
     memory: MemoryManager
     agent_store: AgentStore
+    budget: TokenBudget
 
     def do_OPTIONS(self) -> None:
         self._send_empty(204)
@@ -600,7 +602,13 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             self.wfile.write(sse_bytes(event))
             self.wfile.flush()
 
-        session = ChatSession(client=self.client, registry=self.registry, write=write_event)
+        session = ChatSession(
+            client=self.client,
+            registry=self.registry,
+            write=write_event,
+            budget=self.budget,
+            session_id=str(payload.get("sessionId") or "") or None,
+        )
         try:
             session.run(prompt, history, current_evidence_id)
         except Exception as exc:
@@ -1496,6 +1504,10 @@ def build_handler(settings: Settings):
     ConfiguredExamshieldAiHandler.pipeline = pipeline
     ConfiguredExamshieldAiHandler.memory = pipeline.memory
     ConfiguredExamshieldAiHandler.agent_store = AgentStore(store)
+    ConfiguredExamshieldAiHandler.budget = TokenBudget(
+        per_request_limit=settings.budget_per_request_tokens,
+        per_session_limit=settings.budget_per_session_tokens,
+    )
     return ConfiguredExamshieldAiHandler
 
 
