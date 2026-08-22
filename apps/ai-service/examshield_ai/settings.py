@@ -35,6 +35,7 @@ class Settings:
     telegram_webhook_secret: str
     telegram_chat_id: str
     telegram_admin_chat_id: str
+    supabase_backend_role_key: str = ""
 
 
 def load_settings() -> Settings:
@@ -115,6 +116,9 @@ def load_settings() -> Settings:
             os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
             or os.environ.get("SUPABASE_SERVICE_KEY")
             or ""
+        ).strip(),
+        supabase_backend_role_key=(
+            os.environ.get("SUPABASE_BACKEND_ROLE_KEY") or ""
         ).strip(),
         supabase_document_table=os.environ.get("EXAMSHIELD_SUPABASE_DOCUMENT_TABLE", "examshield_documents"),
         supabase_storage_bucket=os.environ.get("EXAMSHIELD_SUPABASE_STORAGE_BUCKET", "evidence-files"),

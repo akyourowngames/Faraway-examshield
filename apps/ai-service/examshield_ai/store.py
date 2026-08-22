@@ -1669,6 +1669,14 @@ class EvidenceStore:
             return None
         return json.loads(body.decode("utf-8"))
 
+    @property
+    def _supabase_auth_key(self) -> str:
+        # Audit §2.1: prefer the least-privilege dedicated backend role
+        # (SUPABASE_BACKEND_ROLE_KEY) when configured so Supabase RLS actually
+        # applies to backend queries. Falls back to the bypassing service_role
+        # for backwards compatibility.
+        return self.settings.supabase_backend_role_key or self.settings.supabase_service_role_key
+
     def _supabase_bytes(
         self,
         method: str,
@@ -1679,8 +1687,8 @@ class EvidenceStore:
         extra_headers: dict[str, str] | None = None,
     ) -> bytes:
         headers = {
-            "apikey": self.settings.supabase_service_role_key,
-            "Authorization": f"Bearer {self.settings.supabase_service_role_key}",
+            "apikey": self._supabase_auth_key,
+            "Authorization": f"Bearer {self._supabase_auth_key}",
         }
         if content_type:
             headers["Content-Type"] = content_type
