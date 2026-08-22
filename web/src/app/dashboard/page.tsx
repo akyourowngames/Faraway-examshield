@@ -9,6 +9,7 @@ import {
   formatEvidenceTime,
 } from "@/lib/evidence-format";
 import { useEvidenceFeed } from "@/lib/use-evidence-feed";
+import { EmptyState } from "@/components/ui/EmptyState";
 
 // Code-split the threat map (framer-motion + @svg-maps/india) out of the initial
 // dashboard bundle. It is client-only and renders below-the-fold, so it is an
@@ -142,17 +143,11 @@ export default function Dashboard() {
             })}
 
             {evidenceData.activity.length === 0 && (
-              <div className="h-full flex flex-col items-center justify-center text-center text-white/40 gap-4 px-6">
-                <FileUp className="w-8 h-8 text-white/25" />
-                <div>
-                  <div className="text-xl font-heading uppercase tracking-widest text-white">
-                    No Active Investigations
-                  </div>
-                  <p className="text-sm text-white/45 mt-3 max-w-xs">
-                    All monitored channels are clear. Evidence intake and alerts will stream here automatically.
-                  </p>
-                </div>
-              </div>
+              <EmptyState
+                icon={FileUp}
+                title="No Active Investigations"
+                description="All monitored channels are clear. Evidence intake and alerts will stream here automatically."
+              />
             )}
           </div>
         </motion.div>
