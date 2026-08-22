@@ -884,7 +884,7 @@ def empty_investigation() -> JsonObject:
     return {
         "evidenceId": None,
         "paperId": None,
-        "status": "Standby",
+        "status": "Idle",
         "confidence": None,
         "risk": None,
         "centerCode": None,

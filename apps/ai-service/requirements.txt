@@ -7,6 +7,10 @@ pymupdf>=1.23.0
 python-dotenv>=1.0.0
 cryptography>=42.0.0
 python-multipart>=0.0.32
+# FastAPI transport (ASGI server; stdlib http.server kept as fallback)
+fastapi>=0.110
+uvicorn>=0.29
+httpx>=0.27
 
 # Test dependencies (CI runs `pytest -q` after installing this file)
 pytest>=8.0

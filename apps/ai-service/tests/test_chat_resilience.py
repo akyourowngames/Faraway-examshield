@@ -63,7 +63,8 @@ def test_chat_without_provider_returns_visible_local_fallback():
     session.run("hello", [], None)
 
     assert any(event.get("provider") == "local-fallback" for event in events)
-    assert any("online" in event.get("token", "") for event in events)
+    error_event = next(event for event in events if event["type"] == "error")
+    assert "No language model is configured" in error_event["message"]
     assert events[-1]["type"] == "done"
 
 
@@ -74,7 +75,8 @@ def test_failed_stream_returns_visible_local_fallback():
     session.run("hello", [], None)
 
     assert any(event.get("provider") == "local-fallback" for event in events)
-    assert any("did not respond" in event.get("token", "") for event in events)
+    error_event = next(event for event in events if event["type"] == "error")
+    assert "did not respond" in error_event["message"]
     assert events[-1]["type"] == "done"
 
 
