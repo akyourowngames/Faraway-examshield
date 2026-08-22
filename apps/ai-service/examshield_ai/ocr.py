@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import subprocess
@@ -124,10 +125,8 @@ def analyze_image(image_bytes: bytes, suffix: str) -> dict[str, Any]:
     except subprocess.TimeoutExpired:
         return failed_result("OCR timed out.", started)
     finally:
-        try:
+        with contextlib.suppress(OSError):
             temp_path.unlink(missing_ok=True)
-        except OSError:
-            pass
 
 
 def completed_result(candidate: dict[str, Any], started: float, engine_name: str) -> dict[str, Any]:
@@ -165,12 +164,9 @@ def run_tesseract_best_candidate(image_path: Path, *, deadline: float | None) ->
 
 
 def write_temp_image(image_bytes: bytes, suffix: str) -> Path:
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    try:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
         temp_file.write(image_bytes)
         return Path(temp_file.name)
-    finally:
-        temp_file.close()
 
 
 def prepare_ocr_image(image_bytes: bytes, suffix: str) -> Path:
@@ -197,8 +193,7 @@ def prepare_ocr_image(image_bytes: bytes, suffix: str) -> Path:
             (max(1, int(width * scale)), max(1, int(height * scale))),
             interpolation=cv2.INTER_AREA,
         )
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-        try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
             if not cv2.imwrite(temp_file.name, resized):
                 return write_temp_image(image_bytes, suffix)
             logger.info(
@@ -209,8 +204,6 @@ def prepare_ocr_image(image_bytes: bytes, suffix: str) -> Path:
                 resized.shape[0],
             )
             return Path(temp_file.name)
-        finally:
-            temp_file.close()
     except Exception as exc:
         logger.warning("OCR image preprocess skipped: %s", exc)
         return write_temp_image(image_bytes, suffix)
