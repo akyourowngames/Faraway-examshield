@@ -6,7 +6,7 @@ from .detect import is_suspicious, scan_text
 from .memory import MemoryManager
 from .store import EvidenceStore, JsonObject
 from .telegram import TelegramWebhook, _should_send_alert
-from .workers import AnalysisTask, AnalysisWorkerPool, OcrRunner
+from .workers import AnalysisTask, AnalysisWorkerPool, OcrRunner, PoolSaturatedError
 
 logger = logging.getLogger(__name__)
 
@@ -138,12 +138,22 @@ class EvidencePipeline:
             except Exception as memory_exc:
                 logger.warning("Memory correlation failed for evidence %s: %s", evidence_id, memory_exc)
 
-        self.workers.submit(
-            self.store,
-            AnalysisTask(job_id=job_id, evidence_id=evidence_id),
-            ocr_runner,
-            on_complete=on_complete,
-        )
+        try:
+            self.workers.submit(
+                self.store,
+                AnalysisTask(job_id=job_id, evidence_id=evidence_id),
+                ocr_runner,
+                on_complete=on_complete,
+            )
+        except PoolSaturatedError as exc:
+            # Shed gracefully: fail the job now so the evidence does not sit in
+            # "pending-analysis" forever under burst load.
+            logger.warning("OCR job %s shed at pool capacity: %s", job_id, exc)
+            try:
+                self.store.fail_analysis_job(job_id, str(exc))
+            except Exception as fail_exc:
+                logger.error("Failed to mark shed job %s failed: %s", job_id, fail_exc)
+            return
         logger.info("Queued OCR job %s for evidence %s", job_id, evidence_id)
 
     def recover_interrupted_jobs(self, ocr_runner: OcrRunner) -> int:
@@ -167,12 +177,21 @@ class EvidencePipeline:
                 except Exception as fail_exc:
                     logger.error("Failed to mark recovered job %s failed: %s", recovered_job_id, fail_exc)
 
-            if self.workers.submit(
-                self.store,
-                AnalysisTask(job_id=job_id, evidence_id=evidence_id),
-                ocr_runner,
-                on_complete=on_complete,
-            ):
+            try:
+                submitted = self.workers.submit(
+                    self.store,
+                    AnalysisTask(job_id=job_id, evidence_id=evidence_id),
+                    ocr_runner,
+                    on_complete=on_complete,
+                )
+            except PoolSaturatedError as exc:
+                logger.warning("Recovered OCR job %s shed at pool capacity: %s", job_id, exc)
+                try:
+                    self.store.fail_analysis_job(job_id, str(exc))
+                except Exception as fail_exc:
+                    logger.error("Failed to mark shed job %s failed: %s", job_id, fail_exc)
+                continue
+            if submitted:
                 recovered += 1
                 logger.info("Recovered OCR job %s for evidence %s", job_id, evidence_id)
         return recovered
