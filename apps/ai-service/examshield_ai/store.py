@@ -73,7 +73,7 @@ class EvidenceStore:
         self.root = settings.upload_root
         self.supabase_enabled = bool(settings.supabase_url and settings.supabase_service_role_key)
         self._dir_cache: dict[str, tuple[float, "float | None", list[JsonObject]]] = {}
-        self._list_evidence_cache: tuple[float, JsonObject] | None = None
+        self._list_evidence_cache: dict[str, tuple[float, JsonObject]] = {}
 
     def ensure_storage(self) -> None:
         for name in (
@@ -152,24 +152,83 @@ class EvidenceStore:
             "restored": ["core-registry-seed"],
         }
 
-    def list_evidence(self) -> JsonObject:
+    def list_evidence(self, *, owner_id: str | None = None) -> JsonObject:
         ttl = self.settings.list_cache_ttl_seconds
-        if ttl > 0 and self._list_evidence_cache:
-            cached_at, payload = self._list_evidence_cache
-            if (time.monotonic() - cached_at) < ttl:
-                return payload
+        cache_key = str(owner_id) if owner_id is not None else "__all__"
+        if ttl > 0:
+            cached = self._list_evidence_cache.get(cache_key)
+            if cached is not None:
+                cached_at, payload = cached
+                if (time.monotonic() - cached_at) < ttl:
+                    return payload
 
         collections = self._read_collections_batch(LIST_EVIDENCE_COLLECTIONS)
+        records = collections.get("records", [])
+
+        if owner_id is not None:
+            owner_id = str(owner_id)
+
+            def _scoped_by_owner(item: JsonObject) -> bool:
+                # A personal-scope request must never see an org-scoped record.
+                if item.get("orgId") or item.get("org_id"):
+                    return False
+                if str(item.get("ownerId") or item.get("owner_id") or "") == owner_id:
+                    return True
+                owner_ids = [str(o) for o in (item.get("ownerIds") or [])]
+                return owner_id in owner_ids
+
+            # Child records (attributions/watermarks/reports/jobs/activity) are
+            # keyed by evidenceId and inherit the parent evidence's owner.
+            owner_by_evidence = {
+                str(record.get("evidenceId") or ""): str(
+                    record.get("orgId")
+                    or record.get("org_id")
+                    or record.get("ownerId")
+                    or record.get("owner_id")
+                    or ""
+                )
+                for record in records
+            }
+
+            def _scoped_by_evidence(item: JsonObject) -> bool:
+                evidence_id = str(item.get("evidenceId") or "")
+                parent = owner_by_evidence.get(evidence_id)
+                if parent is not None:
+                    return parent == owner_id
+                return str(item.get("ownerId") or item.get("owner_id") or "") == owner_id
+
+            records = [r for r in records if _scoped_by_owner(r)]
+            collections = {
+                **collections,
+                "records": records,
+                "alerts": [a for a in collections.get("alerts", []) if _scoped_by_evidence(a)],
+                "telegram-events": [e for e in collections.get("telegram-events", []) if _scoped_by_evidence(e)],
+                "attributions": [a for a in collections.get("attributions", []) if _scoped_by_evidence(a)],
+                "watermarks": [w for w in collections.get("watermarks", []) if _scoped_by_evidence(w)],
+                "reports": [r for r in collections.get("reports", []) if _scoped_by_evidence(r)],
+                "jobs": [j for j in collections.get("jobs", []) if _scoped_by_evidence(j)],
+                "memory-items": [m for m in collections.get("memory-items", []) if _scoped_by_owner(m)],
+                "memory-correlations": [c for c in collections.get("memory-correlations", []) if _scoped_by_owner(c)],
+            }
+
         evidence = sorted(
             (self._to_evidence_record(record) for record in collections.get("records", [])),
             key=lambda item: _time_sort_key(item.get("uploadedAt")),
             reverse=True,
         )
-        activity = sorted(
-            self._read_activity(),
-            key=lambda item: _time_sort_key(item.get("timestamp")),
-            reverse=True,
-        )
+        activity_raw = self._read_activity()
+        if owner_id is not None:
+            activity = sorted(
+                [a for a in activity_raw if _scoped_by_evidence(a)],
+                key=lambda item: _time_sort_key(item.get("timestamp")),
+                reverse=True,
+            )
+        else:
+            activity = sorted(
+                activity_raw,
+                key=lambda item: _time_sort_key(item.get("timestamp")),
+                reverse=True,
+            )
         jobs = sorted(
             collections.get("jobs", []),
             key=lambda item: _time_sort_key(item.get("createdAt")),
@@ -246,7 +305,7 @@ class EvidenceStore:
             },
         }
         if ttl > 0:
-            self._list_evidence_cache = (time.monotonic(), payload)
+            self._list_evidence_cache[cache_key] = (time.monotonic(), payload)
         return payload
 
     def warmup_cache(self) -> None:
@@ -258,7 +317,7 @@ class EvidenceStore:
     def _invalidate_collection_cache(self, *names: str) -> None:
         for name in names:
             self._dir_cache.pop(name, None)
-        self._list_evidence_cache = None
+        self._list_evidence_cache = {}
 
     def _read_collections_batch(self, names: tuple[str, ...]) -> dict[str, list[JsonObject]]:
         ttl = self.settings.list_cache_ttl_seconds
@@ -370,8 +429,8 @@ class EvidenceStore:
         record = self._stored_record_for_evidence(evidence_id)
         return self._to_evidence_record(record) if record else None
 
-    def get_bundle(self, evidence_id: str) -> JsonObject | None:
-        data = self.list_evidence()
+    def get_bundle(self, evidence_id: str, *, owner_id: str | None = None) -> JsonObject | None:
+        data = self.list_evidence(owner_id=owner_id)
         evidence = next((item for item in data["evidence"] if item.get("evidenceId") == evidence_id), None)
         if not evidence:
             return None
@@ -1997,6 +2056,8 @@ class EvidenceStore:
             "detectionSeverity": normalized.get("detectionSeverity"),
             "detectionMatches": normalized.get("detectionMatches"),
             "telegramAlertSent": normalized.get("telegramAlertSent"),
+            "ownerId": normalized.get("ownerId"),
+            "orgId": normalized.get("orgId") or normalized.get("org_id"),
         }
 
 
