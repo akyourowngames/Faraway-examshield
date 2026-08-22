@@ -23,19 +23,21 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { createClient } from "@/lib/supabase/client";
+import { useI18n } from "@/lib/i18n";
+import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 
 const NAV_ITEMS = [
-  { name: "Command Center", href: "/dashboard", icon: Activity },
-  { name: "EXAMSHIELD AI", href: "/dashboard/ai", icon: Bot },
-  { name: "Evidence Center", href: "/dashboard/evidence", icon: Files },
-  { name: "Question Registry", href: "/dashboard/registry", icon: BookOpen },
-  { name: "Threat Intelligence", href: "/dashboard/threats", icon: Crosshair },
-  { name: "Investigation", href: "/dashboard/investigation", icon: Map },
-  { name: "Exam Lifecycle", href: "/dashboard/lifecycle", icon: ShieldAlert },
-  { name: "Alerts", href: "/dashboard/alerts", icon: BellRing },
-  { name: "Community Agents", href: "/dashboard/community-agents", icon: Users },
-  { name: "Settings", href: "/dashboard/settings", icon: Settings },
-];
+  { key: "commandCenter", href: "/dashboard", icon: Activity },
+  { key: "examshieldAi", href: "/dashboard/ai", icon: Bot },
+  { key: "evidenceCenter", href: "/dashboard/evidence", icon: Files },
+  { key: "questionRegistry", href: "/dashboard/registry", icon: BookOpen },
+  { key: "threatIntelligence", href: "/dashboard/threats", icon: Crosshair },
+  { key: "investigation", href: "/dashboard/investigation", icon: Map },
+  { key: "examLifecycle", href: "/dashboard/lifecycle", icon: ShieldAlert },
+  { key: "alerts", href: "/dashboard/alerts", icon: BellRing },
+  { key: "communityAgents", href: "/dashboard/community-agents", icon: Users },
+  { key: "settings", href: "/dashboard/settings", icon: Settings },
+] as const;
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -45,6 +47,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [userName, setUserName] = useState<string | null>(null);
   const [loadingUser, setLoadingUser] = useState(true);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const { t } = useI18n();
 
   useEffect(() => {
     fetch("/api/keep-warm", { cache: "no-store" }).catch(() => undefined);
@@ -110,9 +113,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     ? ".."
     : userName?.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2) ?? "OP";
 
+  const activeNav = NAV_ITEMS.find((n) => n.href === pathname);
   const pageLabel = pathname === "/dashboard"
-    ? "Command Center"
-    : NAV_ITEMS.find((n) => n.href === pathname)?.name ?? pathname.split("/").pop();
+    ? t("dashboard.commandCenterTitle")
+    : (activeNav ? t(`nav.${activeNav.key}`) : (pathname.split("/").pop() ?? ""));
 
   return (
     <div className="flex h-[100dvh] bg-black overflow-hidden font-sans">
@@ -126,20 +130,20 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </div>
 
         <div className="flex-1 overflow-y-auto py-8 px-4 flex flex-col gap-2">
-          <div className="px-4 mb-4 text-[10px] font-bold text-white/30 uppercase tracking-[0.2em]">Operations Grid</div>
+          <div className="px-4 mb-4 text-[10px] font-bold text-white/30 uppercase tracking-[0.2em]">{t("nav.operationsGrid")}</div>
           {NAV_ITEMS.map((item) => {
             const isActive = item.href === "/dashboard"
               ? pathname === "/dashboard"
               : pathname === item.href || pathname.startsWith(item.href + "/");
             const Icon = item.icon;
             return (
-              <Link key={item.name} href={item.href}>
+              <Link key={t(`nav.${item.key}`)} href={item.href}>
                 <div className={cn(
                   "relative flex items-center gap-4 px-4 py-3 rounded-none transition-colors text-xs font-semibold uppercase tracking-widest",
                   isActive ? "text-black bg-white" : "text-white/50 hover:text-white hover:bg-white/5"
                 )}>
                   <Icon className={cn("w-4 h-4", isActive ? "text-black" : "text-white/50")} />
-                  {item.name}
+                  {t(`nav.${item.key}`)}
                 </div>
               </Link>
             );
@@ -152,7 +156,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             className="w-full flex items-center gap-4 px-4 py-3 text-white/50 hover:text-white transition-colors cursor-pointer rounded-none hover:bg-white/5"
           >
             <LogOut className="w-4 h-4" />
-            <span className="text-xs font-semibold uppercase tracking-widest">System Exit</span>
+            <span className="text-xs font-semibold uppercase tracking-widest">{t("nav.systemExit")}</span>
           </button>
           <div className="mt-8 px-4 flex items-center gap-4">
             <div className="w-10 h-10 rounded-none bg-white flex items-center justify-center shrink-0">
@@ -199,20 +203,20 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               </div>
 
               <div className="flex-1 overflow-y-auto py-6 px-3 flex flex-col gap-1">
-                <div className="px-3 mb-3 text-[10px] font-bold text-white/30 uppercase tracking-[0.2em]">Operations Grid</div>
+                <div className="px-3 mb-3 text-[10px] font-bold text-white/30 uppercase tracking-[0.2em]">{t("nav.operationsGrid")}</div>
                 {NAV_ITEMS.map((item) => {
                   const isActive = item.href === "/dashboard"
                     ? pathname === "/dashboard"
                     : pathname === item.href || pathname.startsWith(item.href + "/");
                   const Icon = item.icon;
                   return (
-                    <Link key={item.name} href={item.href}>
+                    <Link key={t(`nav.${item.key}`)} href={item.href}>
                       <div className={cn(
                         "flex items-center gap-4 px-4 py-3 rounded-none transition-colors text-xs font-semibold uppercase tracking-widest",
                         isActive ? "text-black bg-white" : "text-white/50 active:bg-white/10"
                       )}>
                         <Icon className={cn("w-4 h-4", isActive ? "text-black" : "text-white/50")} />
-                        {item.name}
+                        {t(`nav.${item.key}`)}
                       </div>
                     </Link>
                   );
@@ -225,7 +229,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                   className="w-full flex items-center gap-4 px-4 py-3 text-white/50 hover:text-white transition-colors rounded-none hover:bg-white/5"
                 >
                   <LogOut className="w-4 h-4" />
-                  <span className="text-xs font-semibold uppercase tracking-widest">System Exit</span>
+                  <span className="text-xs font-semibold uppercase tracking-widest">{t("nav.systemExit")}</span>
                 </button>
                 <div className="mt-6 px-4 flex items-center gap-4">
                   <div className="w-10 h-10 rounded-none bg-white flex items-center justify-center shrink-0">
@@ -267,6 +271,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </div>
 
           <div className="flex shrink-0 items-center gap-2 sm:gap-3 lg:gap-4">
+            <LanguageSwitcher />
             <button
               type="button"
               onClick={resetEnvironment}

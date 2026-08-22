@@ -369,11 +369,14 @@ shipping value.
 
 ## 15. Maintainability Issues
 
-* **No frontend tests** — zero coverage for React components/route handlers (no test runner configured in
-  `web/package.json`).
+* ~~**No frontend tests** — zero coverage for React components/route handlers (no test runner configured in
+  `web/package.json`).~~ **RESOLVED** — Vitest suite configured (`web/vitest.config.ts` + `web/tests/setup.ts`)
+  with login-page render and evidence-format util tests (`npm test`); wired into the `quality-gate` GitHub
+  Actions workflow.
 * **Backend tests exist** (`apps/ai-service/tests/`: `test_analysis_flow`, `test_ocr`, `test_ocrspace`,
   `test_store_snapshot`, `test_telegram_pipeline`, `test_workers`, `conftest`) — good, but they are
-  integration-style and depend on local filesystem/network; **[UNVERIFIED]** whether they run in CI (no CI).
+  integration-style and depend on local filesystem/network; ~~**[UNVERIFIED]** whether they run in CI (no CI)~~
+  now **verified in CI** — the `quality-gate` workflow runs ruff + pytest on every PR and push to `main`.
 * **No type checking in Python** (no `mypy`/`pyright`) despite heavy use of `JsonObject` dicts.
 * **Duplicated model/fallback config** across `settings.py`, `render.yaml`, `llm.py`, `planner.py`.
 * **Large modules:** `server.py` (~1440 lines), `store.py` (~1900 lines), `tools.py`, `memory.py` — each is
@@ -409,9 +412,9 @@ shipping value.
 | Plaintext agent keys | Column misnamed "encrypted" | Credential leak risk | P0 | Vault/encryption at rest |
 | Unauthenticated API | Assumed network trust | Data exposure | P0 | Add auth/gateway |
 | String embeddings in RAG | Quick prototype | Broken RAG | P1 | Store real vector |
-| No CI | Time/scope | Regressions ship | P1 | GitHub Actions lint/test/build |
+| No CI | Time/scope | Regressions ship | P1 | ~~GitHub Actions lint/test/build~~ **DONE** — `.github/workflows/quality-gate.yml` (ruff + pytest + web typecheck/test/build) |
 | No migrations | Manual schema.sql | Unversioned schema | P1 | supabase/migrations |
-| No frontend tests | Time/scope | UI regressions | P2 | Vitest + component tests |
+| No frontend tests | Time/scope | UI regressions | P2 | ~~Vitest + component tests~~ **DONE** — Vitest suite in `web/`, run in the quality gate |
 | JSONB document bag | Rapid prototyping | Weak integrity/query | P2 | Relational tables |
 | Duplicate config | Convenience | Drift | P2 | Single source of truth |
 | Stub modules in tree | Experimentation | Confusion | P3 | Move to separate repos/optional |

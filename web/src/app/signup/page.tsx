@@ -6,7 +6,11 @@ import { motion } from "framer-motion";
 import { Mail, Lock, User, ArrowRight } from "lucide-react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
+<<<<<<< HEAD
 import { signupSchema, fieldErrors } from "@/lib/validation";
+=======
+import { useI18n } from "@/lib/i18n";
+>>>>>>> origin/main
 
 const GithubIcon = () => (
   <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
@@ -32,6 +36,7 @@ export default function SignupPage() {
   const [success, setSuccess] = useState<string | null>(null);
   const [fieldErrorsState, setFieldErrorsState] = useState<Record<string, string>>({});
   const router = useRouter();
+  const { t } = useI18n();
   const supabase = createClient();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -150,8 +155,8 @@ export default function SignupPage() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5 }}
           >
-            <h1 className="text-3xl font-bold mb-2 tracking-tight">Create account</h1>
-            <p className="text-zinc-400 text-sm mb-8">Sign up to get started with ExamShield</p>
+            <h1 className="text-3xl font-bold mb-2 tracking-tight">{t("auth.createAccount")}</h1>
+            <p className="text-zinc-400 text-sm mb-8">{t("auth.signUpToGetStarted")}</p>
 
             {error && (
               <div className="mb-4 p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-sm text-red-400">
@@ -166,7 +171,7 @@ export default function SignupPage() {
 
             <form onSubmit={handleSubmit} className="space-y-5">
               <div className="space-y-2">
-                <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Full Name</label>
+                <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">{t("auth.fullName")}</label>
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
                     <User className="h-5 w-5 text-zinc-500" />
@@ -187,7 +192,7 @@ export default function SignupPage() {
               </div>
 
               <div className="space-y-2">
-                <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Email</label>
+                <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">{t("auth.email")}</label>
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
                     <Mail className="h-5 w-5 text-zinc-500" />
@@ -208,7 +213,7 @@ export default function SignupPage() {
               </div>
 
               <div className="space-y-2">
-                <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Password</label>
+                <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">{t("auth.password")}</label>
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
                     <Lock className="h-5 w-5 text-zinc-500" />
@@ -233,7 +238,7 @@ export default function SignupPage() {
                 disabled={loading}
                 className="w-full mt-2 bg-white text-black font-semibold text-sm py-3 rounded-xl hover:bg-zinc-200 transition-colors flex items-center justify-center group disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {loading ? "Creating account..." : "Sign Up"}
+                {loading ? t("auth.creatingAccount") : t("auth.signUp")}
                 <ArrowRight className="ml-2 h-4 w-4 group-hover:translate-x-1 transition-transform" />
               </button>
             </form>
@@ -242,7 +247,7 @@ export default function SignupPage() {
               <div className="absolute inset-0 flex items-center">
                 <div className="w-full border-t border-white/10"></div>
               </div>
-              <div className="relative bg-black px-4 text-xs text-zinc-500 font-medium">Or sign up with</div>
+              <div className="relative bg-black px-4 text-xs text-zinc-500 font-medium">{t("auth.orSignUpWith")}</div>
             </div>
 
             <div className="grid grid-cols-2 gap-4">
@@ -252,7 +257,7 @@ export default function SignupPage() {
                 className="flex items-center justify-center py-2.5 bg-white/5 border border-white/10 rounded-xl hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <GoogleIcon />
-                <span className="ml-2 text-sm font-medium">Google</span>
+                <span className="ml-2 text-sm font-medium">{t("auth.google")}</span>
               </button>
               <button
                 onClick={() => handleOAuthSignup("github")}
@@ -260,15 +265,15 @@ export default function SignupPage() {
                 className="flex items-center justify-center py-2.5 bg-white/5 border border-white/10 rounded-xl hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <GithubIcon />
-                <span className="ml-2 text-sm font-medium">GitHub</span>
+                <span className="ml-2 text-sm font-medium">{t("auth.github")}</span>
               </button>
             </div>
 
             <div className="mt-10 text-center">
               <p className="text-sm text-zinc-400">
-                Already have an account?{" "}
+                {t("auth.alreadyHaveAccount")}{" "}
                 <Link href="/login" className="text-white font-medium hover:text-emerald-400 transition-colors">
-                  Sign in
+                  {t("auth.signIn")}
                 </Link>
               </p>
             </div>
