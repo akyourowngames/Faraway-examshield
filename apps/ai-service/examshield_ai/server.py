@@ -36,7 +36,7 @@ from .rag import (
     ingest_knowledge_source,
     search_agent_knowledge,
 )
-from .ratelimit import make_ocr_limiter, make_upload_limiter
+from .ratelimit import RateLimiter, make_ocr_limiter, make_upload_limiter
 from .response_cache import ReadResponseCache, cached_get
 from .settings import Settings, load_settings
 from .store import AgentStore, EvidenceStore, UploadedFile, normalize_telegram_timestamp
@@ -44,6 +44,15 @@ from .telegram import TelegramWebhook
 from .watermark import decode_watermark, parse_token
 from .tools import ExamshieldToolRegistry
 from .workers import AnalysisTask, AnalysisWorkerPool
+
+
+def _error_payload(message: str) -> dict[str, str]:
+    """Build a safe error body. Never includes exception internals (audit §6.3).
+
+    Handlers must pass a fixed, client-safe message rather than `str(exc)`,
+    which can leak stack traces or internal identifiers to clients.
+    """
+    return {"error": message}
 
 
 def resolve_cors_headers(settings: Settings, origin: str | None) -> dict[str, str]:
@@ -128,6 +137,10 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
     pipeline: EvidencePipeline
     memory: MemoryManager
     agent_store: AgentStore
+    # Wired up on ConfiguredExamshieldAiHandler at startup (see make_handler).
+    _get_cache: ReadResponseCache
+    _ocr_limiter: RateLimiter
+    _upload_limiter: RateLimiter
 
     def do_OPTIONS(self) -> None:
         self._send_empty(204)
@@ -248,8 +261,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         if len(parts) == 3 and parts[0] == "analysis" and parts[1] == "jobs":
             try:
                 self._send_json(self.store.analysis_job_snapshot(parts[2]))
-            except LookupError as exc:
-                self._send_json({"error": str(exc)}, status=404)
+            except LookupError:
+                self._send_json(_error_payload("Not found."), status=404)
             return
         # Community Agents
         if path == "/llm/providers":
@@ -449,12 +462,12 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             uploaded = self._read_multipart_file("file")
             created = self.store.create_evidence(uploaded)
             self._send_json({"message": "Evidence Created", **created}, status=201)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Evidence upload failed."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Evidence upload failed."), status=400)
 
     def _create_analysis_job(self) -> None:
         payload = self._read_json()
-        evidence_id = str(payload.get("evidenceId") or "").strip()
+        evidence_id = normalize_evidence_id(payload)
         async_mode = bool(payload.get("async"))
         if not evidence_id:
             self._send_json({"error": "evidenceId is required."}, status=400)
@@ -512,10 +525,10 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                     "activity": [queued["activity"]],
                 }
             )
-        except LookupError as exc:
-            self._send_json({"error": str(exc)}, status=404)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Analysis failed."}, status=400)
+        except LookupError:
+            self._send_json(_error_payload("Not found."), status=404)
+        except Exception:
+            self._send_json(_error_payload("Analysis failed."), status=400)
 
     def _process_analysis_job(self, job_id: str) -> None:
         try:
@@ -535,7 +548,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 self._send_json(snapshot, status=202)
                 return
 
-            evidence_id = str(job.get("evidenceId") or "")
+            evidence_id = normalize_evidence_id(job)
             if self.workers.is_evidence_active(evidence_id):
                 snapshot = self.store.analysis_job_snapshot(job_id)
                 snapshot["message"] = "Analysis In Progress"
@@ -569,10 +582,10 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             snapshot = self.store.analysis_job_snapshot(job_id)
             snapshot["message"] = "Analysis In Progress"
             self._send_json(snapshot, status=202)
-        except LookupError as exc:
-            self._send_json({"error": str(exc)}, status=404)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Analysis failed."}, status=400)
+        except LookupError:
+            self._send_json(_error_payload("Not found."), status=404)
+        except Exception:
+            self._send_json(_error_payload("Analysis failed."), status=400)
 
     def _ingest_telegram_event(self) -> None:
         try:
@@ -638,7 +651,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                     created, detection, text, chat_id, message
                 )
                 latest_evidence = (
-                    self.store.get_evidence_by_id(str(created["evidence"].get("evidenceId")))
+                    self.store.get_evidence_by_id(normalize_evidence_id(created["evidence"]))
                     or created["evidence"]
                 )
                 self._send_json(
@@ -674,8 +687,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 },
                 status=202,
             )
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Telegram event ingestion failed."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Telegram event ingestion failed."), status=400)
 
     def _ingest_telegram_webhook(self) -> None:
         secret = self.headers.get("X-Telegram-Bot-Api-Secret-Token")
@@ -693,7 +706,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             self._send_json(result)
         except Exception as exc:
             logger.error(f"Webhook processing failed: {type(exc).__name__}: {exc}", exc_info=True)
-            self._send_json({"error": str(exc) or "Telegram webhook failed."}, status=400)
+            self._send_json(_error_payload("Telegram webhook failed."), status=400)
 
     def _register_telegram_webhook(self) -> None:
         payload = self._read_json()
@@ -708,8 +721,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 "publicUrl": self.telegram.settings.public_url or "NOT SET",
                 "botTokenSet": bool(self.telegram.settings.telegram_bot_token),
             })
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Webhook registration failed."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Webhook registration failed."), status=400)
 
     def _get_telegram_status(self) -> None:
         try:
@@ -724,8 +737,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 "lastErrorDate": info.get("last_error_date"),
                 "lastErrorMessage": info.get("last_error_message"),
             }
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to get Telegram status."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Failed to get Telegram status."), status=400)
             return
         # The Telegram API call is the expensive part; cache the assembled status
         # for read_cache_ttl_seconds so dashboard polling doesn't hit Telegram each time.
@@ -739,7 +752,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             return
 
         history = payload.get("messages") if isinstance(payload.get("messages"), list) else []
-        current_evidence_id = payload.get("currentEvidenceId")
+        current_evidence_id = normalize_current_evidence_id(payload)
         current_evidence_id = str(current_evidence_id) if current_evidence_id else None
 
         # Resolve the operator (logged-in user) so the model can address them by
@@ -779,7 +792,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             return
 
         history = payload.get("messages") if isinstance(payload.get("messages"), list) else []
-        current_evidence_id = payload.get("currentEvidenceId")
+        current_evidence_id = normalize_current_evidence_id(payload)
         current_evidence_id = str(current_evidence_id) if current_evidence_id else None
 
         if not self.client.configured:
@@ -806,10 +819,10 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
     def _memory_ingest(self) -> None:
         try:
             self._send_json(self.memory.ingest_manual(self._read_json()), status=201)
-        except LookupError as exc:
-            self._send_json({"error": str(exc)}, status=404)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Memory ingest failed."}, status=400)
+        except LookupError:
+            self._send_json(_error_payload("Not found."), status=404)
+        except Exception:
+            self._send_json(_error_payload("Memory ingest failed."), status=400)
 
     def _memory_search(self) -> None:
         try:
@@ -832,14 +845,14 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                     created_after=created_after,
                 )
             )
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Memory search failed."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Memory search failed."), status=400)
 
     def _memory_correlate(self) -> None:
         try:
             payload = self._read_json()
             memory_id = str(payload.get("memoryId") or "").strip()
-            evidence_id = str(payload.get("evidenceId") or "").strip()
+            evidence_id = normalize_evidence_id(payload)
             if memory_id:
                 self._send_json(self.memory.correlate_memory_id(memory_id))
                 return
@@ -848,17 +861,17 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 self._send_json(result.get("correlation") or {"correlated": False})
                 return
             self._send_json({"error": "memoryId or evidenceId is required."}, status=400)
-        except LookupError as exc:
-            self._send_json({"error": str(exc)}, status=404)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Memory correlation failed."}, status=400)
+        except LookupError:
+            self._send_json(_error_payload("Not found."), status=404)
+        except Exception:
+            self._send_json(_error_payload("Memory correlation failed."), status=400)
 
     def _get_memory(self, memory_id: str) -> None:
         try:
             result = self.memory.get_memory(memory_id)
             self._send_json(result if result else {"error": "Memory item not found."}, status=200 if result else 404)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Memory lookup failed."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Memory lookup failed."), status=400)
 
     # ─────────────────────────────────────────────────────────────────
     # Community Agents
@@ -877,8 +890,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 lambda: self.agent_store.list_agents(status=status),
             )
             self._send_json({"agents": agents, "total": len(agents)})
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to list agents."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Failed to list agents."), status=400)
 
     def _get_agent(self, agent_id: str) -> None:
         try:
@@ -905,26 +918,26 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 "knowledgeSources": sources,
                 "stats": stats,
             })
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to get agent."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Failed to get agent."), status=400)
 
     def _create_agent(self) -> None:
         try:
             data = self._read_json()
             agent = self.agent_store.create_agent(data)
             self._send_json({"agent": agent, "message": "Agent created."}, status=201)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to create agent."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Failed to create agent."), status=400)
 
     def _update_agent(self, agent_id: str) -> None:
         try:
             data = self._read_json()
             agent = self.agent_store.update_agent(agent_id, data)
             self._send_json({"agent": agent, "message": "Agent updated."})
-        except LookupError as exc:
-            self._send_json({"error": str(exc)}, status=404)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to update agent."}, status=400)
+        except LookupError:
+            self._send_json(_error_payload("Not found."), status=404)
+        except Exception:
+            self._send_json(_error_payload("Failed to update agent."), status=400)
 
     def _delete_agent(self, agent_id: str) -> None:
         try:
@@ -933,18 +946,18 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 self._send_json({"message": "Agent deleted."})
             else:
                 self._send_json({"error": "Agent not found."}, status=404)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to delete agent."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Failed to delete agent."), status=400)
 
     def _upsert_agent_llm(self, agent_id: str) -> None:
         try:
             data = self._read_json()
             config = self.agent_store.upsert_llm_config(agent_id, data)
             self._send_json({"config": {k: v for k, v in config.items() if k != "apiKeyEncrypted"}, "message": "LLM config saved."})
-        except LookupError as exc:
-            self._send_json({"error": str(exc)}, status=404)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to save LLM config."}, status=400)
+        except LookupError:
+            self._send_json(_error_payload("Not found."), status=404)
+        except Exception:
+            self._send_json(_error_payload("Failed to save LLM config."), status=400)
 
     def _upsert_agent_telegram(self, agent_id: str) -> None:
         try:
@@ -953,10 +966,10 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             safe_config = {k: v for k, v in config.items() if k != "botToken"}
             safe_config["botTokenSet"] = bool(config.get("botToken"))
             self._send_json({"config": safe_config, "message": "Telegram config saved."})
-        except LookupError as exc:
-            self._send_json({"error": str(exc)}, status=404)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to save Telegram config."}, status=400)
+        except LookupError:
+            self._send_json(_error_payload("Not found."), status=404)
+        except Exception:
+            self._send_json(_error_payload("Failed to save Telegram config."), status=400)
 
     def _validate_llm_key(self) -> None:
         try:
@@ -986,25 +999,25 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             config = ProviderConfig(provider=provider, api_key=api_key, model=model, endpoint_url=endpoint_url)
             result = validate_api_key(config)
             self._send_json(result)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Validation failed."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Validation failed."), status=400)
 
     def _create_knowledge_source(self, agent_id: str) -> None:
         try:
             data = self._read_json()
             source = self.agent_store.create_knowledge_source(agent_id, data)
             self._send_json({"source": source, "message": "Knowledge source created."}, status=201)
-        except LookupError as exc:
-            self._send_json({"error": str(exc)}, status=404)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to create knowledge source."}, status=400)
+        except LookupError:
+            self._send_json(_error_payload("Not found."), status=404)
+        except Exception:
+            self._send_json(_error_payload("Failed to create knowledge source."), status=400)
 
     def _list_knowledge_sources(self, agent_id: str) -> None:
         try:
             sources = self.agent_store.list_knowledge_sources(agent_id)
             self._send_json({"sources": sources, "total": len(sources)})
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to list sources."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Failed to list sources."), status=400)
 
     def _delete_knowledge_source(self, agent_id: str, source_id: str) -> None:
         try:
@@ -1014,8 +1027,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 return
             self.agent_store.delete_knowledge_source(source_id)
             self._send_json({"message": "Knowledge source deleted."})
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to delete source."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Failed to delete source."), status=400)
 
     def _verify_bot_token(self) -> None:
         try:
@@ -1051,8 +1064,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                     self._send_json({"valid": False, "error": f"Telegram API error ({exc.code})."})
             except urllib.error.URLError:
                 self._send_json({"valid": False, "error": "Network error reaching Telegram API."})
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Verification failed."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Verification failed."), status=400)
 
     def _deploy_agent(self, agent_id: str) -> None:
         try:
@@ -1116,12 +1129,12 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 "webhookUrl": webhook_url,
             })
             self._send_json({"message": "Agent deployed successfully.", "status": "active", "webhookUrl": webhook_url})
-        except Exception as exc:
+        except Exception:
             try:
                 self.agent_store.update_agent(agent_id, {"status": "failed"})
             except Exception:
                 pass
-            self._send_json({"error": str(exc) or "Deployment failed."}, status=500)
+            self._send_json(_error_payload("Deployment failed."), status=500)
 
     def _upload_knowledge_files(self, agent_id: str, source_id: str) -> None:
         try:
@@ -1201,7 +1214,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 self.agent_store.update_knowledge_source(source_id, {"status": "failed", "errorMessage": str(exc)})
             except Exception:
                 pass
-            self._send_json({"error": str(exc) or "Upload failed."}, status=400)
+            self._send_json(_error_payload("Upload failed."), status=400)
 
     def _test_agent(self, agent_id: str) -> None:
         try:
@@ -1252,7 +1265,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
 
             provider_config = ProviderConfig(
                 provider=llm_config.get("provider", "openai"),
-                api_key=llm_config.get("apiKeyEncrypted", ""),
+                api_key=normalize_api_key(llm_config),
                 model=llm_config.get("model", "gpt-4o"),
                 endpoint_url=llm_config.get("endpointUrl", ""),
                 extra_headers=llm_config.get("extraHeaders", {}),
@@ -1294,22 +1307,22 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 "model": provider_config.model,
                 "provider": provider_config.provider,
             })
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Agent test failed."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Agent test failed."), status=400)
 
     def _get_agent_stats(self, agent_id: str) -> None:
         try:
             stats = self.agent_store.get_agent_stats(agent_id)
             self._send_json(stats)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to get stats."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Failed to get stats."), status=400)
 
     def _list_conversations(self, agent_id: str) -> None:
         try:
             convs = self.agent_store.list_conversations(agent_id)
             self._send_json({"conversations": convs, "total": len(convs)})
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to list conversations."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Failed to list conversations."), status=400)
 
     # ── Rate limiting / abuse helpers ───────────────────────────────────
 
@@ -1465,8 +1478,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         try:
             papers = cached_get(self._get_cache, self.path, self.store.read_registry)
             self._send_json({"papers": papers, "total": len(papers)})
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to list papers."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Failed to list papers."), status=400)
 
     def _get_registry_paper(self, paper_id: str) -> None:
         try:
@@ -1475,8 +1488,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "Paper not found."}, status=404)
                 return
             self._send_json({"paper": paper})
-        except Exception as exc:
-            self._send_json({"error": str(exc)}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Request failed."), status=400)
 
     def _get_registry_stats(self) -> None:
         try:
@@ -1496,8 +1509,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 "investigatingPapers": investigating,
                 "byExam": by_exam,
             })
-        except Exception as exc:
-            self._send_json({"error": str(exc)}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Request failed."), status=400)
 
     def _create_registry_paper(self) -> None:
         try:
@@ -1512,25 +1525,25 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 return
             paper = self.store.add_registry_paper(data)
             self._send_json({"paper": paper, "message": "Paper registered."}, status=201)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to create paper."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Failed to create paper."), status=400)
 
     def _reset_registry(self) -> None:
         try:
             self.store._write_registry([])
             self._send_json({"message": "Registry cleared.", "total": 0})
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to reset registry."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Failed to reset registry."), status=400)
 
     def _update_registry_paper(self, paper_id: str) -> None:
         try:
             data = self._read_json()
             paper = self.store.update_registry_paper(paper_id, data)
             self._send_json({"paper": paper})
-        except LookupError as exc:
-            self._send_json({"error": str(exc)}, status=404)
-        except Exception as exc:
-            self._send_json({"error": str(exc)}, status=400)
+        except LookupError:
+            self._send_json(_error_payload("Not found."), status=404)
+        except Exception:
+            self._send_json(_error_payload("Request failed."), status=400)
 
     def _delete_registry_paper(self, paper_id: str) -> None:
         try:
@@ -1539,14 +1552,14 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "Paper not found."}, status=404)
                 return
             self._send_json({"message": "Paper deleted."})
-        except Exception as exc:
-            self._send_json({"error": str(exc)}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Request failed."), status=400)
 
     def _match_evidence_to_registry(self) -> None:
         try:
             data = self._read_json()
             ocr_text = str(data.get("ocrText", "")).strip()
-            evidence_id = str(data.get("evidenceId", "")).strip()
+            evidence_id = normalize_evidence_id(data)
             if not ocr_text:
                 self._send_json({"error": "ocrText is required."}, status=400)
                 return
@@ -1561,8 +1574,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                         "detail": f"Matched {best.get('matchedExam')} ({best.get('matchedSet')}) at {best.get('similarityScore')}%",
                     })
             self._send_json({"matches": matches, "total": len(matches)})
-        except Exception as exc:
-            self._send_json({"error": str(exc)}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Request failed."), status=400)
 
     def _mint_watermark(self) -> None:
         """POST /watermark/mint — issue uniquely watermarked copies per recipient."""
@@ -1639,7 +1652,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         except Exception:
             payload = {}
 
-        evidence_id = str(payload.get("evidenceId") or "").strip()
+        evidence_id = normalize_evidence_id(payload)
         report_type = str(payload.get("reportType") or ("evidence" if evidence_id else "summary")).strip()
         send_to_telegram = bool(payload.get("sendToTelegram"))
         telegram_chat_id = str(payload.get("chatId") or self.settings.telegram_admin_chat_id or "").strip()
@@ -1741,8 +1754,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 })
             else:
                 self._send_json({"error": "KILO_API_KEY is not configured."}, status=500)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Chat test failed."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Chat test failed."), status=400)
 
     def _add_monitored_group(self) -> None:
         try:
@@ -1754,15 +1767,15 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             name = optional_text(payload.get("name")) or str(chat_id)
             result = self.store.add_monitored_group(chat_id, name=name, added_by="api")
             self._send_json(result, status=201 if result.get("created") else 200)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to add group."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Failed to add group."), status=400)
 
     def _remove_monitored_group(self, chat_id: str) -> None:
         try:
             result = self.store.remove_monitored_group(chat_id)
             self._send_json(result)
-        except Exception as exc:
-            self._send_json({"error": str(exc) or "Failed to remove group."}, status=400)
+        except Exception:
+            self._send_json(_error_payload("Failed to remove group."), status=400)
 
     def _send_empty(self, status: int) -> None:
         self.send_response(status)
