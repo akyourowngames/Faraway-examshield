@@ -35,6 +35,9 @@ class Settings:
     telegram_webhook_secret: str
     telegram_chat_id: str
     telegram_admin_chat_id: str
+    api_auth_secret: str = ""
+    llm_daily_token_budget: int = 0
+    llm_budget_window_seconds: int = 86_400
 
 
 def load_settings() -> Settings:
@@ -123,6 +126,9 @@ def load_settings() -> Settings:
         telegram_webhook_secret=(os.environ.get("TELEGRAM_WEBHOOK_SECRET") or "").strip(),
         telegram_chat_id=(os.environ.get("TELEGRAM_CHAT_ID") or "").strip(),
         telegram_admin_chat_id=(os.environ.get("TELEGRAM_ADMIN_CHAT_ID") or "").strip(),
+        api_auth_secret=(os.environ.get("EXAMSHIELD_API_AUTH_SECRET") or "").strip(),
+        llm_daily_token_budget=int(os.environ.get("EXAMSHIELD_LLM_DAILY_TOKEN_BUDGET", "0")),
+        llm_budget_window_seconds=int(os.environ.get("EXAMSHIELD_LLM_BUDGET_WINDOW_SECONDS", "86400")),
     )
 
 

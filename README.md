@@ -303,6 +303,7 @@ cat > .env.local << EOF
 NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 EXAMSHIELD_API_URL=http://localhost:8790
+# EXAMSHIELD_BACKEND_API_KEY=...   # must match backend EXAMSHIELD_API_AUTH_SECRET
 EOF
 
 # Start development server
@@ -368,6 +369,7 @@ docker run -p 8790:8790 examshield-api
 | `TELEGRAM_WEBHOOK_SECRET` | ⚠️ | Webhook secret |
 | `TELEGRAM_CHAT_ID` | ⚠️ | Chat ID |
 | `EXAMSHIELD_AI_CORS_ORIGIN` | ✅ | Frontend URL |
+| `EXAMSHIELD_API_AUTH_SECRET` | ⚠️ | Shared secret protecting the backend API (audit §2.2); the frontend proxy sends it as `X-Examshield-Api-Key`. Required in production — when unset the API is reachable anonymously with a startup warning. |
 | `EXAMSHIELD_PUBLIC_URL` | ✅ | Backend URL |
 | `EXAMSHIELD_AI_MODEL` | ⚠️ | Chat model (Kilo Gateway, e.g. `tencent/hy3:free`) |
 | `EXAMSHIELD_AI_FALLBACK_MODELS` | ⚠️ | Comma-separated fallback models |

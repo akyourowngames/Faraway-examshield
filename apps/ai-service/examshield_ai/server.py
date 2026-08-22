@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
@@ -30,6 +31,55 @@ from .tools import ExamshieldToolRegistry
 from .workers import AnalysisTask, AnalysisWorkerPool
 from .llm_providers import list_providers, validate_api_key, ProviderConfig, chat_completion as provider_chat_completion
 from .rag import chunk_text, extract_text_from_file, ingest_knowledge_source, search_agent_knowledge, RAGConfig
+
+# ── Backend API authentication (audit §2.2) ───────────────────────────────────
+# A shared secret gate between the Vercel frontend proxy and the Render backend.
+# The frontend sends `X-Examshield-Api-Key` on every upstream call; an
+# `Authorization: Bearer <secret>` is also accepted. Enforced only when a secret
+# is configured — when it is empty the gate is disabled (dev/offline) with a
+# loud startup warning, mirroring the `EXAMSHIELD_AI_MASTER_KEY` fallback.
+API_AUTH_HEADER = "X-Examshield-Api-Key"
+# Routes that must never require the backend secret:
+#  - /health is the Render health check.
+#  - /telegram/webhook and /telegram/events are called directly by Telegram's
+#    servers and carry their own TELEGRAM_WEBHOOK_SECRET validation; gating them
+#    here would break inbound Telegram delivery.
+API_AUTH_EXEMPT = {"/health", "/", "/telegram/webhook", "/telegram/events"}
+
+
+def is_path_exempt(path: str) -> bool:
+    """Return True if *path* must never require the backend shared secret."""
+    return path in API_AUTH_EXEMPT
+
+
+def _bearer_secret(authorization: str | None) -> str | None:
+    if not authorization:
+        return None
+    authorization = authorization.strip()
+    if authorization.lower().startswith("bearer "):
+        token = authorization[len("bearer "):].strip()
+        return token or None
+    return None
+
+
+def is_authorized(headers: Any, secret: str, path: str) -> bool:
+    """Decide whether a request may proceed.
+
+    - No secret configured -> auth disabled (backward-compatible offline mode).
+    - Exempt path -> always allowed (health check, Telegram inbound).
+    - Otherwise the request must carry the matching shared secret, compared in
+      constant time to avoid leaking the secret via timing.
+    """
+    if not secret:
+        return True
+    if is_path_exempt(path):
+        return True
+    provided = headers.get(API_AUTH_HEADER) or _bearer_secret(headers.get("Authorization"))
+    return bool(provided) and hmac.compare_digest(provided, secret)
+
+
+_UNAUTHORIZED_BODY = json.dumps({"error": "Unauthorized."}).encode("utf-8")
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -63,8 +113,28 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         self.send_response(404)
         self.end_headers()
 
+    def _authorize_request(self) -> bool:
+        """Gate non-exempt routes behind the backend shared secret.
+
+        Returns True when the request may proceed; returns False after writing a
+        401 response (so the caller should `return` immediately).
+        """
+        path = urlparse(self.path).path
+        if is_authorized(self.headers, self.settings.api_auth_secret, path):
+            return True
+        self.send_response(401)
+        self._cors_headers()
+        self.send_header("WWW-Authenticate", 'Bearer realm="examshield-api"')
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(_UNAUTHORIZED_BODY)))
+        self.end_headers()
+        self.wfile.write(_UNAUTHORIZED_BODY)
+        return False
+
     def do_GET(self) -> None:
         path = urlparse(self.path).path
+        if not self._authorize_request():
+            return
         parts = [part for part in path.split("/") if part]
         if path == "/health":
             self._send_json(
@@ -170,6 +240,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        if not self._authorize_request():
+            return
         parts = [part for part in path.split("/") if part]
 
         if path in {"/ocr/analyze", "/analyze"}:
@@ -1199,6 +1271,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:
         path = urlparse(self.path).path
+        if not self._authorize_request():
+            return
         parts = [part for part in path.split("/") if part]
         if len(parts) == 3 and parts[0] == "telegram" and parts[1] == "groups":
             self._remove_monitored_group(parts[2])
@@ -1216,6 +1290,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
 
     def do_PUT(self) -> None:
         path = urlparse(self.path).path
+        if not self._authorize_request():
+            return
         parts = [part for part in path.split("/") if part]
         if len(parts) == 2 and parts[0] == "agents":
             self._update_agent(parts[1])
@@ -1473,7 +1549,7 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
     def _cors_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", self.settings.cors_origin)
         self.send_header("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.send_header("Access-Control-Allow-Headers", f"Content-Type, Authorization, {API_AUTH_HEADER}")
 
     def log_message(self, format: str, *args: Any) -> None:
         print("%s - %s" % (self.address_string(), format % args))
@@ -1521,6 +1597,14 @@ def main() -> None:
     settings = load_settings()
     handler = build_handler(settings)
     logger.info(f"EXAMSHIELD AI starting - telegramBotToken={'SET' if settings.telegram_bot_token else 'NOT SET'}, publicUrl={settings.public_url or 'NOT SET'}, chatId={settings.telegram_chat_id or 'NOT SET'}, adminChatId={settings.telegram_admin_chat_id or 'NOT SET'}")
+    if settings.api_auth_secret:
+        logger.info("API auth ENABLED — all non-exempt routes require X-Examshield-Api-Key.")
+    else:
+        logger.warning(
+            "API auth DISABLED — set EXAMSHIELD_API_AUTH_SECRET to require a shared "
+            "secret on all backend routes (the frontend must send the matching "
+            "X-Examshield-Api-Key). Without it the API is reachable anonymously."
+        )
     try:
         handler.telegram.register()
         if handler.telegram.configured:

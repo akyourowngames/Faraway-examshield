@@ -29,6 +29,13 @@ function getForwardHeaders(request?: Request) {
   if (authorization) {
     headers.set("authorization", authorization);
   }
+  // Backend API shared secret (audit §2.2): the Vercel proxy authenticates to the
+  // Render backend on every upstream call. Kept server-side via env so it never
+  // reaches the browser; must match EXAMSHIELD_API_AUTH_SECRET on the backend.
+  const backendKey = process.env.EXAMSHIELD_BACKEND_API_KEY?.trim();
+  if (backendKey) {
+    headers.set("X-Examshield-Api-Key", backendKey);
+  }
   return headers;
 }
 
