@@ -80,6 +80,8 @@ def json_response(
         and request.method == "GET"
         and request.url.path != "/health"
     ):
-        settings = request.app.state.settings
-        resp.headers["Cache-Control"] = f"public, max-age={settings.cache_control_max_age}"
+        # User-scoped GET responses must never be shared across accounts.
+        # `public` allowed the Vercel CDN to cache by URL only (ignoring the
+        # auth cookie), serving one user's payload to another within the window.
+        resp.headers["Cache-Control"] = "private, no-store"
     return resp

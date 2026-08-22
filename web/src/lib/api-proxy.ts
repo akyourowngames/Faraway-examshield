@@ -1,3 +1,5 @@
+import { createClient } from "@/lib/supabase/server";
+
 const RETRYABLE_STATUSES = new Set([408, 429, 502, 503, 504]);
 
 function getApiUrl() {
@@ -19,15 +21,28 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function getForwardHeaders(request?: Request) {
+export async function getForwardHeaders(request?: Request): Promise<Headers> {
   const headers = new Headers();
   const contentType = request?.headers.get("content-type");
-  const authorization = request?.headers.get("authorization");
   if (contentType) {
     headers.set("content-type", contentType);
   }
-  if (authorization) {
-    headers.set("authorization", authorization);
+  // Resolve the verified Supabase session server-side and forward it upstream so
+  // the backend can scope threat memory (and future per-user data) by owner. The
+  // shared-secret gate already proves the request came from this trusted proxy.
+  try {
+    const supabase = await createClient();
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (session?.access_token) {
+      headers.set("authorization", `Bearer ${session.access_token}`);
+    }
+    if (session?.user?.id) {
+      headers.set("X-Examshield-User-Id", session.user.id);
+    }
+  } catch {
+    // Supabase unavailable / no session (local dev) — leave unauthenticated.
   }
   // Backend API shared secret (audit §2.2): the Vercel proxy authenticates to the
   // Render backend on every upstream call. Kept server-side via env so it never
@@ -75,16 +90,15 @@ async function fetchUpstream(url: string, init: RequestInit, retries = getRetrie
 function buildProxyResponse(upstream: Response) {
   const headers = new Headers();
   const contentType = upstream.headers.get("content-type");
-  const cacheControl = upstream.headers.get("cache-control");
   const connection = upstream.headers.get("connection");
   const accelBuffering = upstream.headers.get("x-accel-buffering");
 
   if (contentType) {
     headers.set("content-type", contentType);
   }
-  if (cacheControl) {
-    headers.set("cache-control", cacheControl);
-  }
+  // Never let a shared cache hold a user-scoped payload. Override unconditionally
+  // so auth-scoped data can only live in the requester's own browser.
+  headers.set("cache-control", "private, no-store");
   if (connection) {
     headers.set("connection", connection);
   }
@@ -121,7 +135,7 @@ export async function proxyApi(path: string, request?: Request) {
   try {
     const upstream = await fetchUpstream(`${apiUrl}${path}`, {
       method,
-      headers: getForwardHeaders(request),
+      headers: await getForwardHeaders(request),
       body,
       cache: "no-store",
     });
@@ -154,7 +168,7 @@ export async function proxyStreamApi(path: string, request: Request) {
   try {
     const upstream = await fetchUpstream(`${apiUrl}${path}`, {
       method: request.method,
-      headers: getForwardHeaders(request),
+      headers: await getForwardHeaders(request),
       body,
       cache: "no-store",
     });

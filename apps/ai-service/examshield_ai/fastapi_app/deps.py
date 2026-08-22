@@ -12,6 +12,11 @@ from examshield_ai.auth import is_authorized, is_path_exempt
 from .responses import PayloadTooLarge, RateLimited, Unauthorized
 from .state import AppState
 
+# Forwarded by the trusted Next.js proxy from the verified Supabase session. The
+# shared-secret API gate already proves the request came from the proxy, so this
+# value is trusted as the data owner. Missing -> None (single local/offline user).
+OWNER_ID_HEADER = "X-Examshield-User-Id"
+
 
 def get_settings(request: Request):
     return request.app.state.settings
@@ -19,6 +24,12 @@ def get_settings(request: Request):
 
 def get_core(request: Request) -> AppState:
     return request.app.state.core
+
+
+def resolve_owner_id(request: Request) -> str | None:
+    """Trusted operator id forwarded by the proxy, used to scope threat memory."""
+    value = (request.headers.get(OWNER_ID_HEADER) or "").strip()
+    return value or None
 
 
 def client_ip(request: Request) -> str:

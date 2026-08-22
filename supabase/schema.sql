@@ -26,6 +26,7 @@ create table if not exists public.examshield_memory_items (
   metadata jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
+  owner_id uuid references auth.users(id) on delete cascade,
   unique (source_ref)
 );
 
@@ -43,7 +44,8 @@ create table if not exists public.examshield_memory_correlations (
   summary text not null,
   metadata jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  owner_id uuid references auth.users(id) on delete cascade
 );
 
 alter table public.examshield_memory_items enable row level security;
@@ -66,12 +68,19 @@ create index if not exists examshield_memory_items_status_severity_idx
 create index if not exists examshield_memory_correlations_status_idx
   on public.examshield_memory_correlations (status, severity);
 
+create index if not exists examshield_memory_items_owner_id_idx
+  on public.examshield_memory_items (owner_id);
+
+create index if not exists examshield_memory_correlations_owner_id_idx
+  on public.examshield_memory_correlations (owner_id);
+
 create or replace function public.match_examshield_memory (
   query_embedding extensions.vector(384),
   match_threshold double precision default 0.76,
   match_count int default 10,
   exclude_source_ref text default null,
-  min_created_at timestamptz default null
+  min_created_at timestamptz default null,
+  p_owner_id uuid default null
 )
 returns table (
   id uuid,
@@ -103,6 +112,7 @@ as $$
   from public.examshield_memory_items item
   where item.embedding is not null
     and item.status = 'active'
+    and (p_owner_id is null or item.owner_id = p_owner_id)
     and (exclude_source_ref is null or item.source_ref <> exclude_source_ref)
     and (min_created_at is null or item.created_at >= min_created_at)
     and 1 - (item.embedding <=> query_embedding) >= match_threshold
@@ -413,9 +423,35 @@ drop policy if exists examshield_memory_items_backend on public.examshield_memor
 create policy examshield_memory_items_backend on public.examshield_memory_items
   for all to app_backend using (true) with check (true);
 
+drop policy if exists "memory items owner read" on public.examshield_memory_items;
+create policy "memory items owner read"
+  on public.examshield_memory_items for select
+  to authenticated, anon
+  using (owner_id = auth.uid());
+
+drop policy if exists "memory items owner write" on public.examshield_memory_items;
+create policy "memory items owner write"
+  on public.examshield_memory_items for all
+  to authenticated, anon
+  using (owner_id = auth.uid())
+  with check (owner_id = auth.uid());
+
 drop policy if exists examshield_memory_correlations_backend on public.examshield_memory_correlations;
 create policy examshield_memory_correlations_backend on public.examshield_memory_correlations
   for all to app_backend using (true) with check (true);
+
+drop policy if exists "memory correlations owner read" on public.examshield_memory_correlations;
+create policy "memory correlations owner read"
+  on public.examshield_memory_correlations for select
+  to authenticated, anon
+  using (owner_id = auth.uid());
+
+drop policy if exists "memory correlations owner write" on public.examshield_memory_correlations;
+create policy "memory correlations owner write"
+  on public.examshield_memory_correlations for all
+  to authenticated, anon
+  using (owner_id = auth.uid())
+  with check (owner_id = auth.uid());
 
 -- Storage: the dedicated backend role may manage the private buckets;
 -- anon/authenticated remain denied by Supabase's default private-bucket

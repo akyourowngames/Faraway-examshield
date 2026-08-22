@@ -46,6 +46,7 @@ class ExamshieldToolRegistry:
         # hidden from the schema list so the model only sees it when a real
         # operator context exists.
         self.operator: JsonObject | None = None
+        self.owner_id: str | None = None
         self._tools = {
             "listEvidence": ToolSpec(
                 name="listEvidence",
@@ -508,7 +509,7 @@ class ExamshieldToolRegistry:
                 evidence_ids=[],
             )
             return with_context(result)
-        search = self.memory.search(query)
+        search = self.memory.search(query, owner_id=self.owner_id)
         matches = search.get("matches") if isinstance(search.get("matches"), list) else []
         result = create_result(
             tool="searchMemory",

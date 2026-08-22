@@ -35,6 +35,7 @@ class EvidencePipeline:
         message: JsonObject,
         ocr_runner: OcrRunner,
         job: JsonObject | None = None,
+        owner_id: str | None = None,
     ) -> JsonObject | None:
         """Queue OCR for media evidence. Returns the queued job or None if skipped."""
         evidence = created.get("evidence")
@@ -71,6 +72,7 @@ class EvidencePipeline:
             chat_id=chat_id,
             message=message,
             ocr_runner=ocr_runner,
+            owner_id=owner_id,
         )
         return queued_job
 
@@ -85,6 +87,7 @@ class EvidencePipeline:
         chat_id: str,
         message: JsonObject,
         ocr_runner: OcrRunner,
+        owner_id: str | None = None,
     ) -> None:
         def on_complete(analysis: JsonObject, error: Exception | None) -> None:
             if error:
@@ -134,6 +137,7 @@ class EvidencePipeline:
                     detection=combined_detection,
                     text=text,
                     notify=True,
+                    owner_id=owner_id,
                 )
             except Exception as memory_exc:
                 logger.warning("Memory correlation failed for evidence %s: %s", evidence_id, memory_exc)
@@ -184,6 +188,7 @@ class EvidencePipeline:
         text: str | None,
         chat_id: str,
         message: JsonObject,
+        owner_id: str | None = None,
     ) -> bool:
         evidence = created.get("evidence") or {}
         evidence_id = str(evidence.get("evidenceId") or "")
@@ -261,6 +266,7 @@ class EvidencePipeline:
                         analysis=analysis,
                         text=text,
                         notify=True,
+                        owner_id=owner_id,
                     )
                 except Exception as memory_exc:
                     logger.warning("Memory correlation failed for text evidence %s: %s", evidence_id, memory_exc)

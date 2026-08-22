@@ -19,6 +19,7 @@ from ..deps import (
     body_size_guard,
     rate_limit_ocr,
     rate_limit_upload,
+    resolve_owner_id,
 )
 from ..responses import json_response
 
@@ -155,7 +156,7 @@ async def upload_evidence(
         uploaded = fields.get("file")
         if not isinstance(uploaded, UploadedFile):
             raise ValueError("Evidence file is required.")
-        created = core.store.create_evidence(uploaded)
+        created = core.store.create_evidence(uploaded, owner_id=resolve_owner_id(request))
         return json_response({"message": "Evidence Created", **created}, status=201, request=request)
     except Exception:
         return json_response({"error": "Evidence upload failed."}, status=400, request=request)
@@ -198,6 +199,7 @@ async def create_analysis_job(
                 message={},
                 ocr_runner=analyze_image,
                 job=job,
+                owner_id=resolve_owner_id(request),
             )
             if not submitted:
                 submitted = job
@@ -253,6 +255,8 @@ async def process_analysis_job(
             snapshot["message"] = "Analysis In Progress"
             return json_response(snapshot, status=202, request=request)
 
+        owner_id = resolve_owner_id(request)
+
         def on_complete(_analysis: dict, error: Exception | None) -> None:
             if error:
                 try:
@@ -261,7 +265,7 @@ async def process_analysis_job(
                     pass
                 return
             try:
-                core.memory.ingest_from_analysis(_analysis, notify=True)
+                core.memory.ingest_from_analysis(_analysis, notify=True, owner_id=owner_id)
             except Exception:
                 pass
 
@@ -284,7 +288,7 @@ async def process_analysis_job(
 async def memory_ingest(request: Request, _secret: None = Depends(backend_secret)) -> dict:
     core = _core(request)
     try:
-        result = core.memory.ingest_manual(await _read_json(request))
+        result = core.memory.ingest_manual(await _read_json(request), owner_id=resolve_owner_id(request))
         return json_response(result, status=201, request=request)
     except LookupError:
         return json_response({"error": "Not found."}, status=404, request=request)
@@ -307,7 +311,11 @@ async def memory_search(request: Request, _secret: None = Depends(backend_secret
             or None
         )
         result = core.memory.search(
-            query, threshold=threshold, match_count=match_count, created_after=created_after
+            query,
+            owner_id=resolve_owner_id(request),
+            threshold=threshold,
+            match_count=match_count,
+            created_after=created_after,
         )
         return json_response(result, request=request)
     except Exception:
@@ -321,10 +329,11 @@ async def memory_correlate(request: Request, _secret: None = Depends(backend_sec
         payload = await _read_json(request)
         memory_id = str(payload.get("memoryId") or "").strip()
         evidence_id = normalize_evidence_id(payload)
+        owner_id = resolve_owner_id(request)
         if memory_id:
-            return json_response(core.memory.correlate_memory_id(memory_id), request=request)
+            return json_response(core.memory.correlate_memory_id(memory_id, owner_id=owner_id), request=request)
         if evidence_id:
-            result = core.memory.ingest_manual({"evidenceId": evidence_id})
+            result = core.memory.ingest_manual({"evidenceId": evidence_id}, owner_id=owner_id)
             return json_response(result.get("correlation") or {"correlated": False}, request=request)
         return json_response({"error": "memoryId or evidenceId is required."}, status=400, request=request)
     except LookupError:
@@ -341,7 +350,7 @@ async def get_memory(
 ) -> dict:
     core = _core(request)
     try:
-        result = core.memory.get_memory(memory_id)
+        result = core.memory.get_memory(memory_id, owner_id=resolve_owner_id(request))
         if result:
             return json_response(result, request=request, cache=True)
         return json_response({"error": "Memory item not found."}, status=404, request=request, cache=True)
