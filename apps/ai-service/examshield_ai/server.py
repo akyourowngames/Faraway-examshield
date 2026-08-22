@@ -7,29 +7,29 @@ import threading
 import time
 from cgi import FieldStorage
 from dataclasses import replace
-from io import BytesIO
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from .agent_telegram import AgentTelegramService
 from .chat import ChatSession
 from .detect import is_suspicious, scan_text
 from .events import sse_bytes
 from .llm import KiloClient
+from .llm_providers import ProviderConfig, list_providers, validate_api_key
+from .llm_providers import chat_completion as provider_chat_completion
 from .memory import MemoryManager
 from .ocr import SUPPORTED_TYPES, analyze_image, ocr_runtime_status
 from .pipeline import EvidencePipeline
 from .planner import ToolPlanner
-from .responses import conversation_messages, grounded_messages
+from .rag import RAGConfig, chunk_text, extract_text_from_file, ingest_knowledge_source, search_agent_knowledge
 from .settings import Settings, load_settings
-from .store import EvidenceStore, UploadedFile, normalize_telegram_timestamp, AgentStore
-from .agent_telegram import AgentTelegramService
+from .store import AgentStore, EvidenceStore, UploadedFile, normalize_telegram_timestamp
 from .telegram import TelegramWebhook
 from .tools import ExamshieldToolRegistry
 from .workers import AnalysisTask, AnalysisWorkerPool
-from .llm_providers import list_providers, validate_api_key, ProviderConfig, chat_completion as provider_chat_completion
-from .rag import chunk_text, extract_text_from_file, ingest_knowledge_source, search_agent_knowledge, RAGConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -550,7 +550,6 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
         url_override = str(payload.get("url") or "").strip()
         try:
             if url_override:
-                from .settings import Settings
                 self.telegram = TelegramWebhook(replace(self.settings, public_url=url_override))
             self.telegram.register()
             self._send_json({
@@ -848,8 +847,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "Bot token is required."}, status=400)
                 return
 
-            import urllib.request
             import urllib.error
+            import urllib.request
             url = f"https://api.telegram.org/bot{token}/getMe"
             req = urllib.request.Request(url, method="GET")
             try:
@@ -896,8 +895,8 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
 
             self.agent_store.update_agent(agent_id, {"status": "deploying"})
 
-            import urllib.request
             import urllib.error
+            import urllib.request
             token = telegram_config["botToken"]
             url = f"https://api.telegram.org/bot{token}/getMe"
             req = urllib.request.Request(url, method="GET")

@@ -4,8 +4,6 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from examshield_ai.ocrspace import _post_multipart_file, run_ocrspace_ocr
 
 

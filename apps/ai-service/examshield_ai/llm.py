@@ -5,11 +5,9 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
-from typing import Any
 
 from .settings import Settings
 from .store import JsonObject
-
 
 TokenWriter = Callable[[str], None]
 

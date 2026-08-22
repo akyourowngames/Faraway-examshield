@@ -3,8 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from examshield_ai.ocr import (
     analyze_image,
     has_vowel,
