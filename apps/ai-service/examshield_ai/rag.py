@@ -23,37 +23,55 @@ class RAGConfig:
 
 
 def extract_text_from_pdf(data: bytes) -> str:
+    """Extract text from a PDF.
+
+    Uses the embedded text layer when present. For image-only pages it falls
+    back to OCR through the existing OCR pipeline (Tesseract / OCR.space), so
+    scanned handbooks still get indexed where an OCR engine is configured.
+    """
     try:
-        import subprocess
-        import tempfile
-        import os
-
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-            tmp.write(data)
-            tmp_path = tmp.name
-
-        try:
-            result = subprocess.run(
-                ["python", "-c", f"""
-import sys
-try:
-    import fitz
-    doc = fitz.open("{tmp_path}")
-    text = ""
-    for page in doc:
-        text += page.get_text()
-    print(text)
-except ImportError:
-    print("")
-"""],
-                capture_output=True, text=True, timeout=30,
-            )
-            return result.stdout.strip()
-        finally:
-            os.unlink(tmp_path)
-    except Exception as exc:
-        logger.warning("PDF extraction failed: %s", exc)
+        import fitz  # PyMuPDF
+    except ImportError:
+        logger.warning("PyMuPDF (fitz) is not installed; PDF text extraction is unavailable.")
         return ""
+
+    try:
+        doc = fitz.open(stream=data, filetype="pdf")
+    except Exception as exc:
+        logger.warning("Could not open PDF: %s", exc)
+        return ""
+
+    page_texts: list[str] = []
+    ocr_unavailable = False
+    try:
+        for page in doc:
+            page_text = page.get_text().strip()
+            if page_text:
+                page_texts.append(page_text)
+                continue
+
+            # Image-only page: render to PNG and OCR it.
+            try:
+                from .ocr import analyze_image
+
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                ocr = analyze_image(pix.tobytes("png"), ".png")
+                ocr_text = (ocr.get("text") or "").strip()
+                if ocr_text:
+                    page_texts.append(ocr_text)
+            except FileNotFoundError:
+                ocr_unavailable = True
+                logger.warning("OCR unavailable for scanned PDF page (Tesseract not installed).")
+            except Exception as exc:
+                ocr_unavailable = True
+                logger.warning("PDF page OCR fallback failed: %s", exc)
+    finally:
+        doc.close()
+
+    full = "\n\n".join(t for t in page_texts if t).strip()
+    if not full and ocr_unavailable:
+        logger.warning("PDF had no text layer and OCR was unavailable; install Tesseract or set OCR_SPACE_API_KEY.")
+    return full
 
 
 def extract_text_from_file(filename: str, data: bytes, content_type: str) -> str:

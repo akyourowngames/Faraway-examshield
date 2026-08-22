@@ -91,7 +91,7 @@ export default function ExamLifecycle() {
                   </div>
                   <div className="flex items-center justify-between text-xs text-white/40">
                     <span className="font-mono">{report.centerCode ?? "N/A"}</span>
-                    <span>{report.finalConfidence}%</span>
+                    <span>{report.status === "no-match" ? "N/A" : `${report.finalConfidence}%`}</span>
                   </div>
                   <div className="mt-2 flex gap-1">
                     {investigationStages.map((s, i) => (
@@ -224,7 +224,7 @@ export default function ExamLifecycle() {
                     {[
                       { label: "OCR Confidence", value: selected.ocrConfidence, color: "text-brand" },
                       { label: "Watermark Confidence", value: selected.watermarkConfidence, color: "text-blue-400" },
-                      { label: "Final Confidence", value: selected.finalConfidence, color: selected.finalConfidence > 50 ? "text-rose-400" : "text-white" },
+                      { label: "Final Confidence", value: selected.status === "no-match" ? null : selected.finalConfidence, color: selected.finalConfidence > 50 ? "text-rose-400" : "text-white" },
                     ].map((item) => (
                       <div key={item.label}>
                         <div className="flex justify-between text-xs mb-1">

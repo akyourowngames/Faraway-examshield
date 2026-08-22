@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .llm import NvidiaClient
+from .llm import KiloClient
 from .store import JsonObject
 from .tools import ExamshieldToolRegistry
 
@@ -28,7 +28,7 @@ If no tool is needed, return an empty tool_calls list. Do NOT answer the investi
 
 
 class ToolPlanner:
-    def __init__(self, client: NvidiaClient, registry: ExamshieldToolRegistry) -> None:
+    def __init__(self, client: KiloClient, registry: ExamshieldToolRegistry) -> None:
         self.client = client
         self.registry = registry
 

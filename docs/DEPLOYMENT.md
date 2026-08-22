@@ -7,7 +7,7 @@ EXAMSHIELD uses one Python backend process on Render. That process owns OCR, evi
 ```txt
 Browser -> Vercel Next.js -> Render unified Python API -> Supabase
                                               |
-                                              +-> NVIDIA NIM
+                                              +-> Kilo Gateway
                                               +-> Tesseract OCR
 Telegram webhook -----------------------------+
 ```
@@ -43,7 +43,7 @@ This repo includes [`Dockerfile`](../Dockerfile) because OCR needs the Tesseract
 | --- | --- |
 | `SUPABASE_URL` | Supabase project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase service-role key |
-| `NVIDIA_API_KEY` | NVIDIA NIM API key |
+| `KILO_API_KEY` | Kilo Gateway API key |
 | `EXAMSHIELD_AI_CORS_ORIGIN` | Your Vercel production URL, or `*` during setup |
 
 Render supplies `PORT`. The server automatically binds to `0.0.0.0` and that port.
