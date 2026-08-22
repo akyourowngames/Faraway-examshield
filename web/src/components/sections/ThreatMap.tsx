@@ -151,15 +151,12 @@ type ThreatMapProps = {
 };
 
 export function ThreatMap({ evidenceData }: ThreatMapProps) {
-  const [geoLookup, setGeoLookup] = useState<ThreatMapCenter[]>([]);
-  const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading");
   const [hoveredCenter, setHoveredCenter] = useState<ThreatMapCenter | null>(null);
   const [selectedCenter, setSelectedCenter] = useState<ThreatMapCenter | null>(null);
   const [filter, setFilter] = useState<"all" | "compromised" | "investigating" | "secure">("all");
   const [pulsingId, setPulsingId] = useState<string | null>(null);
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const [view, setView] = useState<ViewState>({ x: 0, y: 0, k: 1 });
-  const [reloadKey, setReloadKey] = useState(0);
 
   const viewRef = useRef<ViewState>({ x: 0, y: 0, k: 1 });
   const animationFrameRef = useRef<number | null>(null);
@@ -169,57 +166,13 @@ export function ThreatMap({ evidenceData }: ThreatMapProps) {
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/registry/centers.json")
-      .then((r) => {
-        if (!r.ok) throw new Error(`centers fetch failed: ${r.status}`);
-        return r.json();
-      })
-      .then((data) => {
-        if (!cancelled) {
-          setGeoLookup((data.centers ?? []) as ThreatMapCenter[]);
-          setLoadState("ready");
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setLoadState("error");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [reloadKey]);
-
-  const evidenceCenters = useMemo(() => {
-    if (!evidenceData) return [];
-    return buildThreatMapCenters(
-      evidenceData,
-      geoLookup.map((g) => ({
-        centerCode: g.centerCode,
-        name: g.name,
-        city: g.city,
-        state: g.state,
-        lat: g.lat,
-        lng: g.lng,
-      })),
-    );
-  }, [evidenceData, geoLookup]);
-
-  // Show the full configured grid, then enrich any center with live evidence.
+  // Build markers only from live evidence. Each forensic report, attribution, or
+  // alert carries enough center metadata (or resolves to a known city) to place
+  // a marker; there is no static seed/mock center list to merge with.
   const markers = useMemo(() => {
-    const byCode = new Map(evidenceCenters.map((c) => [c.centerCode, c]));
-    const merged = geoLookup.map((g) => byCode.get(g.centerCode) ?? g);
-    for (const center of evidenceCenters) {
-      if (!geoLookup.some((g) => g.centerCode === center.centerCode)) {
-        merged.push(center);
-      }
-    }
-    return merged.sort(
-      (a, b) =>
-        STATUS_CONFIG[a.status].rank - STATUS_CONFIG[b.status].rank ||
-        b.risk - a.risk,
-    );
-  }, [geoLookup, evidenceCenters]);
+    if (!evidenceData) return [];
+    return buildThreatMapCenters(evidenceData, []);
+  }, [evidenceData]);
 
   useEffect(() => {
     if (markers.length === 0) return;
@@ -695,34 +648,7 @@ export function ThreatMap({ evidenceData }: ThreatMapProps) {
           })}
         </svg>
 
-        {loadState === "loading" && (
-          <div className="absolute inset-0 z-20 flex items-center justify-center bg-[#040406]/60 backdrop-blur-[2px]">
-            <div className="text-center">
-              <div className="mx-auto mb-3 h-5 w-5 animate-spin rounded-full border border-white/20 border-t-white" />
-              <div className="text-xs uppercase tracking-[0.2em] text-white/50">Locating centers…</div>
-            </div>
-          </div>
-        )}
-
-        {loadState === "error" && (
-          <div className="absolute inset-0 z-20 flex items-center justify-center px-6">
-            <div className="border border-white/10 bg-black/80 px-6 py-4 text-center backdrop-blur-md max-w-xs">
-              <div className="text-xs uppercase tracking-[0.2em] text-white/60">Map unavailable</div>
-              <p className="text-[11px] text-white/35 mt-2">Center coordinates could not be loaded.</p>
-              <button
-                onClick={() => {
-                  setLoadState("loading");
-                  setReloadKey((key) => key + 1);
-                }}
-                className="mt-3 border border-white/20 bg-white/5 px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-white hover:bg-white/10"
-              >
-                Retry
-              </button>
-            </div>
-          </div>
-        )}
-
-        {loadState === "ready" && markers.length === 0 && (
+        {markers.length === 0 && (
           <div className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none">
             <div className="border border-white/10 bg-black/80 px-6 py-4 text-center backdrop-blur-md">
               <div className="text-xs uppercase tracking-[0.2em] text-white/50">No Evidence Markers</div>
