@@ -36,6 +36,10 @@ class Settings:
     telegram_chat_id: str
     telegram_admin_chat_id: str
     supabase_backend_role_key: str = ""
+    llm_retry_attempts: int = 2
+    llm_retry_backoff_seconds: float = 0.5
+    budget_per_request_tokens: int = 4_000
+    budget_per_session_tokens: int = 50_000
 
 
 def load_settings() -> Settings:
@@ -127,6 +131,10 @@ def load_settings() -> Settings:
         telegram_webhook_secret=(os.environ.get("TELEGRAM_WEBHOOK_SECRET") or "").strip(),
         telegram_chat_id=(os.environ.get("TELEGRAM_CHAT_ID") or "").strip(),
         telegram_admin_chat_id=(os.environ.get("TELEGRAM_ADMIN_CHAT_ID") or "").strip(),
+        llm_retry_attempts=int(os.environ.get("EXAMSHIELD_AI_LLM_RETRY_ATTEMPTS", "2")),
+        llm_retry_backoff_seconds=float(os.environ.get("EXAMSHIELD_AI_LLM_RETRY_BACKOFF_SECONDS", "0.5")),
+        budget_per_request_tokens=int(os.environ.get("EXAMSHIELD_AI_BUDGET_PER_REQUEST_TOKENS", "4000")),
+        budget_per_session_tokens=int(os.environ.get("EXAMSHIELD_AI_BUDGET_PER_SESSION_TOKENS", "50000")),
     )
 
 

@@ -1,0 +1,14 @@
+# EXAMSHIELD quality gate — enforced by .github/workflows/quality-gate.yml
+target-version = "py312"
+line-length = 120
+
+[lint]
+# Pragmatic baseline: real bugs (pyflakes), obvious errors (pycodestyle E4/E7/E9),
+# and import hygiene (isort). Formatting rules are intentionally NOT enabled yet
+# so the gate stays focused on correctness rather than style churn.
+select = ["E4", "E7", "E9", "F", "I"]
+
+[lint.per-file-ignores]
+# Path bootstrap must happen before project imports.
+"apps/ai-service/service.py" = ["E402"]
+"apps/ai-service/tests/conftest.py" = ["E402"]
