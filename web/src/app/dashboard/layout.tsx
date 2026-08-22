@@ -25,6 +25,7 @@ import { cn } from "@/lib/utils";
 import { createClient } from "@/lib/supabase/client";
 import { useI18n } from "@/lib/i18n";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
+import { toast } from "@/lib/toast";
 
 const NAV_ITEMS = [
   { key: "commandCenter", href: "/dashboard", icon: Activity },
@@ -104,6 +105,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       const response = await fetch("/demo/reset", { method: "POST" });
       if (!response.ok) throw new Error("Demo reset failed.");
       window.location.reload();
+    } catch {
+      toast.error("Demo reset failed.");
     } finally {
       setResetting(false);
     }

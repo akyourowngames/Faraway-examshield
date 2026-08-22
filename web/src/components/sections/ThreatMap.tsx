@@ -38,7 +38,7 @@ const STATUS_CONFIG = {
   },
 };
 
-type ThreatMapProps = {
+export type ThreatMapProps = {
   evidenceData?: EvidenceListResponse;
 };
 

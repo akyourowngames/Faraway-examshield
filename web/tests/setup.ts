@@ -30,3 +30,18 @@ vi.mock("@/lib/supabase/client", () => ({
     },
   }),
 }));
+
+// jsdom does not implement matchMedia, but framer-motion and sonner read it
+// (e.g. for reduced-motion). Provide a no-op so component renders don't throw.
+if (!window.matchMedia) {
+  window.matchMedia = ((query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => false,
+  })) as typeof window.matchMedia;
+}

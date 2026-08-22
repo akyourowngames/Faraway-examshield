@@ -7,9 +7,10 @@ import {
   formatEvidenceStatus,
   formatEvidenceTime,
 } from "@/lib/evidence-format";
-import { ThreatMap } from "@/components/sections/ThreatMap";
+import { LazyThreatMap } from "@/components/sections/LazyThreatMap";
 import { useEvidenceFeed } from "@/lib/use-evidence-feed";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { useI18n } from "@/lib/i18n";
 
 
 const containerVariants = {
@@ -28,6 +29,7 @@ const itemVariants = {
 };
 
 export default function Dashboard() {
+  const { t } = useI18n();
   const { data: evidenceData } = useEvidenceFeed({ intervalMs: 3000 });
 
   const criticalAlerts = evidenceData.alerts.filter((alert) => alert.risk === "critical").length;
@@ -61,8 +63,8 @@ export default function Dashboard() {
     >
       <div className="flex items-end justify-between border-b border-white/10 pb-6">
         <div>
-          <h1 className="text-4xl font-heading font-bold tracking-widest text-white uppercase">Command Center</h1>
-          <p className="text-white/50 text-xs font-mono uppercase tracking-widest mt-2">Real-time overview of national examination security grid.</p>
+          <h1 className="text-4xl font-heading font-bold tracking-widest text-white uppercase">{t("dashboard.commandCenterTitle")}</h1>
+          <p className="text-white/50 text-xs font-mono uppercase tracking-widest mt-2">{t("dashboard.commandCenterSubtitle")}</p>
         </div>
       </div>
 
@@ -88,7 +90,7 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* National Threat Map */}
         <motion.div variants={itemVariants} className="hidden lg:flex lg:col-span-2 glass-panel h-[560px] flex-col relative overflow-hidden">
-          <ThreatMap evidenceData={evidenceData} />
+          <LazyThreatMap evidenceData={evidenceData} />
         </motion.div>
 
         {/* Activity Feed */}

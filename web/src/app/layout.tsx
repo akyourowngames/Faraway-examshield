@@ -3,6 +3,7 @@ import { Inter, Oswald } from "next/font/google";
 import "./globals.css";
 import { I18nProvider } from "@/lib/i18n";
 import { SkipLink } from "@/components/SkipLink";
+import { Toaster } from "sonner";
 
 const inter = Inter({
   variable: "--font-inter",
@@ -31,6 +32,7 @@ export default function RootLayout({
         <div className="noise" />
         <SkipLink />
         <I18nProvider>{children}</I18nProvider>
+        <Toaster richColors position="top-right" />
       </body>
     </html>
   );
