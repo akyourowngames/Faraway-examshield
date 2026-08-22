@@ -14,6 +14,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from .detect import get_alert_severity
+from .documents import is_document_type
 from .settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,15 @@ ALLOWED_TYPES = {
     "image/jpeg": {".jpg", ".jpeg"},
     "image/png": {".png"},
     "application/pdf": {".pdf"},
+    "application/msword": {".doc"},
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {".docx"},
+    "application/rtf": {".rtf"},
+    "text/rtf": {".rtf"},
+    "application/vnd.ms-powerpoint": {".ppt"},
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": {".pptx"},
+    "application/vnd.ms-excel": {".xls"},
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {".xlsx"},
+    "application/vnd.oasis.opendocument.text": {".odt"},
 }
 
 
@@ -555,13 +565,18 @@ class EvidenceStore:
             asset = self.get_asset(evidence_id)
             if not asset:
                 raise LookupError("Evidence file was not found.")
-            if asset["fileType"] == "application/pdf":
-                raise ValueError("OCR currently accepts image evidence. Convert PDFs to JPG or PNG before analysis.")
             image_bytes = self._read_file_bytes(str(asset["storedFilename"]))
-            suffixes = ALLOWED_TYPES.get(str(asset["fileType"]), set())
-            suffix = sorted(suffixes)[0] if suffixes else ""
-            logger.info(f"Running OCR for evidence {evidence_id}, file type: {asset['fileType']}")
-            ocr_result = ocr_runner(image_bytes, suffix)
+            file_type = str(asset["fileType"] or "").split(";")[0].strip().lower()
+            if is_document_type(file_type):
+                from .documents import analyze_document
+
+                logger.info(f"Running Tika document extraction for evidence {evidence_id}, file type: {file_type}")
+                ocr_result = analyze_document(image_bytes, file_type, filename=str(asset.get("originalFilename") or ""))
+            else:
+                suffixes = ALLOWED_TYPES.get(file_type, set())
+                suffix = sorted(suffixes)[0] if suffixes else ""
+                logger.info(f"Running OCR for evidence {evidence_id}, file type: {file_type}")
+                ocr_result = ocr_runner(image_bytes, suffix)
             if ocr_result.get("status") == "failed":
                 error_msg = str(ocr_result.get("error") or "OCR failed.")
                 logger.error(f"OCR failed for evidence {evidence_id}: {error_msg}")

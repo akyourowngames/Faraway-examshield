@@ -19,6 +19,13 @@ from .events import sse_bytes
 from .llm import NvidiaClient
 from .memory import MemoryManager
 from .ocr import SUPPORTED_TYPES, analyze_image, ocr_runtime_status
+from .documents import (
+    DOCUMENT_TYPES,
+    analyze_document,
+    detect_mime,
+    is_document_type,
+    tika_status,
+)
 from .pipeline import EvidencePipeline
 from .planner import ToolPlanner
 from .responses import conversation_messages, grounded_messages
@@ -78,6 +85,10 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                         "supportedTypes": sorted(SUPPORTED_TYPES.keys()),
                         "runtime": ocr_runtime_status(),
                         "workers": self.workers.stats(),
+                    },
+                    "documents": {
+                        "supportedTypes": sorted(DOCUMENT_TYPES.keys()),
+                        "tika": tika_status(),
                     },
                     "uploadRoot": str(self.settings.upload_root),
                     "registryPath": str(self.settings.registry_path),
@@ -258,13 +269,15 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
     def _run_ocr(self) -> None:
         content_type = (self.headers.get("Content-Type") or "").split(";")[0].lower()
         suffix = SUPPORTED_TYPES.get(content_type)
-        if not suffix:
+        if not suffix and not (is_document_type(content_type) or content_type == "application/octet-stream"):
             self._send_json(
                 {
                     "status": "failed",
-                    "error": "Only image/jpeg and image/png are supported by the unified OCR endpoint.",
+                    "error": "Unsupported media type. Images run through OCR; documents (PDF, DOC, DOCX, PPTX, XLSX...) run through Apache Tika.",
+                    "supportedImageTypes": sorted(SUPPORTED_TYPES.keys()),
+                    "supportedDocumentTypes": sorted(DOCUMENT_TYPES.keys()),
                 },
-                status=200,
+                status=415,
             )
             return
 
@@ -274,11 +287,33 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
             content_length = 0
 
         if content_length <= 0:
-            self._send_json({"status": "failed", "error": "Image payload is required."}, status=400)
+            self._send_json({"status": "failed", "error": "Request payload is required."}, status=400)
             return
 
-        image_bytes = self.rfile.read(content_length)
-        self._send_json(analyze_image(image_bytes, suffix))
+        payload = self.rfile.read(content_length)
+
+        if suffix:
+            result = analyze_image(payload, suffix)
+        else:
+            # Document upload (or unknown type — let Tika detect the real MIME).
+            resolved_type = content_type
+            if not is_document_type(resolved_type):
+                detected = detect_mime(payload)
+                if not detected:
+                    self._send_json(
+                        {"status": "failed", "error": "Unable to identify the uploaded file type."},
+                        status=415,
+                    )
+                    return
+                resolved_type = detected
+            if not is_document_type(resolved_type) and not resolved_type.startswith("image/"):
+                self._send_json(
+                    {"status": "failed", "error": f"Unsupported file type: {resolved_type}"},
+                    status=415,
+                )
+                return
+            result = analyze_document(payload, resolved_type)
+        self._send_json(result)
 
     def _upload_evidence(self) -> None:
         try:

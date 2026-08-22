@@ -72,3 +72,7 @@ apps/api/uploads/evidence/alerts/*
 apps/api/uploads/evidence/monitored-groups/*
 !apps/api/uploads/evidence/monitored-groups/.gitkeep
 apps/api/uploads/evidence/activity.json
+
+# local env scripts with real credentials
+.env.local.sh
+*.env.sh
