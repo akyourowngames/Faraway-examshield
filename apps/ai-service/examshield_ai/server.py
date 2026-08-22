@@ -30,7 +30,7 @@ from .settings import Settings, load_settings
 from .store import AgentStore, EvidenceStore, UploadedFile, normalize_telegram_timestamp
 from .telegram import TelegramWebhook
 from .tools import ExamshieldToolRegistry
-from .workers import AnalysisTask, AnalysisWorkerPool
+from .workers import AnalysisTask, AnalysisWorkerPool, PoolSaturatedError
 
 logging.basicConfig(
     level=logging.INFO,
@@ -406,12 +406,23 @@ class ExamshieldAiHandler(BaseHTTPRequestHandler):
                 except Exception as memory_exc:
                     logger.warning("Memory correlation failed for manual job %s: %s", job_id, memory_exc)
 
-            submitted = self.workers.submit(
-                self.store,
-                AnalysisTask(job_id=job_id, evidence_id=evidence_id),
-                analyze_image,
-                on_complete=on_complete,
-            )
+            try:
+                submitted = self.workers.submit(
+                    self.store,
+                    AnalysisTask(job_id=job_id, evidence_id=evidence_id),
+                    analyze_image,
+                    on_complete=on_complete,
+                )
+            except PoolSaturatedError as exc:
+                # Shed gracefully: tell the client to back off instead of
+                # silently queueing unbounded OCR work.
+                logger.warning("Manual OCR job %s shed at pool capacity: %s", job_id, exc)
+                try:
+                    self.store.fail_analysis_job(job_id, str(exc))
+                except Exception as fail_exc:
+                    logger.error("Failed to mark shed job %s failed: %s", job_id, fail_exc)
+                self._send_json({"error": str(exc)}, status=503)
+                return
             if submitted is None:
                 snapshot = self.store.analysis_job_snapshot(job_id)
                 snapshot["message"] = "Analysis In Progress"

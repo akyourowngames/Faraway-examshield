@@ -16,7 +16,12 @@ OcrRunner = Callable[[bytes, str], JsonObject]
 OnComplete = Callable[[JsonObject, Exception | None], None]
 
 DEFAULT_MAX_WORKERS = int(os.environ.get("EXAMSHIELD_OCR_WORKERS", "2"))
+DEFAULT_MAX_QUEUE = int(os.environ.get("EXAMSHIELD_OCR_MAX_QUEUE", "8"))
 ANALYSIS_JOB_TIMEOUT_SECONDS = int(os.environ.get("EXAMSHIELD_ANALYSIS_JOB_TIMEOUT_SECONDS", "120"))
+
+
+class PoolSaturatedError(RuntimeError):
+    """Raised when an OCR job is shed because the pool is at capacity."""
 
 
 @dataclass
@@ -31,10 +36,20 @@ class AnalysisWorkerPool:
 
     Telegram webhooks and REST ingestion both submit jobs here so OCR work
     never blocks HTTP responses and duplicate jobs are rejected.
+
+    The pool also caps how much work may exist at once (running + queued).
+    Beyond that cap, new jobs are **shed** — ``submit()`` raises
+    ``PoolSaturatedError`` so callers can fail fast with a clear message
+    instead of letting an unbounded queue grow under burst load.
     """
 
-    def __init__(self, max_workers: int = DEFAULT_MAX_WORKERS) -> None:
+    def __init__(
+        self,
+        max_workers: int = DEFAULT_MAX_WORKERS,
+        max_queue: int = DEFAULT_MAX_QUEUE,
+    ) -> None:
         self._max_workers = max(1, max_workers)
+        self._max_queue = max(0, max_queue)
         self._executor = ThreadPoolExecutor(
             max_workers=self._max_workers,
             thread_name_prefix="examshield-ocr",
@@ -42,6 +57,8 @@ class AnalysisWorkerPool:
         self._lock = threading.Lock()
         self._active_jobs: set[str] = set()
         self._active_evidence: set[str] = set()
+        self._queued = 0
+        self._shed = 0
         self._submitted = 0
         self._completed = 0
         self._failed = 0
@@ -50,12 +67,19 @@ class AnalysisWorkerPool:
     def max_workers(self) -> int:
         return self._max_workers
 
+    @property
+    def max_queue(self) -> int:
+        return self._max_queue
+
     def stats(self) -> JsonObject:
         with self._lock:
             return {
                 "maxWorkers": self._max_workers,
+                "maxQueue": self._max_queue,
                 "activeJobs": len(self._active_jobs),
                 "activeEvidence": len(self._active_evidence),
+                "queued": self._queued,
+                "shed": self._shed,
                 "submitted": self._submitted,
                 "completed": self._completed,
                 "failed": self._failed,
@@ -85,8 +109,25 @@ class AnalysisWorkerPool:
                     task.job_id,
                 )
                 return None
+            capacity = self._max_workers + self._max_queue
+            if len(self._active_jobs) + self._queued >= capacity:
+                self._shed += 1
+                logger.warning(
+                    "OCR pool saturated: %d active + %d queued >= %d capacity — "
+                    "shedding job %s for evidence %s",
+                    len(self._active_jobs),
+                    self._queued,
+                    capacity,
+                    task.job_id,
+                    task.evidence_id,
+                )
+                raise PoolSaturatedError(
+                    f"OCR worker pool is at capacity ({capacity} in-flight); "
+                    "job was shed. Retry shortly."
+                )
             self._active_jobs.add(task.job_id)
             self._active_evidence.add(task.evidence_id)
+            self._queued += 1
             self._submitted += 1
 
         def _run() -> JsonObject:
@@ -132,6 +173,7 @@ class AnalysisWorkerPool:
                 raise
             finally:
                 with self._lock:
+                    self._queued = max(0, self._queued - 1)
                     self._active_jobs.discard(task.job_id)
                     self._active_evidence.discard(task.evidence_id)
 

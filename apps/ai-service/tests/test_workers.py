@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import threading
 import time
 from unittest.mock import MagicMock
 
+import pytest
 from examshield_ai.store import EvidenceStore
-from examshield_ai.workers import AnalysisTask, AnalysisWorkerPool
+from examshield_ai.workers import AnalysisTask, AnalysisWorkerPool, PoolSaturatedError
 
 from tests.conftest import make_image_upload
 
@@ -81,3 +83,39 @@ class TestAnalysisWorkerPool:
         analysis, error = callback.call_args[0]
         assert error is None
         assert analysis["message"] == "Analysis Complete"
+
+    def test_submit_sheds_load_when_pool_and_queue_are_full(self, store: EvidenceStore):
+        pool = AnalysisWorkerPool(max_workers=1, max_queue=0)
+        blocker = store.create_evidence(make_image_upload("blocker.jpg"))
+        blocker_job = store.create_analysis_job(blocker["evidence"]["evidenceId"])
+
+        # Occupied the single worker with a job that waits until we release it.
+        release = threading.Event()
+
+        def blocking_runner(_data: bytes, _suffix: str) -> dict:
+            release.wait(timeout=5)
+            return {"status": "completed", "text": "x", "confidence": 1, "processingTimeMs": 1}
+
+        pool.submit(
+            store,
+            AnalysisTask(job_id=blocker_job["job"]["jobId"], evidence_id=blocker["evidence"]["evidenceId"]),
+            blocking_runner,
+        )
+        time.sleep(0.2)
+
+        shed = store.create_evidence(make_image_upload("shed.jpg"))
+        shed_job = store.create_analysis_job(shed["evidence"]["evidenceId"])
+        with pytest.raises(PoolSaturatedError, match="at capacity"):
+            pool.submit(
+                store,
+                AnalysisTask(job_id=shed_job["job"]["jobId"], evidence_id=shed["evidence"]["evidenceId"]),
+                _mock_ocr_runner,
+            )
+
+        stats = pool.stats()
+        assert stats["queued"] == 1
+        assert stats["submitted"] == 1
+        assert stats["shed"] == 1
+
+        release.set()
+        pool.shutdown(wait=True)
