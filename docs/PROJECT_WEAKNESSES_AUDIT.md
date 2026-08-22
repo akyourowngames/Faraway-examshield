@@ -410,12 +410,8 @@ shipping value.
 | No RLS policies | Designed for service-role-only | Huge blast radius | P0 | Add policies + dedicated role |
 | Plaintext agent keys (RESOLVED) | Column misnamed "encrypted" | Credential leak risk | P0 | App-level envelope encryption added (`secrets_crypto.py`) |
 | Unauthenticated API | Assumed network trust | Data exposure | P0 | Add auth/gateway |
-<<<<<<< HEAD
-| No CI | Time/scope | Regressions ship | P1 | GitHub Actions lint/test/build |
-=======
 | String embeddings in RAG | Quick prototype | Broken RAG | P1 | Store real vector |
 | No CI | Time/scope | Regressions ship | P1 | ~~GitHub Actions lint/test/build~~ **DONE** — `.github/workflows/quality-gate.yml` (ruff + pytest + web typecheck/test/build) |
->>>>>>> origin/main
 | No migrations | Manual schema.sql | Unversioned schema | P1 | supabase/migrations |
 | No frontend tests | Time/scope | UI regressions | P2 | ~~Vitest + component tests~~ **DONE** — Vitest suite in `web/`, run in the quality gate |
 | JSONB document bag | Rapid prototyping | Weak integrity/query | P2 | Relational tables |

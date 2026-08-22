@@ -63,19 +63,19 @@ def load_settings() -> Settings:
         or os.environ.get("NVIDIA_NIM_MODEL")
         or os.environ.get("NIM_MODEL")
         or os.environ.get("EXAMSHIELD_AI_DEFAULT_MODEL")
-        or "stepfun/step-3.7-flash:free"
+        or "tencent/hy3:free"
     ).strip()
     fallback_models = _split_csv(
         os.environ.get("KILO_FALLBACK_MODELS")
         or os.environ.get("NVIDIA_NIM_FALLBACK_MODELS")
         or os.environ.get("NVIDIA_FALLBACK_MODELS")
         or os.environ.get("EXAMSHIELD_AI_FALLBACK_MODELS")
-        or "kilo-auto/efficient,deepseek-v4-flash-free,tencent/hy3:free"
+        or "tencent/hy3,kilo-auto/balanced,stepfun/step-3.7-flash:free"
     )
     planner_default = (
         os.environ.get("EXAMSHIELD_AI_PLANNER_DEFAULT_MODEL")
         or os.environ.get("KILO_PLANNER_MODEL")
-        or "stepfun/step-3.7-flash:free"
+        or "tencent/hy3:free"
     ).strip()
 
     return Settings(
@@ -110,14 +110,12 @@ def load_settings() -> Settings:
         ).rstrip("/"),
         planner_timeout_seconds=float(os.environ.get("EXAMSHIELD_TOOL_PLANNER_TIMEOUT_SECONDS", "5")),
         stream_timeout_seconds=float(os.environ.get("EXAMSHIELD_AI_STREAM_TIMEOUT_SECONDS", "25")),
-        chat_max_tokens=int(os.environ.get("EXAMSHIELD_AI_CHAT_MAX_TOKENS", "1024")),
+        chat_max_tokens=int(os.environ.get("EXAMSHIELD_AI_CHAT_MAX_TOKENS", "350")),
         planner_max_tokens=int(os.environ.get("EXAMSHIELD_AI_PLANNER_MAX_TOKENS", "120")),
         list_cache_ttl_seconds=float(os.environ.get("EXAMSHIELD_LIST_CACHE_TTL_SECONDS", "8")),
-        read_cache_ttl_seconds=float(os.environ.get("EXAMSHIELD_READ_CACHE_TTL_SECONDS", "5")),
-        cache_control_max_age=int(os.environ.get("EXAMSHIELD_CACHE_CONTROL_MAX_AGE", "5")),
         supabase_timeout_seconds=float(os.environ.get("EXAMSHIELD_SUPABASE_TIMEOUT_SECONDS", "20")),
         detect_threshold=float(os.environ.get("EXAMSHIELD_DETECT_THRESHOLD", "7")),
-        cors_origin=os.environ.get("EXAMSHIELD_AI_CORS_ORIGIN", ""),
+        cors_origin=os.environ.get("EXAMSHIELD_AI_CORS_ORIGIN", "*"),
         max_upload_bytes=int(os.environ.get("EXAMSHIELD_MAX_UPLOAD_BYTES", str(12 * 1024 * 1024))),
         supabase_url=(os.environ.get("SUPABASE_URL") or "").rstrip("/"),
         supabase_service_role_key=(
@@ -137,6 +135,8 @@ def load_settings() -> Settings:
         budget_per_request_tokens=int(os.environ.get("EXAMSHIELD_AI_BUDGET_PER_REQUEST_TOKENS", "4000")),
         budget_per_session_tokens=int(os.environ.get("EXAMSHIELD_AI_BUDGET_PER_SESSION_TOKENS", "50000")),
         master_key=(os.environ.get("EXAMSHIELD_AI_MASTER_KEY") or "").strip(),
+        read_cache_ttl_seconds=float(os.environ.get("EXAMSHIELD_READ_CACHE_TTL_SECONDS", "5")),
+        cache_control_max_age=int(os.environ.get("EXAMSHIELD_CACHE_CONTROL_MAX_AGE", "5")),
     )
 
 

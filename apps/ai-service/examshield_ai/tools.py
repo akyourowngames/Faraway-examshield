@@ -779,7 +779,8 @@ def answer_context(result: JsonObject) -> str:
     }
     sections = []
     for section in result.get("sections", []):
-<<<<<<< HEAD
+        if not isinstance(section, dict):
+            continue
         rows = section.get("rows", [])
         # Sanitize string values in rows — they may contain OCR/evidence text
         # that was ingested from external sources (Telegram, uploads).
@@ -792,20 +793,11 @@ def answer_context(result: JsonObject) -> str:
                 })
             else:
                 safe_rows.append(row)
-=======
-        if not isinstance(section, dict):
-            continue
-        rows = section.get("rows", [])
->>>>>>> origin/main
         sections.append(
             {
                 "title": sanitize_input(str(section.get("title") or "")),
                 "rowsAreSamplesNotTotals": True,
-<<<<<<< HEAD
                 "rows": safe_rows,
-=======
-                "rows": rows if isinstance(rows, list) else [],
->>>>>>> origin/main
             }
         )
     answer_rules = [
