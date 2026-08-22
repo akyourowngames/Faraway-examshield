@@ -26,8 +26,10 @@ import {
   TestTube,
   X,
 } from "lucide-react";
-import { createAgent, deleteAgent, listLLMProviders, validateLLMKey, upsertLLMConfig, upsertTelegramConfig, createKnowledgeSource, uploadKnowledgeFiles, testAgent, verifyBotToken } from "@/lib/agent-api";
+import { createAgent, deleteAgent, validateLLMKey, upsertLLMConfig, upsertTelegramConfig, createKnowledgeSource, uploadKnowledgeFiles, testAgent, verifyBotToken } from "@/lib/agent-api";
+import { useApiQuery } from "@/lib/use-api";
 import type { LLMProviderInfo, LLMProvider, AgentCategory, ResponseStyle } from "@/lib/agent-types";
+import { agentBasicsSchema, agentLlmSchema } from "@/lib/validation";
 import { MOCK_AGENTS } from "@/lib/agent-mock-data";
 
 const STEPS = ["Basics", "LLM Provider", "Telegram", "Knowledge", "Behavior", "Review"];
@@ -93,7 +95,8 @@ export default function CreateAgentPage() {
   const [visibility, setVisibility] = useState<"private" | "public">("private");
 
   // Step 2: LLM
-  const [providers, setProviders] = useState<LLMProviderInfo[]>(FALLBACK_PROVIDERS);
+  const { data: providersData } = useApiQuery<{ providers: LLMProviderInfo[] }>("/llm/providers");
+  const providers = providersData?.providers?.length ? providersData.providers : FALLBACK_PROVIDERS;
   const [selectedProvider, setSelectedProvider] = useState<LLMProvider>("openai");
   const [apiKey, setApiKey] = useState("");
   const [selectedModel, setSelectedModel] = useState("");
@@ -122,20 +125,6 @@ export default function CreateAgentPage() {
   const [verifyingBot, setVerifyingBot] = useState(false);
   const [botVerified, setBotVerified] = useState(false);
   const [botVerifyInfo, setBotVerifyInfo] = useState<{ firstName?: string; canJoinGroups?: boolean; canReadAllGroupMessages?: boolean } | null>(null);
-
-  useEffect(() => {
-    listLLMProviders()
-      .then((data) => {
-        if (data.providers && data.providers.length > 0) {
-          setProviders(data.providers);
-        } else {
-          setProviders(FALLBACK_PROVIDERS);
-        }
-      })
-      .catch(() => {
-        setProviders(FALLBACK_PROVIDERS);
-      });
-  }, []);
 
   useEffect(() => {
     const templateId = new URLSearchParams(window.location.search).get("template");
@@ -312,18 +301,23 @@ export default function CreateAgentPage() {
   }
 
   function validateStep(): string {
-    switch (step) {
-      case 0:
-        if (!name.trim()) return "Agent name is required.";
-        break;
-      case 1:
-        if (!apiKey.trim()) return "API key is required.";
-        if (!displayModel) return "Select a model.";
-        if (!keyValidated) return "Validate the API key before proceeding.";
-        break;
-      case 2:
-        if (botToken.trim() && !botVerified) return "Verify your bot token before proceeding.";
-        break;
+    if (step === 0) {
+      const result = agentBasicsSchema.safeParse({ name, description, category, visibility });
+      if (!result.success) {
+        return result.error.issues[0]?.message ?? "Agent name is required.";
+      }
+    }
+    if (step === 1) {
+      const result = agentLlmSchema.safeParse({ apiKey, model: displayModel });
+      if (!result.success) {
+        const message = result.error.issues[0]?.message;
+        if (message?.includes("API key")) return "API key is required.";
+        if (message?.includes("model")) return "Select a model.";
+      }
+      if (!keyValidated) return "Validate the API key before proceeding.";
+    }
+    if (step === 2) {
+      if (botToken.trim() && !botVerified) return "Verify your bot token before proceeding.";
     }
     return "";
   }

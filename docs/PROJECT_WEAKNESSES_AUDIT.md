@@ -52,21 +52,11 @@
 * **Affected:** `supabase/schema.sql` (all tables).
 * **Root cause:** RLS is enabled but no `CREATE POLICY` statements exist; the design relies entirely on
   the backend's `service_role` key.
-* **Impact:** Any process holding the service-role key can read/write **all** tenants' data. Combined with
-  §2.2, this is the single largest blast-radius issue.
+* **Impact:** Any process holding the service-role key can read/write **all** tenants' data — the single
+  largest blast-radius issue.
 * **Fix:** Define least-privilege RLS policies; rotate to a dedicated backend role; keep `service_role` out
   of app code paths where possible.
 * **Effort:** M (1–2 days + testing).
-
-### 2.2 Backend API has no authentication/authorization (Critical)
-* **Affected:** `apps/ai-service/examshield_ai/server.py`, `render.yaml`.
-* **Root cause:** Endpoints (`/evidence`, `/analysis/jobs`, `/memory/*`, `/agents/*`, `/telegram/*`,
-  `/registry/match`, `/chat`, `/plan`) are reachable anonymously; protection is expected to come from the
-  Vercel proxy / network isolation.
-* **Impact:** If the Render URL is ever exposed (misconfig, DNS leak, link in error page), an attacker can
-  read all evidence, inject Telegram events, or run OCR/AI at the operator's cost.
-* **Fix:** Require a shared secret / mTLS / Vercel-only IP allow-list; or move auth into the API.
-* **Effort:** M (1–3 days).
 
 ### 2.3 Agent LLM keys stored in plaintext (Critical)
 * **Affected:** `store.py:1952` (`apiKeyEncrypted` ← `data.get("apiKey","")`), `schema.sql`
@@ -135,7 +125,7 @@
 | # | Issue | Severity | Files |
 |---|-------|----------|-------|
 | S1 | No RLS policies (service-role trust) | Critical | `schema.sql` |
-| S2 | Unauthenticated backend API | Critical | `server.py`, `render.yaml` |
+| S2 | ~~Unauthenticated backend API~~ Resolved — shared-secret gate | Fixed | `server.py`, `render.yaml` |
 | S3 | Plaintext agent LLM keys (`api_key_encrypted`) | Critical | `store.py:1952`, `schema.sql` |
 | S4 | Default `CORS_ORIGIN=*` | High | `settings.py`, `server.py` |
 | S5 | Binary auth only — no RBAC/roles | High | `middleware.ts`, `web/src` |
@@ -160,7 +150,8 @@ no instruction-isolation or allow-list on tool results.
 
 ### 4.2 Upload / OCR abuse (S9, S13)
 `/evidence/upload` and `/ocr/analyze` accept multipart images up to `12 MB` and trigger paid external
-calls (OCR.space, Tesseract CPU, NVIDIA). With §2.2, this is an unmetered cost/DoS vector.
+calls (OCR.space, Tesseract CPU, NVIDIA). With the backend API now authenticated (audit §2.2), this cost
+vector requires a valid API key.
 
 ---
 
