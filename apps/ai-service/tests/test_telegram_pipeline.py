@@ -4,9 +4,9 @@ import time
 from unittest.mock import patch
 
 import pytest
-
 from examshield_ai.detect import scan_text
 from examshield_ai.telegram import TelegramWebhook, _should_send_alert
+
 from tests.conftest import make_image_upload
 
 

@@ -9,7 +9,6 @@ from .memory import MemoryManager
 from .reports import generate_evidence_report, generate_summary_report
 from .store import EvidenceStore, JsonObject, is_today
 
-
 ToolHandler = Callable[[JsonObject], "ToolExecution"]
 
 
@@ -417,7 +416,6 @@ class ExamshieldToolRegistry:
             item for item in data.get("memoryCorrelations", []) if item.get("status") == "open"
         ]
         critical_registry = len([item for item in registry_threats if item.get("riskLevel") == "critical"])
-        medium_registry = len([item for item in registry_threats if item.get("riskLevel") == "medium"])
         compromised_papers = [item for item in top_threats if item.get("status") == "compromised"]
         investigating_papers = [item for item in top_threats if item.get("status") == "investigating"]
         posture, summary = threat_posture_summary(
@@ -869,6 +867,20 @@ def format_percent(value: Any) -> str:
 def format_status(value: Any) -> str:
     text = str(value or "Unknown").replace("-", " ").replace("_", " ")
     return " ".join(part.capitalize() for part in text.split())
+
+
+def format_similarity(value: Any) -> str:
+    try:
+        return f"{float(value) * 100:.0f}%"
+    except (TypeError, ValueError):
+        return "Pending"
+
+
+def memory_preview(item: JsonObject) -> str:
+    text = str(item.get("summary") or item.get("content") or "").strip()
+    if not text:
+        return "No preview stored."
+    return text[:160] + ("…" if len(text) > 160 else "")
 
 
 def format_source(value: Any) -> str:

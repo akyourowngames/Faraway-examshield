@@ -9,12 +9,11 @@ the Markdown to UTF-8 bytes ready for Telegram file upload.
 """
 from __future__ import annotations
 
-import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .store import EvidenceStore, JsonObject
+    from .store import EvidenceStore
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -84,7 +83,7 @@ def generate_evidence_report(evidence_id: str, store: "EvidenceStore") -> str:
     lines: list[str] = []
 
     # ── Header ──
-    lines.append(f"# 🔍 ExamShield Evidence Report")
+    lines.append("# 🔍 ExamShield Evidence Report")
     lines.append(f"**Evidence ID:** `{evidence_id}`")
     lines.append(f"**Generated:** {_ts(_utc_now())}")
     lines.append(f"**Status:** {_status_badge(status)} {status}")
@@ -253,8 +252,8 @@ def generate_summary_report(store: "EvidenceStore") -> str:
 
     # ── Stats Overview ──
     lines.append(_section("📈 Evidence Overview"))
-    lines.append(f"| Metric | Count |")
-    lines.append(f"|--------|-------|")
+    lines.append("| Metric | Count |")
+    lines.append("|--------|-------|")
     lines.append(f"| Total Evidence | **{total}** |")
     lines.append(f"| ✅ Completed | {completed} |")
     lines.append(f"| 🔄 Analyzing | {processing} |")
