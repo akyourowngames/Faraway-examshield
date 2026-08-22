@@ -1683,7 +1683,7 @@ class EvidenceStore:
             if ttl > 0:
                 cached = self._dir_cache.get(name)
                 if cached and (time.monotonic() - cached[0]) < ttl:
-                    return cached[1]
+                    return cached[2]
             records = self._read_json_dir_uncached(name)
             if ttl > 0:
                 self._dir_cache[name] = (time.monotonic(), None, records)
