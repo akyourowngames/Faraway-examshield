@@ -20,7 +20,12 @@ DEFAULT_MAX_WORKERS = int(os.environ.get("EXAMSHIELD_OCR_WORKERS", "2"))
 # Beyond this the pool load-sheds (submit returns None) instead of growing an
 # unbounded queue. None means unbounded (legacy behaviour).
 DEFAULT_MAX_PENDING = int(os.environ.get("EXAMSHIELD_OCR_MAX_PENDING", "100"))
-ANALYSIS_JOB_TIMEOUT_SECONDS = int(os.environ.get("EXAMSHIELD_ANALYSIS_JOB_TIMEOUT_SECONDS", "120"))
+ANALYSIS_JOB_TIMEOUT_SECONDS = int(os.environ.get("EXAMSHIELD_ANALYSIS_JOB_TIMEOUT_SECONDS", "240"))
+# Extra wait after the nominal timeout: OCR on a large exam image often
+# finishes within a few seconds of the deadline, and we must not overwrite a
+# completed (successful) analysis with a "failed" status just because the
+# worker's deadline raced the job's completion.
+ANALYSIS_JOB_GRACE_SECONDS = int(os.environ.get("EXAMSHIELD_ANALYSIS_JOB_GRACE_SECONDS", "60"))
 
 
 @dataclass
@@ -122,17 +127,25 @@ class AnalysisWorkerPool:
                     try:
                         result = future.result(timeout=ANALYSIS_JOB_TIMEOUT_SECONDS)
                     except FuturesTimeoutError as exc:
-                        message = f"Analysis timed out after {ANALYSIS_JOB_TIMEOUT_SECONDS}s"
-                        logger.error(
-                            "Worker OCR timed out for evidence %s job %s",
-                            task.evidence_id,
-                            task.job_id,
-                        )
+                        # The analysis frequently finishes within a few seconds of
+                        # the deadline (slow OCR on a large image). Give it a grace
+                        # period before declaring failure, so a completed,
+                        # successful job is never clobbered with an error status
+                        # that would hide a real 100% leak match.
                         try:
-                            store.fail_analysis_job(task.job_id, message)
-                        except Exception as fail_exc:
-                            logger.error("Failed to mark timed-out job %s failed: %s", task.job_id, fail_exc)
-                        raise RuntimeError(message) from exc
+                            result = future.result(timeout=ANALYSIS_JOB_GRACE_SECONDS)
+                        except FuturesTimeoutError:
+                            message = f"Analysis timed out after {ANALYSIS_JOB_TIMEOUT_SECONDS}s"
+                            logger.error(
+                                "Worker OCR timed out for evidence %s job %s",
+                                task.evidence_id,
+                                task.job_id,
+                            )
+                            try:
+                                store.fail_analysis_job(task.job_id, message)
+                            except Exception as fail_exc:
+                                logger.error("Failed to mark timed-out job %s failed: %s", task.job_id, fail_exc)
+                            raise RuntimeError(message) from exc
 
                 if result.get("message") == "Analysis Failed":
                     raise RuntimeError(

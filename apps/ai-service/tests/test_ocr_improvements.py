@@ -16,10 +16,10 @@ def _isolate_ocr_cache():
     ocr._OCR_RESULT_CACHE.clear()
 
 
-def test_default_chain_is_tesseract_first():
-    # Audit §11.1: previously the paid OCR.space engine ran first. The free
-    # Tesseract engine should now lead so paid quota is not burned unnecessarily.
-    assert ocr.OCR_CHAIN[0] == "tesseract"
+def test_default_chain_is_ocrspace_first():
+    # Tesseract times out on large exam images (hiding real 100% leak matches),
+    # so the paid OCR.space engine now leads and Tesseract fills the gaps.
+    assert ocr.OCR_CHAIN[0] == "ocrspace"
 
 
 def test_language_is_threaded_to_tesseract(tmp_path: Path):

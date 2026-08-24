@@ -29,7 +29,7 @@ def _env_bool(name: str, default: str = "1") -> bool:
     return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
-OCR_CHAIN = _split_csv(os.environ.get("EXAMSHIELD_OCR_CHAIN", ""), "tesseract,ocrspace")
+OCR_CHAIN = _split_csv(os.environ.get("EXAMSHIELD_OCR_CHAIN", ""), "ocrspace,tesseract")
 OCR_PSMS = _split_csv(os.environ.get("EXAMSHIELD_OCR_PSMS", ""), "6,4")
 OCR_TIMEOUT_SECONDS = int(os.environ.get("EXAMSHIELD_OCR_TIMEOUT", "45"))
 OCR_TOTAL_BUDGET_SECONDS = int(os.environ.get("EXAMSHIELD_OCR_TOTAL_BUDGET_SECONDS", "120"))
@@ -388,6 +388,10 @@ def read_ocr_candidates_sequential(
                 "qualityScore": 0,
                 "error": f"PSM {psm} timed out after {timeout}s",
             }
+            # If tesseract can't OCR this image within the timeout on one PSM, a
+            # different PSM won't either — stop burning the budget here and let the
+            # next engine (e.g. ocr.space) take over.
+            break
         except Exception as exc:
             candidate = {
                 "status": "failed",
